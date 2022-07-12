@@ -194,7 +194,7 @@ static int gp_acquire_sample_rows_func(Relation onerel, int elevel,
 static BlockNumber acquire_index_number_of_blocks(Relation indexrel, Relation tablerel);
 
 static void gp_acquire_correlations_dispatcher(Oid relOid, bool inh, float4 *correlations, bool *correlationsIsNull);
-static int	compare_rows(const void *a, const void *b);
+static int	compare_rows(const void *a, const void *b, void *arg);
 static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);
@@ -1936,7 +1936,8 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 * tuples are already sorted.
 	 */
 	if (numrows == targrows)
-		qsort((void *) rows, numrows, sizeof(HeapTuple), compare_rows);
+		qsort_interruptible((void *) rows, numrows, sizeof(HeapTuple),
+							compare_rows, NULL);
 
 	/*
 	 * Estimate total numbers of live and dead rows in relation, extrapolating
@@ -1972,10 +1973,10 @@ acquire_sample_rows(Relation onerel, int elevel,
 }
 
 /*
- * qsort comparator for sorting rows[] array
+ * Comparator for sorting rows[] array
  */
 static int
-compare_rows(const void *a, const void *b)
+compare_rows(const void *a, const void *b, void *arg)
 {
 	HeapTuple	ha = *(const HeapTuple *) a;
 	HeapTuple	hb = *(const HeapTuple *) b;
@@ -3333,7 +3334,7 @@ static void merge_leaf_stats(VacAttrStatsP stats,
 								 int samplerows,
 								 double totalrows);
 static int	compare_scalars(const void *a, const void *b, void *arg);
-static int	compare_mcvs(const void *a, const void *b);
+static int	compare_mcvs(const void *a, const void *b, void *arg);
 static int	analyze_mcv_list(int *mcv_counts,
 							 int num_mcv,
 							 double stadistinct,
@@ -4003,8 +4004,8 @@ compute_scalar_stats(VacAttrStatsP stats,
 		/* Sort the collected values */
 		cxt.ssup = &ssup;
 		cxt.tupnoLink = tupnoLink;
-		qsort_arg((void *) values, values_cnt, sizeof(ScalarItem),
-				  compare_scalars, (void *) &cxt);
+		qsort_interruptible((void *) values, values_cnt, sizeof(ScalarItem),
+							compare_scalars, (void *) &cxt);
 
 		/*
 		 * Now scan the values in order, find the most common ones, and also
@@ -4271,8 +4272,8 @@ compute_scalar_stats(VacAttrStatsP stats,
 						deltafrac;
 
 			/* Sort the MCV items into position order to speed next loop */
-			qsort((void *) track, num_mcv,
-				  sizeof(ScalarMCVItem), compare_mcvs);
+			qsort_interruptible((void *) track, num_mcv, sizeof(ScalarMCVItem),
+								compare_mcvs, NULL);
 
 			/*
 			 * Collapse out the MCV items from the values[] array.
@@ -5030,7 +5031,7 @@ merge_leaf_stats(VacAttrStatsP stats,
 }
 
 /*
- * qsort_arg comparator for sorting ScalarItems
+ * Comparator for sorting ScalarItems
  *
  * Aside from sorting the items, we update the tupnoLink[] array
  * whenever two ScalarItems are found to contain equal datums.  The array
@@ -5067,10 +5068,10 @@ compare_scalars(const void *a, const void *b, void *arg)
 }
 
 /*
- * qsort comparator for sorting ScalarMCVItems by position
+ * Comparator for sorting ScalarMCVItems by position
  */
 static int
-compare_mcvs(const void *a, const void *b)
+compare_mcvs(const void *a, const void *b, void *arg)
 {
 	int			da = ((const ScalarMCVItem *) a)->first;
 	int			db = ((const ScalarMCVItem *) b)->first;
