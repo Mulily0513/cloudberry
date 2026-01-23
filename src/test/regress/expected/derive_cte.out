@@ -280,5 +280,52 @@ select count(*) from (select 1) a, (select 1) b;
      1
 (1 row)
 
+explain select *
+from
+(select sum(s1.b)
+ from s1,s2
+ where s1.d = s2.d and s1.a < 0) q1(x),
+(select 1) a,
+(select avg(s1.b)
+ from s1,s2
+ where s1.d = s2.d and s1.a > 0) q2(x),
+(select 1) b
+where q2.x > 1;
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Sequence  (cost=0.00..926018399032.00 rows=1 width=24)
+   ->  Shared Scan (share slice:id 0:0)  (cost=0.00..862.00 rows=1 width=1)
+         ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..862.00 rows=1 width=8)
+               ->  Hash Join  (cost=0.00..862.00 rows=1 width=8)
+                     Hash Cond: (s1.d = s2.d)
+                     ->  Seq Scan on s1  (cost=0.00..431.00 rows=1 width=12)
+                           Filter: ((a < 0) OR (a > 0))
+                     ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+                           ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=0.00..431.00 rows=1 width=4)
+                                 ->  Seq Scan on s2  (cost=0.00..431.00 rows=1 width=4)
+   ->  Nested Loop  (cost=0.00..926018398170.00 rows=1 width=24)
+         Join Filter: true
+         ->  Nested Loop  (cost=0.00..904313979.96 rows=1 width=16)
+               Join Filter: true
+               ->  Nested Loop  (cost=0.00..882688.12 rows=1 width=12)
+                     Join Filter: true
+                     ->  Aggregate  (cost=0.00..431.00 rows=1 width=8)
+                           ->  Result  (cost=0.00..431.00 rows=1 width=4)
+                                 Filter: (share0_ref3.a < 0)
+                                 ->  Shared Scan (share slice:id 0:0)  (cost=0.00..431.00 rows=1 width=8)
+                     ->  Materialize  (cost=0.00..0.00 rows=1 width=4)
+                           ->  Result  (cost=0.00..0.00 rows=1 width=1)
+               ->  Materialize  (cost=0.00..0.00 rows=1 width=4)
+                     ->  Result  (cost=0.00..0.00 rows=1 width=1)
+         ->  Materialize  (cost=0.00..431.00 rows=1 width=8)
+               ->  Result  (cost=0.00..431.00 rows=1 width=8)
+                     Filter: ((avg(share0_ref2.b)) > '1'::numeric)
+                     ->  Aggregate  (cost=0.00..431.00 rows=1 width=8)
+                           ->  Result  (cost=0.00..431.00 rows=1 width=4)
+                                 Filter: (share0_ref2.a > 0)
+                                 ->  Shared Scan (share slice:id 0:0)  (cost=0.00..431.00 rows=1 width=8)
+ Optimizer: GPORCA
+(32 rows)
+
 drop table s1, s2;
 reset optimizer;

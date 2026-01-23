@@ -75,5 +75,17 @@ from
 --bug fix
 select count(*) from (select 1) a, (select 1) b;
 
+explain select *
+from
+(select sum(s1.b)
+ from s1,s2
+ where s1.d = s2.d and s1.a < 0) q1(x),
+(select 1) a,
+(select avg(s1.b)
+ from s1,s2
+ where s1.d = s2.d and s1.a > 0) q2(x),
+(select 1) b
+where q2.x > 1;
+
 drop table s1, s2;
 reset optimizer;

@@ -51,7 +51,13 @@ CQueryReformers::ReformSubQueries(CMemoryPool *mp, CMDAccessor *md_accessor,
 		return query;
 
 	// grouped same relid subqueries
-	List *sq_relids = GetSubqueryRelids(query, subqrefs);
+	List *sq_relids = NIL;
+
+	List *newsubqrefs = GetSubqueryRelids(query, subqrefs, &sq_relids);
+	// replace old subquery refs with new ones
+	gpdb::ListFree(subqrefs); 
+	subqrefs = newsubqrefs;
+
 	List *comm_subq_refs = GroupedSameRelidsSubquery(subqrefs, sq_relids);
 
 	gpdb::ListFreeDeep(sq_relids);
@@ -400,8 +406,9 @@ CQueryReformers::RTRefLC2RTE(Query *query, ListCell *lc)
 }
 
 List *
-CQueryReformers::GetSubqueryRelids(Query *query, List *refs)
+CQueryReformers::GetSubqueryRelids(Query *query, List *refs, List **pRelids)
 {
+	List *new_refs = NIL;
 	List *sq_relids = NIL;
 	ListCell *lcref;
 
@@ -421,12 +428,15 @@ CQueryReformers::GetSubqueryRelids(Query *query, List *refs)
 			continue;
 
 		sq_relids = gpdb::LAppend(sq_relids, relids);
+		new_refs = gpdb::LAppend(new_refs, lfirst(lcref));
 	}
 	// FIXME:: although Reformer only considers inner join, so far all matched
 	// queries the relids need to keep same order, otherwise, varno can not be
 	// mapped correctly.
 
-	return sq_relids;
+	*pRelids = sq_relids;
+
+	return new_refs;
 }
 
 List *

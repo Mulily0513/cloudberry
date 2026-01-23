@@ -64,7 +64,7 @@ private:
 
 	static RangeTblEntry *RTRefLC2RTE(Query *query, ListCell *lc);
 
-	static List *GetSubqueryRelids(Query *query, List *refs);
+	static List *GetSubqueryRelids(Query *query, List *refs, List **pRelids);
 
 	static List *GroupedSameRelidsSubquery(List *subqrefs, List *sq_relids);
 
