@@ -271,6 +271,11 @@ enum EOptTraceFlag
 	// disable parallel group aggregate (streaming) alternatives
 	EopttraceDisableParallelGroupAgg = 103058,
 
+	// force the ORCA optimizer to use the PartitionTopK physical operator
+	// for top-K per partition queries (e.g., ROW_NUMBER() ... WHERE rn <= K).
+	// This trace flag is mapped to the GUC 'optimizer_force_partition_topk'.
+	EopttraceForcePartitionTopK =  103059,
+
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////
 	//////////////////////////////////////////////////////

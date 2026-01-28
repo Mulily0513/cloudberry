@@ -382,6 +382,9 @@ CXformSplitWindowFunc::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 						pdrgpos, pdrgpwf),
 					pexprLocalSelect, pexprProjectListGlobal);
 
+	pexpr->Pop()->AddRef();
+	pexprScalarCmp->AddRef();
+
 	CExpression *pexprGlobalSelect =
 		GPOS_NEW(mp) CExpression(mp, pexpr->Pop(), pexprGlobal, pexprScalarCmp);
 

@@ -114,6 +114,7 @@ CParseHandlerFactory::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalResult, &CreateResultParseHandler},
 		{EdxltokenPhysicalLimit, &CreateLimitParseHandler},
 		{EdxltokenPhysicalSort, &CreateSortParseHandler},
+		{EdxltokenPhysicalPartitionTopK, &CreatePartitionTopKParseHandler},
 		{EdxltokenPhysicalAppend, &CreateAppendParseHandler},
 		{EdxltokenPhysicalMaterialize, &CreateMaterializeParseHandler},
 		{EdxltokenPhysicalDynamicTableScan, &CreateDTSParseHandler},
@@ -813,6 +814,16 @@ CParseHandlerFactory::CreateSortParseHandler(
 {
 	return GPOS_NEW(mp)
 		CParseHandlerSort(mp, parse_handler_mgr, parse_handler_root);
+}
+
+// creates a parse handler for parsing a partition top-k operator
+CParseHandlerBase *
+CParseHandlerFactory::CreatePartitionTopKParseHandler(
+	CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+	CParseHandlerBase *parse_handler_root)
+{
+	return GPOS_NEW(mp) CParseHandlerPartitionTopK(mp, parse_handler_mgr,
+												   parse_handler_root);
 }
 
 // creates a parse handler for parsing an append operator

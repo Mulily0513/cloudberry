@@ -137,6 +137,7 @@ public:
 		EopLogicalPartitionSelector,
 		EopLogicalAssert,
 		EopLogicalMaxOneRow,
+		EopLogicalPartitionTopK,
 
 		EopScalarCmp,
 		EopScalarIsDistinctFrom,
@@ -261,6 +262,8 @@ public:
 		EopPhysicalSpool,
 		EopPhysicalPartitionSelector,
 		EopPhysicalParallelPartitionSelector,
+
+		EopPhysicalPartitionTopK,
 
 		EopPhysicalConstTableGet,
 

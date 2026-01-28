@@ -334,6 +334,11 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate DXL PartitionTopK node into GPDB PartitionTopK plan node
+	Plan *TranslateDXLPartitionTopK(
+		const CDXLNode *dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *ctxt_translation_prev_siblings);
+
 	// translate a DXL node into a Hash node
 	Plan *TranslateDXLHash(
 		const CDXLNode *dxlnode, CDXLTranslateContext *output_context,

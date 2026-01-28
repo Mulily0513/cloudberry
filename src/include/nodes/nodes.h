@@ -117,6 +117,7 @@ typedef enum NodeTag
 	T_SplitUpdate,
 	T_AssertOp,
 	T_PartitionSelector,
+	T_PartitionTopK,
 	T_Plan_End,
 	/* these aren't subclasses of Plan: */
 	T_NestLoopParam,
@@ -196,6 +197,7 @@ typedef enum NodeTag
 	T_SplitUpdateState,
 	T_AssertOpState,
 	T_PartitionSelectorState,
+	T_PartitionTopKState,
 
 	/*
 	 * TupleDesc and ParamListInfo are not Nodes as such, but you can wrap

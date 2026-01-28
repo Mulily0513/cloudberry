@@ -61,6 +61,7 @@ OBJS = \
 	nodeModifyTable.o \
 	nodeNamedtuplestorescan.o \
 	nodeNestloop.o \
+	nodePartitionTopK.o \
 	nodeProjectSet.o \
 	nodeRecursiveunion.o \
 	nodeResult.o \

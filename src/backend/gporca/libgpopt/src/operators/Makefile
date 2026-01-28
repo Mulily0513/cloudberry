@@ -206,7 +206,9 @@ OBJS        = CExpression.o \
               COrderedAggPreprocessor.o \
               CLeftJoinPruningPreprocessor.o \
               CJoinOrderHintsPreprocessor.o \
-              CDedupSupersetPreprocessor.o
+              CDedupSupersetPreprocessor.o \
+              CLogicalPartitionTopK.o \
+              CPhysicalPartitionTopK.o
 
 include $(top_srcdir)/src/backend/common.mk
 

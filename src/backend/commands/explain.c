@@ -111,6 +111,8 @@ static void show_sort_keys(SortState *sortstate, List *ancestors,
 						   ExplainState *es);
 static void show_incremental_sort_keys(IncrementalSortState *incrsortstate,
 									   List *ancestors, ExplainState *es);
+static void show_partition_topk_info(PartitionTopKState *ptkstate,
+							ExplainState *es);
 static void show_merge_append_keys(MergeAppendState *mstate, List *ancestors,
 								   ExplainState *es);
 static void show_agg_keys(AggState *astate, List *ancestors,
@@ -1799,6 +1801,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IncrementalSort:
 			pname = sname = "Incremental Sort";
 			break;
+		case T_PartitionTopK:
+			pname = sname = "Partition Top-K";
+			break;
 		case T_Group:
 			pname = sname = "Group";
 			break;
@@ -2870,6 +2875,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_incremental_sort_info(castNode(IncrementalSortState, planstate),
 									   es);
 			break;
+		case T_PartitionTopK:
+			show_partition_topk_info(castNode(PartitionTopKState, planstate), es);
+			break;
 		case T_MergeAppend:
 			show_merge_append_keys(castNode(MergeAppendState, planstate),
 								   ancestors, es);
@@ -3343,6 +3351,87 @@ show_incremental_sort_keys(IncrementalSortState *incrsortstate,
 						 plan->sort.sortOperators, plan->sort.collations,
 						 plan->sort.nullsFirst,
 						 ancestors, es);
+}
+
+/*
+ * Show the partition keys and sort keys for a PartitionTopK node.
+ */
+static void
+show_partition_topk_info(PartitionTopKState *ptkstate, ExplainState *es)
+{
+	PartitionTopK *node = (PartitionTopK *)ptkstate->ps.plan;
+	Plan *outerPlan = outerPlan(node); /* child plan (e.g., SeqScan) */
+	int i;
+
+	/* Always show Top K */
+	ExplainPropertyInteger("Top K", NULL, node->top_k, es);
+
+	if (!es->verbose)
+		return;
+
+	/* ------------------------ */
+	/* Partition Key (with names) */
+	/* ------------------------ */
+	if (node->numPartitionCols > 0)
+	{
+		List *partKeys = NIL;
+		bool useprefix = (list_length(es->rtable) > 1 || es->verbose);
+
+		for (i = 0; i < node->numPartitionCols; i++)
+		{
+			AttrNumber partColIdx = node->partitionColIdx[i];
+			TargetEntry *target = get_tle_by_resno(outerPlan->targetlist, partColIdx);
+
+			if (!target)
+				elog(ERROR, "no tlist entry for partition key %d in child plan", partColIdx);
+
+			char *exprstr = deparse_expression((Node *)target->expr,
+											   es->deparse_cxt,
+											   useprefix,
+											   true);
+			partKeys = lappend(partKeys, pstrdup(exprstr));
+		}
+
+		ExplainPropertyList("Partition Key", partKeys, es);
+	}
+
+	/* ------------------------ */
+	/* Sort Key (with names) */
+	/* ------------------------ */
+	if (node->numSortCols > 0)
+	{
+		List *sortKeys = NIL;
+		StringInfoData sortkeybuf;
+		bool useprefix = (list_length(es->rtable) > 1 || es->verbose);
+
+		initStringInfo(&sortkeybuf);
+
+		for (i = 0; i < node->numSortCols; i++)
+		{
+			AttrNumber sortColIdx = node->sortColIdx[i];
+			TargetEntry *target = get_tle_by_resno(outerPlan->targetlist, sortColIdx);
+
+			if (!target)
+				elog(ERROR, "no tlist entry for sort key %d in child plan", sortColIdx);
+
+			char *exprstr = deparse_expression((Node *)target->expr,
+											   es->deparse_cxt,
+											   useprefix,
+											   true);
+			resetStringInfo(&sortkeybuf);
+			appendStringInfoString(&sortkeybuf, exprstr);
+
+			show_sortorder_options(&sortkeybuf,
+								   (Node *)target->expr,
+								   node->sortOperators[i],
+								   node->collations[i],
+								   node->nullsFirst[i]);
+
+			sortKeys = lappend(sortKeys, pstrdup(sortkeybuf.data));
+		}
+
+		ExplainPropertyList("Sort Key", sortKeys, es);
+	}
 }
 
 /*

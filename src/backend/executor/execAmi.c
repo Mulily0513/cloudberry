@@ -72,6 +72,7 @@
 #include "executor/nodeSequence.h"
 #include "executor/nodeTableFunction.h"
 #include "executor/nodePartitionSelector.h"
+#include "executor/nodePartitionTopK.h"
 #include "executor/nodeShareInputScan.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
@@ -332,6 +333,10 @@ ExecReScan(PlanState *node)
 
 		case T_IncrementalSortState:
 			ExecReScanIncrementalSort((IncrementalSortState *) node);
+			break;
+
+		case T_PartitionTopKState:
+			ExecReScanPartitionTopK((PartitionTopKState *) node);
 			break;
 
 		case T_GroupState:

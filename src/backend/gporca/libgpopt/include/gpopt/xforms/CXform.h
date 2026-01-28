@@ -112,6 +112,8 @@ public:
 		ExfLeftAntiSemiApplyNotIn2LeftAntiSemiJoinNotIn,
 		ExfLeftAntiSemiApplyNotIn2LeftAntiSemiJoinNotInNoCorrelations,
 		ExfPushDownLeftOuterJoin,
+		ExfPushdownTopKThroughPartition,
+		ExfImplementPartitionTopK,
 		ExfSimplifyLeftOuterJoin,
 		ExfLeftOuterJoin2NLJoin,
 		ExfLeftOuterJoin2HashJoin,

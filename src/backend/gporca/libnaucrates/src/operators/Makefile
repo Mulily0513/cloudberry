@@ -81,6 +81,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalDynamicForeignScan.o \
               CDXLPhysicalNLJoin.o \
               CDXLPhysicalPartitionSelector.o \
+              CDXLPhysicalPartitionTopK.o \
               CDXLPhysicalProperties.o \
               CDXLPhysicalRandomMotion.o \
               CDXLPhysicalRedistributeMotion.o \

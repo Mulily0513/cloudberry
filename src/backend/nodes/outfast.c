@@ -1054,6 +1054,9 @@ _outNode(StringInfo str, void *obj)
 			case T_IncrementalSort:
 				_outIncrementalSort(str, obj);
 				break;
+			case T_PartitionTopK:
+				_outPartitionTopK(str, obj);
+				break;
 			case T_Unique:
 				_outUnique(str, obj);
 				break;

@@ -135,6 +135,10 @@ enum Edxltoken
 
 	EdxltokenPhysicalCTEProducer,
 	EdxltokenPhysicalCTEConsumer,
+	EdxltokenPhysicalPartitionTopK,
+	EdxltokenPartCols,
+	EdxltokenSortCols,
+	EdxltokenN,
 
 	EdxltokenDuplicateSensitive,
 

@@ -1095,6 +1095,33 @@ _outIncrementalSort(StringInfo str, const IncrementalSort *node)
 }
 
 static void
+_outPartitionTopK(StringInfo str, const PartitionTopK *node)
+{
+	WRITE_NODE_TYPE("PARTITIONTOPK");
+
+	_outPlanInfo(str, (const Plan *) node);
+
+	WRITE_INT_FIELD(top_k);
+	WRITE_INT_FIELD(numPartitionCols);
+	WRITE_INT_FIELD(numSortCols);
+
+	/* Output partition key column indices */
+	WRITE_ATTRNUMBER_ARRAY(partitionColIdx, node->numPartitionCols);
+
+	/* Output sort column indices */
+	WRITE_ATTRNUMBER_ARRAY(sortColIdx, node->numSortCols);
+
+	/* Output sort operator OIDs */
+	WRITE_OID_ARRAY(sortOperators, node->numSortCols);
+
+	/* Output collation OIDs */
+	WRITE_OID_ARRAY(collations, node->numSortCols);
+
+	/* Output nullsFirst flags */
+	WRITE_BOOL_ARRAY(nullsFirst, node->numSortCols);
+}
+
+static void
 _outUnique(StringInfo str, const Unique *node)
 {
 	WRITE_NODE_TYPE("UNIQUE");
@@ -4397,6 +4424,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_IncrementalSort:
 				_outIncrementalSort(str, obj);
+				break;
+			case T_PartitionTopK:
+				_outPartitionTopK(str, obj);
 				break;
 			case T_Unique:
 				_outUnique(str, obj);

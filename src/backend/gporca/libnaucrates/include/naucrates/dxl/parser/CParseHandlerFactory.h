@@ -331,6 +331,11 @@ private:
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
 		CParseHandlerBase *parse_handler_root);
 
+	// construct a partition top-k parse handler
+	static CParseHandlerBase *CreatePartitionTopKParseHandler(
+		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+		CParseHandlerBase *parse_handler_root);
+
 	// construct an append parse handler
 	static CParseHandlerBase *CreateAppendParseHandler(
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,

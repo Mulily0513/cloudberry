@@ -81,6 +81,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalMergeJoin.h"
 #include "naucrates/dxl/operators/CDXLPhysicalNLJoin.h"
 #include "naucrates/dxl/operators/CDXLPhysicalPartitionSelector.h"
+#include "naucrates/dxl/operators/CDXLPhysicalPartitionTopK.h"
 #include "naucrates/dxl/operators/CDXLPhysicalRedistributeMotion.h"
 #include "naucrates/dxl/operators/CDXLPhysicalHashDistributeWorkersMotion.h"
 #include "naucrates/dxl/operators/CDXLPhysicalResult.h"
@@ -563,6 +564,13 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 		{
 			plan = TranslateDXLValueScan(dxlnode, output_context,
 										 ctxt_translation_prev_siblings);
+			break;
+		}
+
+		case EdxlopPhysicalPartitionTopK:
+		{
+			plan = TranslateDXLPartitionTopK(dxlnode, output_context,
+											 ctxt_translation_prev_siblings);
 			break;
 		}
 	}
@@ -4296,6 +4304,144 @@ CTranslatorDXLToPlStmt::TranslateDXLSort(
 	child_contexts->Release();
 
 	return (Plan *) sort;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLPartitionTopK
+//
+//	@doc:
+//		Translates DXL physical PartitionTopK operator to Postgres Plan node
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLPartitionTopK(
+	const CDXLNode *dxlnode, CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	GPOS_ASSERT(nullptr != dxlnode);
+	GPOS_ASSERT(nullptr != dxlnode->GetOperator());
+	GPOS_ASSERT(EdxlopPhysicalPartitionTopK ==
+				dxlnode->GetOperator()->GetDXLOperator());
+
+	const CDXLPhysicalPartitionTopK *dxlop =
+		CDXLPhysicalPartitionTopK::Cast(dxlnode->GetOperator());
+
+	PartitionTopK *topk_plan = MakeNode(PartitionTopK);
+	Plan *plan = &topk_plan->plan;
+	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+
+	TranslatePlanCosts(dxlnode, plan);
+
+	GPOS_ASSERT(3 == dxlnode->Arity());
+	CDXLNode *proj_list_dxlnode = (*dxlnode)[0];
+	CDXLNode *filter_dxlnode = (*dxlnode)[1];
+	CDXLNode *child_dxlnode = (*dxlnode)[2];
+
+	CDXLTranslateContext child_context(m_mp, false,
+									   output_context->GetColIdToParamIdMap());
+	Plan *child_plan = TranslateDXLOperatorToPlan(
+		child_dxlnode, &child_context, ctxt_translation_prev_siblings);
+	plan->lefttree = child_plan;
+
+	CDXLTranslationContextArray *child_contexts =
+		GPOS_NEW(m_mp) CDXLTranslationContextArray(m_mp);
+	child_contexts->Append(&child_context);
+
+	TranslateProjListAndFilter(proj_list_dxlnode, filter_dxlnode, nullptr,
+							   child_contexts, &plan->targetlist, &plan->qual,
+							   output_context);
+
+	// ----------------------------
+	// PARTITION COLUMNS
+	// ----------------------------
+	const CDXLColRefArray *part_cols = dxlop->PdrgdxlcrPart();
+	ULONG num_part_cols = part_cols->Size();
+	topk_plan->numPartitionCols = num_part_cols;
+
+	if (num_part_cols > 0)
+	{
+		topk_plan->partitionColIdx =
+			(AttrNumber *) gpdb::GPDBAlloc(num_part_cols * sizeof(AttrNumber));
+
+		for (ULONG ul = 0; ul < num_part_cols; ul++)
+		{
+			CDXLColRef *dxl_colref = (*part_cols)[ul];
+			ULONG colid = dxl_colref->Id();
+
+			const TargetEntry *te = child_context.GetTargetEntry(colid);
+			if (nullptr == te)
+			{
+				GPOS_RAISE(
+					gpdxl::ExmaGPDB, gpdxl::ExmiDXLInvalidAttributeValue,
+					GPOS_WSZ_LIT("Partition column not found in child output"));
+			}
+			topk_plan->partitionColIdx[ul] = te->resno;
+		}
+	}
+	else
+	{
+		topk_plan->partitionColIdx = nullptr;
+	}
+
+	// ----------------------------
+	// SORT COLUMNS
+	// ----------------------------
+	const CDXLSortColArray *sort_cols = dxlop->Pdrgdxlsc();
+	ULONG num_sort_cols = sort_cols->Size();
+	topk_plan->numSortCols = num_sort_cols;
+
+	if (num_sort_cols > 0)
+	{
+		topk_plan->sortColIdx =
+			(AttrNumber *) gpdb::GPDBAlloc(num_sort_cols * sizeof(AttrNumber));
+		topk_plan->sortOperators =
+			(Oid *) gpdb::GPDBAlloc(num_sort_cols * sizeof(Oid));
+		topk_plan->collations =
+			(Oid *) gpdb::GPDBAlloc(num_sort_cols * sizeof(Oid));
+		topk_plan->nullsFirst =
+			(bool *) gpdb::GPDBAlloc(num_sort_cols * sizeof(bool));
+
+		for (ULONG ul = 0; ul < num_sort_cols; ul++)
+		{
+			CDXLScalarSortCol *dxl_sort_col = (*sort_cols)[ul];
+			ULONG colid = dxl_sort_col->GetColId();
+
+			const TargetEntry *te = child_context.GetTargetEntry(colid);
+			if (nullptr == te)
+			{
+				GPOS_RAISE(
+					gpdxl::ExmaGPDB, gpdxl::ExmiDXLInvalidAttributeValue,
+					GPOS_WSZ_LIT("Sort column not found in child output"));
+			}
+
+			topk_plan->sortColIdx[ul] = te->resno;
+			topk_plan->sortOperators[ul] =
+				CMDIdGPDB::CastMdid(dxl_sort_col->GetMdIdSortOp())->Oid();
+			topk_plan->collations[ul] =
+				gpdb::ExprCollation((Node *) te->expr);
+			topk_plan->nullsFirst[ul] = dxl_sort_col->IsSortedNullsFirst();
+		}
+	}
+	else
+	{
+		topk_plan->sortColIdx = nullptr;
+		topk_plan->sortOperators = nullptr;
+		topk_plan->collations = nullptr;
+		topk_plan->nullsFirst = nullptr;
+	}
+
+	topk_plan->top_k = dxlop->GetN();
+	if (topk_plan->top_k <= 0)
+	{
+		GPOS_RAISE(gpdxl::ExmaGPDB, gpdxl::ExmiDXLInvalidAttributeValue,
+				   GPOS_WSZ_LIT("PartitionTopK N must be a positive integer"));
+	}
+
+	SetParamIds(plan);
+	child_contexts->Release();
+
+	return (Plan *) topk_plan;
 }
 
 //------------------------------------------------------------------------------

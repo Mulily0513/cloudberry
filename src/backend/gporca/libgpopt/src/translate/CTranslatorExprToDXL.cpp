@@ -64,6 +64,7 @@
 #include "gpopt/operators/CPhysicalNLJoin.h"
 #include "gpopt/operators/CPhysicalPartitionSelector.h"
 #include "gpopt/operators/CPhysicalParallelPartitionSelector.h"
+#include "gpopt/operators/CPhysicalPartitionTopK.h"
 #include "gpopt/operators/CPhysicalScalarAgg.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
 #include "gpopt/operators/CPhysicalHashSequenceProject.h"
@@ -146,6 +147,7 @@
 #include "naucrates/dxl/operators/CDXLPhysicalTVF.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalParallelTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalPartitionTopK.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
 #include "naucrates/dxl/operators/CDXLScalarAggref.h"
 #include "naucrates/dxl/operators/CDXLScalarArray.h"
@@ -550,6 +552,11 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 			break;
 		case COperator::EopPhysicalParallelPartitionSelector:
 			dxlnode = CTranslatorExprToDXL::PdxlnParallelPartitionSelector(
+				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+				pfDML);
+			break;
+		case COperator::EopPhysicalPartitionTopK:
+			dxlnode = CTranslatorExprToDXL::PdxlnPartitionTopK(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
@@ -6357,6 +6364,86 @@ CTranslatorExprToDXL::PdxlnParallelPartitionSelector(
 	pdxlnSelector->AddChild(child_dxlnode);
 
 	return pdxlnSelector;
+}
+
+CDXLNode *
+CTranslatorExprToDXL::PdxlnPartitionTopK(
+	CExpression *pexpr, CColRefArray *colref_array,
+	CDistributionSpecArray *pdrgpdsBaseTables, ULONG *pulNonGatherMotions,
+	BOOL *pfDML)
+{
+	GPOS_ASSERT(nullptr != pexpr);
+	GPOS_ASSERT(COperator::EopPhysicalPartitionTopK == pexpr->Pop()->Eopid());
+	GPOS_ASSERT(1 == pexpr->Arity());
+
+	CPhysicalPartitionTopK *pop =
+		CPhysicalPartitionTopK::PopConvert(pexpr->Pop());
+	CMemoryPool *mp = m_mp;
+
+	// ---- 1. Translate child expression ----
+	CDXLNode *child_dxlnode = CreateDXLNode(
+		(*pexpr)[0], colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+		pfDML, false /*fRemap*/, false /*fRoot*/);
+
+	// ---- 2. Build partition columns (CDXLColRefArray) ----
+	CDXLColRefArray *pdrgdxlcrPart = GPOS_NEW(mp) CDXLColRefArray(mp);
+	CColRefArray *partition_cols = pop->PdrgpcrPartition();
+	for (ULONG ul = 0; ul < partition_cols->Size(); ul++)
+	{
+		CColRef *colref = (*partition_cols)[ul];
+
+		CMDName *mdname = GPOS_NEW(mp) CMDName(mp, colref->Name().Pstr());
+
+		IMDId *mdid_type = colref->RetrieveType()->MDId();
+		mdid_type->AddRef();
+
+		CDXLColRef *dxl_colref = GPOS_NEW(mp)
+			CDXLColRef(mdname, colref->Id(), mdid_type, colref->TypeModifier());
+		pdrgdxlcrPart->Append(dxl_colref);
+	}
+
+	// ---- 3. Build sort columns (CDXLSortColArray) ----
+	CDXLSortColArray *pdrgdxlsc = GPOS_NEW(mp) CDXLSortColArray(mp);
+	COrderSpec *pos = pop->Pos();
+	for (ULONG ul = 0; ul < pos->UlSortColumns(); ul++)
+	{
+		ULONG colid = pos->Pcr(ul)->Id();
+		IMDId *mdid_sortop = pos->GetMdIdSortOp(ul);
+		mdid_sortop->AddRef();
+
+		const IMDScalarOp *md_scalar_op = m_pmda->RetrieveScOp(mdid_sortop);
+		CWStringConst *sort_op_name = GPOS_NEW(mp)
+			CWStringConst(mp, md_scalar_op->Mdname().GetMDName()->GetBuffer());
+
+		BOOL fNullsFirst = (COrderSpec::EntFirst == pos->Ent(ul));
+		CDXLScalarSortCol *dxl_sortcol = GPOS_NEW(mp) CDXLScalarSortCol(
+			mp, colid, mdid_sortop, sort_op_name, fNullsFirst);
+		pdrgdxlsc->Append(dxl_sortcol);
+	}
+
+	// ---- 4. Construct projection list from child's proj list ----
+	GPOS_ASSERT(nullptr != child_dxlnode && 1 <= child_dxlnode->Arity());
+	CDXLNode *pdxlnProjListChild = (*child_dxlnode)[0];
+	CDXLNode *proj_list_dxlnode =
+		CTranslatorExprToDXLUtils::PdxlnProjListFromChildProjList(
+			mp, m_pcf, m_phmcrdxln, pdxlnProjListChild);
+
+	// ---- 5. Create empty filter ----
+	CDXLNode *filter_dxlnode = PdxlnFilter(nullptr);
+
+	// ---- 6. Create DXL operator and node ----
+	CDXLPhysicalPartitionTopK *dxlop = GPOS_NEW(mp)
+		CDXLPhysicalPartitionTopK(mp, pdrgdxlcrPart, pdrgdxlsc, pop->N());
+	CDXLNode *dxlnode = GPOS_NEW(mp) CDXLNode(mp, dxlop);
+	CDXLPhysicalProperties *dxl_properties = GetProperties(pexpr);
+	dxlnode->SetProperties(dxl_properties);
+
+	// ---- 7. Add children in DXL order: [ProjList, Filter, Child] ----
+	dxlnode->AddChild(proj_list_dxlnode);
+	dxlnode->AddChild(filter_dxlnode);
+	dxlnode->AddChild(child_dxlnode);
+
+	return dxlnode;
 }
 
 //---------------------------------------------------------------------------

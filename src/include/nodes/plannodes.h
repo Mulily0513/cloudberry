@@ -1310,6 +1310,36 @@ typedef struct IncrementalSort
 	int			nPresortedCols; /* number of presorted columns */
 } IncrementalSort;
 
+/* ----------------
+ *		PartitionTopK node
+ *
+ * This plan node implements tie-aware Top-K selection within each partition.
+ * It assumes input is either already grouped by partition keys (e.g., via
+ * Redistribute Motion on partition columns) or can be processed in a single
+ * pass with partition boundaries detectable via key comparison.
+ *
+ * For each partition:
+ *   - Rows are sorted by sortColIdx in descending/ascending order as specified
+ *   - RANK() is implicitly computed based on the sort order
+ *   - All rows with RANK <= top_k are returned (including ties of the K-th rank)
+ *
+ * Note: This node does NOT perform global sorting; it relies on ORCA to insert
+ * appropriate motion and distribution to ensure partition-wise processing.
+ * ----------------
+ */
+typedef struct PartitionTopK
+{
+	Plan 		plan;
+	int 		top_k;
+	int 		numPartitionCols;
+	AttrNumber	*partitionColIdx; 	/* array of partition key column indices */ 
+	int 		numSortCols;
+	AttrNumber	*sortColIdx; 		/* array of sort column indices */ 
+	Oid			*sortOperators;		/* array of sort operator OIDs */
+	Oid			*collations;		/* array of collation OIDs for sort columns */
+	bool		*nullsFirst;		/* array of nullsFirst flags */
+} PartitionTopK;
+
 /* ---------------
  *	 group node -
  *		Used for queries with GROUP BY (but no aggregates) specified.

@@ -78,6 +78,8 @@ OBJS        = CDecorrelator.o \
               CXformInnerApply2InnerJoinNoCorrelations.o \
               CXformInnerApplyWithOuterKey2InnerJoin.o \
               CXformImplementInnerJoin.o \
+              CXformImplementPartitionTopK.o \
+              CXformPushdownTopKThroughPartition.o \
               CXformInnerJoin2ParallelHashJoin.o \
               CXformLeftOuterJoin2ParallelHashJoin.o \
               CXformLeftSemiJoin2ParallelHashJoin.o \

@@ -439,6 +439,7 @@ bool		optimizer_enable_use_distribution_in_dqa;
 bool		optimizer_enable_push_join_below_union_all;
 bool		optimizer_enable_orderedagg;
 bool		optimizer_disable_dynamic_table_scan;
+bool		optimizer_force_partition_topk;
 
 /* Analyze related GUCs for Optimizer */
 bool		optimizer_analyze_root_partition;
@@ -3198,6 +3199,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 		 &optimizer_disable_dynamic_table_scan,
 		 false,
 		 NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_force_partition_topk", PGC_USERSET, DEVELOPER_OPTIONS,
+		 gettext_noop("Force the ORCA optimizer to consider PartitionTopK operator."),
+		 NULL,
+		 GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_force_partition_topk,
+		false,
+		NULL, NULL, NULL
 	},
 
 	{

@@ -166,6 +166,7 @@ enum Edxlopid
 
 	EdxlopPhysicalDML,
 	EdxlopPhysicalSplit,
+	EdxlopPhysicalPartitionTopK,
 
 	EdxlopPhysicalAssert,
 

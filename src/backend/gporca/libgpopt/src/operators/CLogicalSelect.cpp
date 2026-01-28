@@ -104,6 +104,9 @@ CLogicalSelect::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfSelect2Filter);
 	if (GPOS_FTRACE(EopttraceForceSplitWindowFunc))
 		(void) xform_set->ExchangeSet(CXform::ExfSplitWindowFunc);
+
+	if (GPOS_FTRACE(EopttraceForcePartitionTopK))
+		(void) xform_set->ExchangeSet(CXform::ExfPushdownTopKThroughPartition);
 	return xform_set;
 }
 

@@ -190,6 +190,8 @@ CXformFactory::Instantiate()
 			CXformLeftAntiSemiApplyNotIn2LeftAntiSemiJoinNotInNoCorrelations(
 				m_mp));
 	Add(GPOS_NEW(m_mp) CXformPushDownLeftOuterJoin(m_mp));
+	Add(GPOS_NEW(m_mp) CXformPushdownTopKThroughPartition(m_mp));
+	Add(GPOS_NEW(m_mp) CXformImplementPartitionTopK(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSimplifyLeftOuterJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformLeftOuterJoin2NLJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformLeftOuterJoin2HashJoin(m_mp));

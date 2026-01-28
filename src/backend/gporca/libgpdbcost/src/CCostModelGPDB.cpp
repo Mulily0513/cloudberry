@@ -39,6 +39,7 @@
 #include "gpopt/operators/CPhysicalMotionBroadcast.h"
 #include "gpopt/operators/CPhysicalMotionBroadcastWorkers.h"
 #include "gpopt/operators/CPhysicalPartitionSelector.h"
+#include "gpopt/operators/CPhysicalPartitionTopK.h"
 #include "gpopt/operators/CPhysicalParallelPartitionSelector.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
 #include "gpopt/operators/CPhysicalHashSequenceProject.h"
@@ -206,6 +207,68 @@ CCostModelGPDB::CostComputeScalar(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	return costLocal + costChild + costCompute;
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		CCostModelGPDB::CostPartitionTopK
+//
+//	@doc:
+//		Cost of Top-N Window operator.
+//		This operator computes the top N rows within each partition using a
+//		bounded heap, avoiding full sorting. The cost consists of:
+//		1. CPU cost: proportional to input rows (each row triggers a heap update);
+//		2. Memory cost: proportional to (estimated number of partitions) * N * tuple width;
+//		3. I/O cost: negligible (streaming, no spilling).
+//		The number of partitions is estimated as min(1000, sqrt(input_rows)).
+//
+//---------------------------------------------------------------------------
+CCost
+CCostModelGPDB::CostPartitionTopK(CMemoryPool *,  // mp - unused
+								  CExpressionHandle &exprhdl,
+								  const CCostModelGPDB *
+#ifdef GPOS_DEBUG
+									  pcmgpdb
+#endif
+								  ,
+								  const ICostModel::SCostingInfo *pci)
+{
+	GPOS_ASSERT(nullptr != pcmgpdb);
+	GPOS_ASSERT(nullptr != pci);
+	GPOS_ASSERT(COperator::EopPhysicalPartitionTopK == exprhdl.Pop()->Eopid());
+
+	if (GPOS_FTRACE(EopttraceForcePartitionTopK))
+	{
+		return CCost(0.0);
+	}
+
+	// These are still valid in SCostingInfo
+	const CDouble dInputRows = pci->Rows();
+	const ULONG ulTupleWidth = pci->Width();
+
+	const CPhysicalPartitionTopK *popPartitionTopK =
+		CPhysicalPartitionTopK::PopConvert(exprhdl.Pop());
+	const ULONG ulN = static_cast<ULONG>(popPartitionTopK->N());
+
+	const ULONG ulNumPartitions = static_cast<ULONG>(
+		std::min(1000.0, std::sqrt(std::max(1.0, dInputRows.Get())) + 1.0));
+
+	// Bypass parameter lookup: use constants (common in newer GPDB 7)
+	const CDouble dCPUUnitCost(0.001);		// per-row CPU cost
+	const CDouble dMemoryUnitCost(0.0001);	// per-byte memory cost
+
+	const CDouble dCPUCost = dInputRows * dCPUUnitCost;
+	const CDouble dMemoryUsed =
+		CDouble(ulNumPartitions) * CDouble(ulN) * CDouble(ulTupleWidth);
+	const CDouble dMemoryCost = dMemoryUsed * dMemoryUnitCost;
+	const CDouble dIOCost = 0.0;
+
+	CDouble dTotalCost = dCPUCost + dMemoryCost + dIOCost;
+	if (dTotalCost < 1.0)
+	{
+		dTotalCost = 1.0;
+	}
+
+	return CCost(dTotalCost);
+}
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -3375,6 +3438,11 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalFullMergeJoin:
 		{
 			return CostMergeJoin(m_mp, exprhdl, this, pci);
+		}
+
+		case COperator::EopPhysicalPartitionTopK:
+		{
+			return CostPartitionTopK(m_mp, exprhdl, this, pci);
 		}
 	}
 }

@@ -1372,6 +1372,66 @@ _copyIncrementalSort(const IncrementalSort *from)
 	return newnode;
 }
 
+/*
+ * _copyPartitionTopK
+ */
+static PartitionTopK *
+_copyPartitionTopK(const PartitionTopK *from)
+{
+	PartitionTopK *newnode = makeNode(PartitionTopK);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((const Plan *)from, (Plan *)newnode);
+
+	/*
+	 * copy remainder of node
+	 */
+	COPY_SCALAR_FIELD(top_k);
+	COPY_SCALAR_FIELD(numPartitionCols);
+	COPY_SCALAR_FIELD(numSortCols);
+
+	/* Deep copy variable-length arrays */
+	if (from->numPartitionCols > 0)
+	{
+		newnode->partitionColIdx = (AttrNumber *)
+			palloc(sizeof(AttrNumber) * from->numPartitionCols);
+		memcpy(newnode->partitionColIdx, from->partitionColIdx,
+			   sizeof(AttrNumber) * from->numPartitionCols);
+	}
+	else
+		newnode->partitionColIdx = NULL;
+
+	if (from->numSortCols > 0)
+	{
+		newnode->sortColIdx = (AttrNumber *)
+			palloc(sizeof(AttrNumber) * from->numSortCols);
+		memcpy(newnode->sortColIdx, from->sortColIdx,
+			   sizeof(AttrNumber) * from->numSortCols);
+		newnode->sortOperators = (Oid *)
+			palloc(sizeof(Oid) * from->numSortCols);
+		memcpy(newnode->sortOperators, from->sortOperators,
+			   sizeof(Oid) * from->numSortCols);
+		newnode->collations = (Oid *)
+			palloc(sizeof(Oid) * from->numSortCols);
+		memcpy(newnode->collations, from->collations,
+			   sizeof(Oid) * from->numSortCols);
+		newnode->nullsFirst = (bool *)
+			palloc(sizeof(bool) * from->numSortCols);
+		memcpy(newnode->nullsFirst, from->nullsFirst,
+			   sizeof(bool) * from->numSortCols);
+	}
+	else
+	{
+		newnode->sortColIdx = NULL;
+		newnode->sortOperators = NULL;
+		newnode->collations = NULL;
+		newnode->nullsFirst = NULL;
+	}
+
+	return newnode;
+}
 
 /*
  * _copyAgg
@@ -6635,6 +6695,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_IncrementalSort:
 			retval = _copyIncrementalSort(from);
+			break;
+		case T_PartitionTopK:
+			retval = _copyPartitionTopK(from);
 			break;
 		case T_Agg:
 			retval = _copyAgg(from);

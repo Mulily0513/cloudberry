@@ -233,6 +233,11 @@ private:
 								   const CCostModelGPDB *pcmgpdb);
 
 
+	// cost of top-n window
+	static CCost CostPartitionTopK(CMemoryPool *mp, CExpressionHandle &exprhdl,
+								   const CCostModelGPDB *pcmgpdb,
+								   const SCostingInfo *pci);
+
 	// Calculating the weightage of index columns not used in predicates,
 	// for index scan & index only scan.
 	static CDouble ComputeUnusedIndexWeight(CExpressionHandle &exprhdl,

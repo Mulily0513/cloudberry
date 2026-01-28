@@ -189,3 +189,6 @@ test: stats
 test: orca_parallel
 # test of tag
 test: tag
+
+# test of window agg top k pushdown
+test: window_agg_topk

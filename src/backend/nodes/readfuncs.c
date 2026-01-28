@@ -2452,6 +2452,30 @@ _readIncrementalSort(void)
 	READ_DONE();
 }
 
+/*
+ * _readPartitionTopK
+ */
+static PartitionTopK *
+_readPartitionTopK(void)
+{
+	READ_LOCALS(PartitionTopK);
+
+	ReadCommonPlan(&local_node->plan);
+
+	READ_INT_FIELD(top_k);
+	READ_INT_FIELD(numPartitionCols);
+	READ_INT_FIELD(numSortCols);
+
+	/* Now local_node->numPartitionCols and local_node->numSortCols are valid */
+	READ_ATTRNUMBER_ARRAY(partitionColIdx, local_node->numPartitionCols);
+	READ_ATTRNUMBER_ARRAY(sortColIdx, local_node->numSortCols);
+	READ_OID_ARRAY(sortOperators, local_node->numSortCols);
+	READ_OID_ARRAY(collations, local_node->numSortCols);
+	READ_BOOL_ARRAY(nullsFirst, local_node->numSortCols);
+
+	READ_DONE();
+}
+
 #ifndef COMPILING_BINARY_FUNCS
 /*
  * _readGroup
@@ -3183,6 +3207,8 @@ parseNodeString(void)
 		return_value = _readSort();
 	else if (MATCH("INCREMENTALSORT", 15))
 		return_value = _readIncrementalSort();
+	else if (MATCH("PARTITIONTOPK", 13))
+		return_value = _readPartitionTopK();
 	else if (MATCH("GROUP", 5))
 		return_value = _readGroup();
 	else if (MATCH("AGG", 3))

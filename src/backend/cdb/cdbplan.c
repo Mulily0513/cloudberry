@@ -1024,6 +1024,59 @@ plan_tree_mutator(Node *node,
 				return (Node *) newtidrangescan;
 			}
 			break;
+		case T_PartitionTopK:
+			{
+				PartitionTopK *ptk = (PartitionTopK *)node;
+				PartitionTopK *newnode;
+
+				FLATCOPY(newnode, ptk, PartitionTopK);
+				PLANMUTATE(newnode, ptk); /* handles plan.targetlist, qual, lefttree, etc. */
+
+				/* top_k is a scalar — already copied by FLATCOPY */
+
+				/* Deep copy partitionColIdx array */
+				if (ptk->numPartitionCols > 0 && ptk->partitionColIdx != NULL)
+				{
+					newnode->partitionColIdx = (AttrNumber *)
+						palloc(ptk->numPartitionCols * sizeof(AttrNumber));
+					memcpy(newnode->partitionColIdx, ptk->partitionColIdx,
+						   ptk->numPartitionCols * sizeof(AttrNumber));
+				}
+				else
+				{
+					newnode->partitionColIdx = NULL;
+				}
+
+				/* Deep copy sort-related arrays */
+				if (ptk->numSortCols > 0)
+				{
+					Size attr_size = ptk->numSortCols * sizeof(AttrNumber);
+					Size oid_size = ptk->numSortCols * sizeof(Oid);
+					Size bool_size = ptk->numSortCols * sizeof(bool);
+
+					newnode->sortColIdx = (AttrNumber *)palloc(attr_size);
+					memcpy(newnode->sortColIdx, ptk->sortColIdx, attr_size);
+
+					newnode->sortOperators = (Oid *)palloc(oid_size);
+					memcpy(newnode->sortOperators, ptk->sortOperators, oid_size);
+
+					newnode->collations = (Oid *)palloc(oid_size);
+					memcpy(newnode->collations, ptk->collations, oid_size);
+
+					newnode->nullsFirst = (bool *)palloc(bool_size);
+					memcpy(newnode->nullsFirst, ptk->nullsFirst, bool_size);
+				}
+				else
+				{
+					newnode->sortColIdx = NULL;
+					newnode->sortOperators = NULL;
+					newnode->collations = NULL;
+					newnode->nullsFirst = NULL;
+				}
+
+				return (Node *)newnode;
+			}
+			break;
 
 			/*
 			 * The following cases are handled by expression_tree_mutator.	In

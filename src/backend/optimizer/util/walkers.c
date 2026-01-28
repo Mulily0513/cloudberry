@@ -370,6 +370,7 @@ plan_tree_walker(Node *node,
 
 		case T_Sort:
 		case T_IncrementalSort:
+		case T_PartitionTopK:
 			if (walk_plan_node_fields((Plan *) node, walker, context))
 				return true;
 			/* Other fields are simple counts and lists of indexes and oids. */

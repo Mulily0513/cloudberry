@@ -2704,6 +2704,55 @@ typedef struct IncrementalSortState
 	SharedIncrementalSortInfo *shared_info; /* one entry per worker */
 } IncrementalSortState;
 
+/* ----------------
+ *	 PartitionTopKState information
+ * ----------------
+ */
+typedef struct PartitionTopKState
+{
+	PlanState	ps;					/* its first field is Node */
+
+	/* Parameters from plan */
+	int			top_k;
+	int			numPartitionCols;
+	AttrNumber *partitionColIdx;
+	int			numSortCols;
+	AttrNumber *sortColIdx;
+	Oid		   *sortOperators;
+	Oid		   *collations;
+	SortSupport sortKeys;
+	bool	   *nullsFirst;
+
+	/* Cached partition column type info */
+	Oid		   *partitionColTypes;
+	int16	   *partitionColTypLens;
+	bool	   *partitionColTypByVals;
+
+	/* Type-aware hash/eq functions for partition keys (collation + TOAST safe) */
+	FmgrInfo   *partitionHashFuncs;
+	FmgrInfo   *partitionEqFuncs;
+	Oid		   *partitionCollations;
+
+	/* Hash table for partitions */
+	HTAB	   *partition_hash;
+
+	/* Memory context for all partition-related allocations */
+	MemoryContext partitionContext;
+
+	/* Execution state */
+	bool		input_consumed;
+	bool		all_partitions_finalized;
+
+	/* Final output as flat array (replaces List) */
+	TupleTableSlot **final_output_array;
+	TupleDesc tupdesc;
+	int			final_output_count;
+	int			output_index;
+
+	Datum 		*temp_key_values;
+	bool 		*temp_key_isnull;
+} PartitionTopKState;
+
 /* ---------------------
  *	GroupState information
  * ---------------------

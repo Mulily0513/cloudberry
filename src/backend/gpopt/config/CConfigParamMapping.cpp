@@ -82,12 +82,14 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 GPOS_WSZ_LIT("Prints optimization stats.")},
 
 	{EopttracePrintPreProcessResult, &optimizer_print_preprocess_result,
-		false,	 // m_negate_param
-		GPOS_WSZ_LIT("Prints the expression tree produced by the optimizer preprocess(every steps). Only worked with debug version of CBDB.")},
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Prints the expression tree produced by the optimizer preprocess(every steps). Only worked with debug version of CBDB.")},
 
 	{EopttraceDebugCTE, &optimizer_debug_cte,
 	 false,	 // m_negate_param
-	 GPOS_WSZ_LIT("Print debug info of CTE. Only worked with debug version of CBDB.")},
+	 GPOS_WSZ_LIT(
+		 "Print debug info of CTE. Only worked with debug version of CBDB.")},
 
 	{EopttraceMinidump,
 	 // GPDB_91_MERGE_FIXME: I turned optimizer_minidump from bool into
@@ -120,7 +122,8 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	{EopttraceDisableMotionHashDistributeWorkers,
 	 &optimizer_enable_motion_hash_distribute_workers,
 	 true,	// m_negate_param
-	 GPOS_WSZ_LIT("Disable motion hash-distribute-workers nodes in optimizer.")},
+	 GPOS_WSZ_LIT(
+		 "Disable motion hash-distribute-workers nodes in optimizer.")},
 
 	{EopttraceDisableMotionBroadcastWorkers,
 	 &optimizer_enable_motion_broadcast_workers,
@@ -283,11 +286,10 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 false,	 // m_negate_param
 	 GPOS_WSZ_LIT(
 		 "Always pick a plan for aggregate distinct that minimizes skew.")},
-	
+
 	{EopttraceForceSplitWindowFunc, &optimizer_force_split_window_function,
-		false,	 // m_negate_param
-		GPOS_WSZ_LIT(
-				"Always split the window function.")},
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT("Always split the window function.")},
 
 	{EopttraceEnableEagerAgg, &optimizer_enable_eageragg,
 	 false,	 // m_negate_param
@@ -296,9 +298,11 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 
 	{EopttraceEnableParallelAppendScan, &optimizer_enable_parallel_append,
 	 false,	 // m_negate_param
-	 GPOS_WSZ_LIT("Enable parallel append for scan/bitmap/index scan in partition tables.")},
+	 GPOS_WSZ_LIT(
+		 "Enable parallel append for scan/bitmap/index scan in partition tables.")},
 
-	{EopttraceEnableParallelPartSelector, &optimizer_enable_parallel_part_selector,
+	{EopttraceEnableParallelPartSelector,
+	 &optimizer_enable_parallel_part_selector,
 	 true,	// m_negate_param
 	 GPOS_WSZ_LIT("Enable parallel partition selector for parallel append.")},
 
@@ -356,9 +360,12 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 
 	{EopttraceEnableWindowHashAgg, &optimizer_force_window_hash_agg,
 	 false,	 // m_negate_param
-	 GPOS_WSZ_LIT(
-		 "Enable create window hash agg")},
-	
+	 GPOS_WSZ_LIT("Enable create window hash agg")},
+
+	{EopttraceForcePartitionTopK, &optimizer_force_partition_topk,
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT("Always use of PartitionTopK physical operator in ORCA.")},
+
 };
 
 //---------------------------------------------------------------------------

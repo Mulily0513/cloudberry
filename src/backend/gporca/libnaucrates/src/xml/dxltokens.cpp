@@ -168,6 +168,10 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalAssert, GPOS_WSZ_LIT("Assert")},
 		{EdxltokenPhysicalCTEProducer, GPOS_WSZ_LIT("CTEProducer")},
 		{EdxltokenPhysicalCTEConsumer, GPOS_WSZ_LIT("CTEConsumer")},
+		{EdxltokenPhysicalPartitionTopK, GPOS_WSZ_LIT("PartitionTopK")},
+		{EdxltokenPartCols, GPOS_WSZ_LIT("partCols")},
+		{EdxltokenSortCols, GPOS_WSZ_LIT("sortCols")},
+		{EdxltokenN, GPOS_WSZ_LIT("n")},
 
 		{EdxltokenErrorCode, GPOS_WSZ_LIT("ErrorCode")},
 		{EdxltokenErrorMessage, GPOS_WSZ_LIT("ErrorMessage")},
