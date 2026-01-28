@@ -47,7 +47,7 @@ public:
 	CPhysicalCTEProducer(const CPhysicalCTEProducer &) = delete;
 
 	// ctor
-	CPhysicalCTEProducer(CMemoryPool *mp, ULONG id, CColRefArray *colref_array, BOOL *umask);
+	CPhysicalCTEProducer(CMemoryPool *mp, ULONG id, CColRefArray *colref_array);
 
 	// dtor
 	~CPhysicalCTEProducer() override;

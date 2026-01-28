@@ -533,7 +533,7 @@ CDedupSupersetPreprocessor::PexprPreprocess(CMemoryPool *mp, CExpression *pexpr)
 						CLogicalCTEConsumer *pop =
 							CLogicalCTEConsumer::PopConvert(pdrgpexpr->Pop());
 
-						pcteinfo->DecrementConsumers(pop->UlCTEId());
+						pcteinfo->DecrementConsumers(pop);
 					}
 				}
 

@@ -221,8 +221,7 @@ CXformUnnestTVF::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 	CLogicalCTEConsumer *popConsumer =
 		GPOS_NEW(mp) CLogicalCTEConsumer(mp, ulCTEId, pdrgpcrConsumerOutput);
 	CExpression *pexprCTECons = GPOS_NEW(mp) CExpression(mp, popConsumer);
-	pcteinfo->IncrementConsumers(ulCTEId);
-	pcteinfo->AddCTEConsumer(pexprCTECons);
+	pcteinfo->IncrementConsumers(popConsumer);
 	pdrgpcrProducerOutput->Release();
 
 	// find columns corresponding to subqueries in consumer's output

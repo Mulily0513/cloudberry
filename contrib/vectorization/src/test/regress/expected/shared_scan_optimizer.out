@@ -97,12 +97,11 @@ WITH cte AS (SELECT * FROM t1 WHERE random() < 0.1 LIMIT 10) SELECT a, 1, 1 FROM
                      Hash Cond: (share0_ref2.a = t2.a)
                      ->  Redistribute Motion 1:3  (slice3)
                            Hash Key: share0_ref2.a
-                           ->  Result
-                                 ->  Shared Scan (share slice:id 3:0)
+                           ->  Shared Scan (share slice:id 3:0)
                      ->  Hash
                            ->  Seq Scan on t2
  Optimizer: GPORCA
-(17 rows)
+(16 rows)
 
 -- This functions returns one more column than expected.
 CREATE OR REPLACE FUNCTION col_mismatch_func1() RETURNS TABLE (field1 int, field2 int)
@@ -128,21 +127,21 @@ WITH cte AS (SELECT * FROM t1 WHERE random() < 0.1 ORDER BY b LIMIT 10) SELECT a
 ------------------------------------------------------------------------------
  Sequence
    ->  Shared Scan (share slice:id 0:0)
-         ->  Limit
-               ->  Gather Motion 3:1  (slice1; segments: 3)
-                     Merge Key: t1.b
-                     ->  Sort
-                           Sort Key: t1.b
-                           ->  Seq Scan on t1
-                                 Filter: (random() < '0.1'::double precision)
+         ->  Result
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice1; segments: 3)
+                           Merge Key: t1.b
+                           ->  Sort
+                                 Sort Key: t1.b
+                                 ->  Seq Scan on t1
+                                       Filter: (random() < '0.1'::double precision)
    ->  Result
          ->  Gather Motion 3:1  (slice2; segments: 3)
                ->  Hash Join
                      Hash Cond: (share0_ref2.a = t2.a)
                      ->  Redistribute Motion 1:3  (slice3)
                            Hash Key: share0_ref2.a
-                           ->  Result
-                                 ->  Shared Scan (share slice:id 3:0)
+                           ->  Shared Scan (share slice:id 3:0)
                      ->  Hash
                            ->  Seq Scan on t2
  Optimizer: GPORCA

@@ -84,8 +84,20 @@ CXformInlineCTEConsumer::Transform(CXformContext *
 	// inline the consumer
 	CLogicalCTEConsumer *popConsumer =
 		CLogicalCTEConsumer::PopConvert(pexpr->Pop());
-	(void) popConsumer->ApplyInline();
+	CColRefArray *crs = popConsumer->Pdrgporigcr();
+
+	if (nullptr != crs)
+	{
+		// For the column pruned CTEConsumer, we need to reset all original
+		// output column as used back.
+		for (ULONG ul = 0; ul < crs->Size(); ul++)
+		{
+			(*crs)[ul]->MarkAsUsed();
+		}
+	}
+
 	CExpression *pexprAlt = popConsumer->PexprInlined();
+
 	pexprAlt->AddRef();
 	// add alternative to xform result
 	pxfres->Add(pexprAlt);

@@ -112,8 +112,7 @@ CXformGbAggWithMDQA2Join::PexprMDQAs2Join(CMemoryPool *mp, CExpression *pexpr)
 	// create a CTE consumer with child output columns
 	CExpression *pexprConsumer = GPOS_NEW(mp) CExpression(
 		mp, GPOS_NEW(mp) CLogicalCTEConsumer(mp, ulCTEId, pdrgpcrChildOutput));
-	pcteinfo->IncrementConsumers(ulCTEId);
-	pcteinfo->AddCTEConsumer(pexprConsumer);
+	pcteinfo->IncrementConsumers(pexprConsumer->Pop());
 
 	// finalize GbAgg expression by replacing its child with CTE consumer
 	pexpr->Pop()->AddRef();

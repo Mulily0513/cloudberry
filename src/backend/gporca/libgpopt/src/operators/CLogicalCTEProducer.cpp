@@ -27,8 +27,7 @@ using namespace gpopt;
 //
 //---------------------------------------------------------------------------
 CLogicalCTEProducer::CLogicalCTEProducer(CMemoryPool *mp)
-	: CLogical(mp), m_id(0), m_pdrgpcr(nullptr), m_pcrsOutput(nullptr), 
-	  m_cbp(false), m_umask(nullptr)
+	: CLogical(mp), m_id(0), m_pdrgpcr(nullptr), m_pcrsOutput(nullptr)
 {
 	m_fPattern = true;
 }
@@ -42,10 +41,9 @@ CLogicalCTEProducer::CLogicalCTEProducer(CMemoryPool *mp)
 //
 //---------------------------------------------------------------------------
 CLogicalCTEProducer::CLogicalCTEProducer(CMemoryPool *mp, ULONG id,
-										 CColRefArray *colref_array,
-										 BOOL canbepruned)
+										 CColRefArray *colref_array)
 	: CLogical(mp), m_id(id), m_pdrgpcr(colref_array), 
-	  m_pcrsOutput(nullptr), m_cbp(canbepruned), m_umask(nullptr)
+	  m_pcrsOutput(nullptr)
 {
 	GPOS_ASSERT(nullptr != colref_array);
 
@@ -55,20 +53,25 @@ CLogicalCTEProducer::CLogicalCTEProducer(CMemoryPool *mp, ULONG id,
 	m_pcrsLocalUsed->Include(m_pdrgpcr);
 }
 
-void 
-CLogicalCTEProducer::RecalOutputColumns(BOOL *umask, ULONG sz) {
+void
+CLogicalCTEProducer::RecalOutputColumns(BoolPtrArray *column_prune_marker)
+{
 	CRefCount::SafeRelease(m_pcrsOutput);
-
-	GPOS_ASSERT(m_pdrgpcr->Size() == sz);
-
+	GPOS_ASSERT(m_pdrgpcr->Size() == column_prune_marker->Size());
 	m_pcrsOutput = GPOS_NEW(m_mp) CColRefSet(m_mp);
-	for (ULONG ul = 0; ul < sz; ul++) {
-		if (umask[ul]) {
-			m_pcrsOutput->Include((*m_pdrgpcr)[ul]);
+	CColRefArray *new_pdrgpcr = GPOS_NEW(m_mp) CColRefArray(m_mp);
+
+	for (ULONG ul = 0; ul < column_prune_marker->Size(); ul++)
+	{
+		if (*((*column_prune_marker)[ul]))
+		{
+			(*m_pdrgpcr)[ul]->MarkAsUsed();
+			new_pdrgpcr->Append((*m_pdrgpcr)[ul]);
 		}
 	}
 
-	m_umask = umask;
+	m_pdrgpcr = new_pdrgpcr;
+	m_pcrsOutput->Include(m_pdrgpcr);
 }
 
 //---------------------------------------------------------------------------
@@ -83,9 +86,6 @@ CLogicalCTEProducer::~CLogicalCTEProducer()
 {
 	CRefCount::SafeRelease(m_pdrgpcr);
 	CRefCount::SafeRelease(m_pcrsOutput);
-	if (m_umask) {
-		GPOS_DELETE_ARRAY(m_umask);
-	}
 }
 
 //---------------------------------------------------------------------------
@@ -185,8 +185,7 @@ CLogicalCTEProducer::Matches(COperator *pop) const
 	CLogicalCTEProducer *popCTEProducer = CLogicalCTEProducer::PopConvert(pop);
 
 	return m_id == popCTEProducer->UlCTEId() &&
-		   m_pdrgpcr->Equals(popCTEProducer->Pdrgpcr()) && 
-		   m_cbp == popCTEProducer->CanBePruned();
+		   m_pdrgpcr->Equals(popCTEProducer->Pdrgpcr());
 }
 
 //---------------------------------------------------------------------------
@@ -202,7 +201,6 @@ CLogicalCTEProducer::HashValue() const
 {
 	ULONG ulHash = gpos::CombineHashes(COperator::HashValue(), m_id);
 	ulHash = gpos::CombineHashes(ulHash, CUtils::UlHashColArray(m_pdrgpcr));
-	ulHash = gpos::CombineHashes(ulHash, (ULONG)m_cbp);
 
 	return ulHash;
 }

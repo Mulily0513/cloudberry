@@ -16,6 +16,8 @@
 #include "gpopt/operators/CLogicalCTEProducer.h"
 #include "gpopt/operators/CPatternLeaf.h"
 #include "gpopt/operators/CPhysicalCTEProducer.h"
+#include "gpopt/operators/CLogicalCTEConsumer.h"
+#include "gpopt/base/CColRefSetIter.h"
 
 using namespace gpopt;
 
@@ -86,7 +88,7 @@ CXformImplementCTEProducer::Transform(CXformContext *pxfctxt,
 
 	// create physical CTE Producer
 	CExpression *pexprAlt = GPOS_NEW(mp)
-		CExpression(mp, GPOS_NEW(mp) CPhysicalCTEProducer(mp, id, colref_array, popCTEProducer->UsedMask()),
+		CExpression(mp, GPOS_NEW(mp) CPhysicalCTEProducer(mp, id, colref_array),
 					pexprChild);
 
 	// add alternative to transformation result

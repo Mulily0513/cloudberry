@@ -84,6 +84,9 @@ using StringPtr2dArray = CDynamicPtrArray<StringPtrArray, CleanupRelease>;
 // arrays of chars
 using CharPtrArray = CDynamicPtrArray<CHAR, CleanupDelete>;
 
+// arrays of bools
+using BoolPtrArray = CDynamicPtrArray<BOOL, CleanupDelete>;
+
 //---------------------------------------------------------------------------
 //	@class:
 //		CDynamicPtrArray

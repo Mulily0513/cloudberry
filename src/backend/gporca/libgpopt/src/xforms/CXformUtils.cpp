@@ -3758,8 +3758,8 @@ CXformUtils::PexprCTEConsumer(CMemoryPool *mp, ULONG ulCTEId,
 		GPOS_NEW(mp) CLogicalCTEConsumer(mp, ulCTEId, colref_array);
 
 	pexpr = GPOS_NEW(mp) CExpression(mp, popConsumer);
-	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(ulCTEId);
-	COptCtxt::PoctxtFromTLS()->Pcteinfo()->AddCTEConsumer(pexpr);
+	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(popConsumer);
+
 	return pexpr;
 }
 
@@ -4153,8 +4153,7 @@ CXformUtils::PexprGbAggOnCTEConsumer2Join(CMemoryPool *mp,
 			CExpression *pexprNewConsumer = GPOS_NEW(mp)
 				CExpression(mp, GPOS_NEW(mp) CLogicalCTEConsumer(
 									mp, ulCTEId, pdrgpcrNewConsumerOutput));
-			pcteinfo->IncrementConsumers(ulCTEId);
-			pcteinfo->AddCTEConsumer(pexprNewConsumer);
+			pcteinfo->IncrementConsumers(pexprNewConsumer->Pop());
 
 			// fix Aggs arguments to use new consumer output column
 			UlongToColRefMap *colref_mapping = CUtils::PhmulcrMapping(

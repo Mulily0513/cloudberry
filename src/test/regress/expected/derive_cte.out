@@ -195,36 +195,26 @@ from
 (select count(*)
  from s1,s2
  where s1.d = s2.d) q2(x);
-                                                            QUERY PLAN                                                            
-----------------------------------------------------------------------------------------------------------------------------------
- Nested Loop  (cost=10000186240.36..10000186240.41 rows=3 width=16)
-   ->  Finalize Aggregate  (cost=93120.18..93120.19 rows=1 width=8)
-         ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=93120.12..93120.17 rows=3 width=8)
-               ->  Partial Aggregate  (cost=93120.12..93120.13 rows=1 width=8)
-                     ->  Hash Join  (cost=1041.25..88907.45 rows=1685070 width=0)
-                           Hash Cond: (s1.d = s2.d)
-                           ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..745.00 rows=23700 width=4)
-                                 Hash Key: s1.d
-                                 ->  Seq Scan on s1  (cost=0.00..271.00 rows=23700 width=4)
-                           ->  Hash  (cost=745.00..745.00 rows=23700 width=4)
-                                 ->  Redistribute Motion 3:3  (slice3; segments: 3)  (cost=0.00..745.00 rows=23700 width=4)
-                                       Hash Key: s2.d
-                                       ->  Seq Scan on s2  (cost=0.00..271.00 rows=23700 width=4)
-   ->  Materialize  (cost=93120.18..93120.21 rows=1 width=8)
-         ->  Finalize Aggregate  (cost=93120.18..93120.19 rows=1 width=8)
-               ->  Gather Motion 3:1  (slice4; segments: 3)  (cost=93120.12..93120.17 rows=3 width=8)
-                     ->  Partial Aggregate  (cost=93120.12..93120.13 rows=1 width=8)
-                           ->  Hash Join  (cost=1041.25..88907.45 rows=1685070 width=0)
-                                 Hash Cond: (s1_1.d = s2_1.d)
-                                 ->  Redistribute Motion 3:3  (slice5; segments: 3)  (cost=0.00..745.00 rows=23700 width=4)
-                                       Hash Key: s1_1.d
-                                       ->  Seq Scan on s1 s1_1  (cost=0.00..271.00 rows=23700 width=4)
-                                 ->  Hash  (cost=745.00..745.00 rows=23700 width=4)
-                                       ->  Redistribute Motion 3:3  (slice6; segments: 3)  (cost=0.00..745.00 rows=23700 width=4)
-                                             Hash Key: s2_1.d
-                                             ->  Seq Scan on s2 s2_1  (cost=0.00..271.00 rows=23700 width=4)
- Optimizer: Postgres query optimizer
-(27 rows)
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Sequence  (cost=0.00..1324894.10 rows=1 width=16)
+   ->  Shared Scan (share slice:id 0:0)  (cost=0.00..862.00 rows=1 width=1)
+         ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..862.00 rows=1 width=1)
+               ->  Hash Join  (cost=0.00..862.00 rows=1 width=1)
+                     Hash Cond: (s1.d = s2.d)
+                     ->  Seq Scan on s1  (cost=0.00..431.00 rows=1 width=4)
+                     ->  Hash  (cost=431.00..431.00 rows=1 width=4)
+                           ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=0.00..431.00 rows=1 width=4)
+                                 ->  Seq Scan on s2  (cost=0.00..431.00 rows=1 width=4)
+   ->  Nested Loop  (cost=0.00..1324032.10 rows=1 width=16)
+         Join Filter: true
+         ->  Aggregate  (cost=0.00..431.00 rows=1 width=8)
+               ->  Shared Scan (share slice:id 0:0)  (cost=0.00..431.00 rows=1 width=1)
+         ->  Materialize  (cost=0.00..431.00 rows=1 width=8)
+               ->  Aggregate  (cost=0.00..431.00 rows=1 width=8)
+                     ->  Shared Scan (share slice:id 0:0)  (cost=0.00..431.00 rows=1 width=1)
+ Optimizer: GPORCA
+(17 rows)
 
 -- failed, ref CTranslatorScalarToDXL::TranslateAggrefToDXL aggfilter does not support
 explain select *

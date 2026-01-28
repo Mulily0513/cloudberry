@@ -347,9 +347,6 @@ private:
 	CExpression *Pexpr(const CDXLNode *dxlnode,
 					   const CDXLNodeArray *query_output_dxlnode_array,
 					   const CDXLNodeArray *cte_producers);
-	
-	// Prune the CTEs producer and consumer after DXL tree translated
-	void PruneCTEs();
 
 	// translate children of a DXL node
 	CExpressionArray *PdrgpexprChildren(const CDXLNode *dxlnode);
@@ -363,11 +360,8 @@ private:
 	// register MD provider for serving MD relation entry for CTAS
 	void RegisterMDRelationCtas(CDXLLogicalCTAS *pdxlopCTAS);
 
-	// create an array of column references from an array of dxl column references
-	CColRefArray *Pdrgpcr(const CDXLColDescrArray *dxl_col_descr_array);
-
 	// construct a dynamic array of column references corresponding to the
-	// given col ids
+	// given dxl col ids
 	CColRefArray *Pdrgpcr(const ULongPtrArray *colids);
 
 	// construct the mapping between the DXL ColId and CColRef
@@ -379,12 +373,7 @@ private:
 
 	// look up the column reference in the hash map. We raise an exception if
 	// the column is not found
-	CColRef *LookupColRef(ULONG colid, BOOL mark_used = true);
-	
-	// after the colref in CTE consumer marked used, the producer should marked 
-	// the relatived colref as used.
-	void MarkCTEConsumerColAsUsed(UlongToColRefMap *mcidcrCTE, ULONG colid);
-
+	CColRef *LookupColRef(ULONG colid);
 public:
 	// ctor
 	CTranslatorDXLToExpr(CMemoryPool *mp, CMDAccessor *md_accessor,

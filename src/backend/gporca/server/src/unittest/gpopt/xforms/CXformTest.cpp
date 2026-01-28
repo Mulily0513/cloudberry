@@ -171,8 +171,7 @@ CXformTest::EresUnittest_ApplyXforms_CTE()
 		mp, GPOS_NEW(mp) CLogicalCTEConsumer(mp, ulCTEId, pdrgpcrConsumer));
 
 	pdrgpexpr->Append(pexprConsumer);
-	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(ulCTEId);
-	COptCtxt::PoctxtFromTLS()->Pcteinfo()->AddCTEConsumer(pexprConsumer);
+	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(pexprConsumer->Pop());
 
 	pexprConsumer->AddRef();
 	CExpression *pexprSelect =

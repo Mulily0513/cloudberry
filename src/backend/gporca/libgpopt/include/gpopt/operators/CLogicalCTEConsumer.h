@@ -32,6 +32,9 @@ private:
 	// cte identifier
 	ULONG m_id;
 
+	// orig mapped cte columns
+	CColRefArray *m_pdrgorigpcr;
+
 	// mapped cte columns
 	CColRefArray *m_pdrgpcr;
 
@@ -47,13 +50,6 @@ private:
 	// create the inlined version of this consumer as well as the column mapping
 	void CreateInlinedExpr(CMemoryPool *mp);
 
-	// is pruned
-	BOOL m_pruned;
-
-	void MarkAsNotPruned() {
-		m_pruned = false;
-	}
-
 public:
 	CLogicalCTEConsumer(const CLogicalCTEConsumer &) = delete;
 
@@ -66,11 +62,7 @@ public:
 	// dtor
 	~CLogicalCTEConsumer() override;
 
-	void MarkAsPruned() {
-		m_pruned = true;
-	}
-
-	void ApplyInline();
+	void RecalOutputColumns(BoolPtrArray *column_prune_marker);
 
 	// ident accessors
 	EOperatorId
@@ -97,6 +89,12 @@ public:
 	Pdrgpcr() const
 	{
 		return m_pdrgpcr;
+	}
+
+	CColRefArray *
+	Pdrgporigcr() const
+	{
+		return m_pdrgorigpcr;
 	}
 
 	// column mapping
