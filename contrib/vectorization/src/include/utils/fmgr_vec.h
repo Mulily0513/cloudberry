@@ -144,6 +144,7 @@ extern GArrowExpression *utf8_slice_codeunits_expression(List *args, PlanBuildCo
 extern GArrowExpression *build_round_without_precision(List *args, PlanBuildContext *pcontext, const char* name);
 extern GArrowExpression *build_round_with_precision(List *args, PlanBuildContext *pcontext, const char* name);
 extern GArrowExpression *build_text_join(List *args, PlanBuildContext *pcontext, const char *name);
+extern GArrowExpression *build_floor_temporal_expr(List *args, PlanBuildContext *pcontext, const char* funcname);
 extern GArrowExpression *build_like_expression(List *args, PlanBuildContext *pcontext, const char *name);
 extern GArrowExpression *build_not_like_expression(List *args, PlanBuildContext *pcontext, const char *name);
 extern GArrowExpression *build_divide_expr(List *args, PlanBuildContext *pcontext, const char* funcname);

@@ -212,7 +212,7 @@
 { procoid => '1781', descr => '"convert int8 to numeric"', funcName => '""', buildfun => 'build_cast_numeric_expression', checksupportfun => 'alway_support'},
 { procoid => '1782', descr => '"convert int2 to numeric"', funcName => '""', buildfun => 'build_cast_numeric_expression', checksupportfun => 'alway_support'},
 { procoid => '1218', descr => '"truncate interval to specified units"', funcName => '"strptime"', buildfun => 'func_args_to_expression', checksupportfun => 'alway_support'},
-{ procoid => '2020', descr => '"truncate timestamp to specified units"', funcName => '"strptime"', buildfun => 'func_args_to_expression', checksupportfun => 'alway_support'},
+{ procoid => '2020', descr => '"truncate timestamp to specified units"', funcName => '"floor_temporal"', buildfun => 'build_floor_temporal_expr', checksupportfun => 'check_floor_temporal'},
 { procoid => '2284', descr => '"replace text using regexp"', funcName => '""', buildfun => 'replace_substring_regex_expression', checksupportfun => 'alway_support'},
 { procoid => '2087', descr => '"replace all occurrences in string of old_substr with new_substr"', funcName => '""', buildfun => 'replace_expression', checksupportfun => 'alway_support'},
 { procoid => '6204', descr => '"extract field from interval"', funcName => '""', buildfun => 'extract_expression', checksupportfun => 'alway_support'},

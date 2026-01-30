@@ -31,6 +31,9 @@ test: strings numerology point lseg line box path polygon circle date time timet
 # ----------
 test: geometry horology tstypes regex type_sanity opr_sanity misc_sanity comments expressions unicode xid mvcc
 
+# date_trunc vectorization coverage for pax tables
+test: date_trunc
+
 # ----------
 # These four each depend on the previous one
 # ----------

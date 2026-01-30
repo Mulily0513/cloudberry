@@ -351,6 +351,84 @@ build_round_without_precision(List *args, PlanBuildContext *pcontext, const char
 }
 
 GArrowExpression *
+build_floor_temporal_expr(List *args, PlanBuildContext *pcontext, const char* funcname)
+{
+	GList *arguments = NULL;
+	g_autoptr(GArrowExpression) floor_temporal_expr = NULL;
+	g_autoptr(GArrowRoundTemporalOptions) options = NULL;
+	g_autoptr(GError) error = NULL;
+	GArrowCalendarUnit unit = GARROW_CALENDAR_UNIT_SECOND;
+	gint64 multiple = 1;
+
+	/*
+	 * The planner (check_floor_temporal) has already verified that args
+	 * has exactly 2 elements, the first being a non-null text Const with
+	 * a supported unit string.
+	 */
+	Const *const_expr = (Const *) linitial(args);
+	text *unit_text = DatumGetTextP(const_expr->constvalue);
+	char *unit_str = text_to_cstring(unit_text);
+
+	/* Parse unit string to GArrowCalendarUnit */
+	if (pg_strcasecmp(unit_str, "nanosecond") == 0 || pg_strcasecmp(unit_str, "nanoseconds") == 0)
+		unit = GARROW_CALENDAR_UNIT_NANOSECOND;
+	else if (pg_strcasecmp(unit_str, "microsecond") == 0 || pg_strcasecmp(unit_str, "microseconds") == 0)
+		unit = GARROW_CALENDAR_UNIT_MICROSECOND;
+	else if (pg_strcasecmp(unit_str, "millisecond") == 0 || pg_strcasecmp(unit_str, "milliseconds") == 0)
+		unit = GARROW_CALENDAR_UNIT_MILLISECOND;
+	else if (pg_strcasecmp(unit_str, "second") == 0 || pg_strcasecmp(unit_str, "seconds") == 0)
+		unit = GARROW_CALENDAR_UNIT_SECOND;
+	else if (pg_strcasecmp(unit_str, "minute") == 0 || pg_strcasecmp(unit_str, "minutes") == 0)
+		unit = GARROW_CALENDAR_UNIT_MINUTE;
+	else if (pg_strcasecmp(unit_str, "hour") == 0 || pg_strcasecmp(unit_str, "hours") == 0)
+		unit = GARROW_CALENDAR_UNIT_HOUR;
+	else if (pg_strcasecmp(unit_str, "day") == 0 || pg_strcasecmp(unit_str, "days") == 0)
+		unit = GARROW_CALENDAR_UNIT_DAY;
+	else if (pg_strcasecmp(unit_str, "month") == 0 || pg_strcasecmp(unit_str, "months") == 0)
+		unit = GARROW_CALENDAR_UNIT_MONTH;
+	else if (pg_strcasecmp(unit_str, "quarter") == 0 || pg_strcasecmp(unit_str, "quarters") == 0)
+		unit = GARROW_CALENDAR_UNIT_QUARTER;
+	else if (pg_strcasecmp(unit_str, "year") == 0 || pg_strcasecmp(unit_str, "years") == 0)
+		unit = GARROW_CALENDAR_UNIT_YEAR;
+	else
+		/* Should not be reached: check_floor_temporal already validated the unit */
+		elog(ERROR, "Unsupported calendar unit: %s", unit_str);
+	pfree(unit_str);
+
+	/* Second argument is the timestamp data */
+	g_autoptr(GArrowExpression) cur_expr =
+		expr_to_arrow_expression((Expr *) lsecond(args), pcontext);
+	if (!cur_expr)
+	{
+		elog(ERROR, "Failed to convert timestamp expression to Arrow");
+		return NULL;
+	}
+	arguments = garrow_list_append_ptr(arguments, cur_expr);
+
+	/* Create RoundTemporalOptions with parsed unit and multiple */
+	options = garrow_round_temporal_options_new();
+	if (!garrow_round_temporal_options_set(options, multiple, unit, &error))
+	{
+		garrow_list_free_ptr(&arguments);
+		elog(ERROR, "Failed to set RoundTemporalOptions: %s",
+			 error ? error->message : "unknown");
+	}
+
+	/* Create the floor_temporal call expression with options */
+	floor_temporal_expr = GARROW_EXPRESSION(garrow_call_expression_new(
+		"floor_temporal", arguments, GARROW_FUNCTION_OPTIONS(options)));
+
+	if (!floor_temporal_expr)
+	{
+		garrow_list_free_ptr(&arguments);
+		elog(ERROR, "Failed to create floor_temporal expression");
+	}
+
+	garrow_list_free_ptr(&arguments);
+	return garrow_move_ptr(floor_temporal_expr);
+}
+
+GArrowExpression *
 build_text_join(List *args, PlanBuildContext *pcontext, const char *name)
 {
 	ListCell *l = NULL;

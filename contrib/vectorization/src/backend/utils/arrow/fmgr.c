@@ -50,6 +50,60 @@ check_like_function(List* args) {
 }
 
 static bool
+check_floor_temporal(List* args) {
+	Expr *first_expr;
+	Const *const_expr;
+	char *unit_str;
+
+	if (list_length(args) != 2)
+		return false;
+
+	first_expr = (Expr *) linitial(args);
+	if (!IsA(first_expr, Const))
+		return false;
+	const_expr = (Const *) first_expr;
+	if (const_expr->constisnull || const_expr->consttype != TEXTOID)
+		return false;
+
+	unit_str = text_to_cstring(DatumGetTextP(const_expr->constvalue));
+	/*
+	 * "week"/"weeks" are intentionally excluded.  Arrow's floor_temporal with
+	 * CalendarUnit::WEEK epoch-aligns against the Unix epoch (Thursday) while
+	 * PG stores timestamps relative to 2000-01-01 (Saturday).  The 10957-day
+	 * offset between the two epochs is not an integer number of weeks
+	 * (10957 mod 7 = 2), so the kernel's output lands on Saturday in PG's
+	 * frame, diverging from PG's Monday-based date_trunc('week', ...).  Let
+	 * that case fall back to the row engine.
+	 */
+	if (pg_strcasecmp(unit_str, "nanosecond") != 0 &&
+		pg_strcasecmp(unit_str, "nanoseconds") != 0 &&
+		pg_strcasecmp(unit_str, "microsecond") != 0 &&
+		pg_strcasecmp(unit_str, "microseconds") != 0 &&
+		pg_strcasecmp(unit_str, "millisecond") != 0 &&
+		pg_strcasecmp(unit_str, "milliseconds") != 0 &&
+		pg_strcasecmp(unit_str, "second") != 0 &&
+		pg_strcasecmp(unit_str, "seconds") != 0 &&
+		pg_strcasecmp(unit_str, "minute") != 0 &&
+		pg_strcasecmp(unit_str, "minutes") != 0 &&
+		pg_strcasecmp(unit_str, "hour") != 0 &&
+		pg_strcasecmp(unit_str, "hours") != 0 &&
+		pg_strcasecmp(unit_str, "day") != 0 &&
+		pg_strcasecmp(unit_str, "days") != 0 &&
+		pg_strcasecmp(unit_str, "month") != 0 &&
+		pg_strcasecmp(unit_str, "months") != 0 &&
+		pg_strcasecmp(unit_str, "quarter") != 0 &&
+		pg_strcasecmp(unit_str, "quarters") != 0 &&
+		pg_strcasecmp(unit_str, "year") != 0 &&
+		pg_strcasecmp(unit_str, "years") != 0)
+	{
+		pfree(unit_str);
+		return false;
+	}
+	pfree(unit_str);
+	return true;
+}
+
+static bool
 check_numeric_round(List* args) {
 	Expr *scale = (Expr *) lsecond(args);
 	Const* const_expr = NULL;
