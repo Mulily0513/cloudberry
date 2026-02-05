@@ -217,6 +217,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformDifferenceAll2LeftAntiSemiJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformUnion2UnionAll(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementUnionAll(m_mp));
+	Add(GPOS_NEW(m_mp) CXformImplementIntraSegmentParallelUnionAll(m_mp));
 	Add(GPOS_NEW(m_mp) CXformInsert2DML(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDelete2DML(m_mp));
 	Add(GPOS_NEW(m_mp) CXformUpdate2DML(m_mp));

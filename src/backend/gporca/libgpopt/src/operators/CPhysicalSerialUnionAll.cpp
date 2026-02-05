@@ -25,7 +25,9 @@
 #include "gpopt/base/CDistributionSpecRandom.h"
 #include "gpopt/base/CDistributionSpecReplicated.h"
 #include "gpopt/base/CDistributionSpecSingleton.h"
+#include "gpopt/base/CCostContext.h"
 #include "gpopt/base/CDrvdPropCtxtPlan.h"
+#include "gpopt/base/COptimizationContext.h"
 #include "gpopt/exception.h"
 #include "gpopt/operators/CExpressionHandle.h"
 #include "gpopt/operators/CScalarIdent.h"
@@ -163,6 +165,81 @@ CPhysicalSerialUnionAll::PdsRequired(
 
 	return GPOS_NEW(mp)
 		CDistributionSpecNonSingleton(false /*fAllowReplicated*/);
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CPhysicalSerialUnionAll::FValidContext
+//
+//	@doc:
+//		Check if optimization context is valid.
+//		SerialUnionAll (which generates plain Append) cannot handle mixed cases:
+//		- Some children have parallel distributions (partial plans)
+//		- Other children have dup-sensitive sources (non-partial plans with one-time filter)
+//		Because plain Append doesn't coordinate partial vs non-partial subplans,
+//		non-partial subplans would be executed by every worker, causing duplicates.
+//
+//---------------------------------------------------------------------------
+BOOL
+CPhysicalSerialUnionAll::FValidContext(
+	CMemoryPool *, // mp
+	COptimizationContext *, // poc
+	COptimizationContextArray *pdrgpocChild GPOS_UNUSED) const
+{
+	bool hasPartial = false;
+	bool hasNonPartial = false;
+	const ULONG ulChildren = pdrgpocChild->Size();
+	for (ULONG ul = 0; ul < ulChildren; ul++)
+	{
+		COptimizationContext *pocChild = (*pdrgpocChild)[ul];
+		CCostContext *pccBest = pocChild->PccBest();
+		GPOS_ASSERT(nullptr != pccBest);
+		if (nullptr == pccBest)
+		{
+			continue;
+		}
+		CDrvdPropPlan *pdpplanChild = pccBest->Pdpplan();
+		CDistributionSpec *pds = pdpplanChild->Pds();
+
+		// Partial plans have worker-level distributions
+		if (CDistributionSpec::EdtWorkerRandom == pds->Edt() ||
+			CDistributionSpec::EdtHashedWorker == pds->Edt() ||
+			CDistributionSpec::EdtReplicatedWorkers == pds->Edt())
+		{
+			hasPartial = true;
+		}
+		else if (CDistributionSpec::EdtSingleton == pds->Edt() ||
+				 CDistributionSpec::EdtStrictSingleton == pds->Edt() ||
+				 CDistributionSpec::EdtStrictReplicated == pds->Edt() ||
+				 CDistributionSpec::EdtTaintedReplicated == pds->Edt() ||
+				 CDistributionSpec::EdtReplicated == pds->Edt() ||
+				 CDistributionSpec::EdtUniversal == pds->Edt() ||
+				 CDistributionSpec::EdtRandom == pds->Edt())
+		{
+			hasNonPartial = true;
+		}
+		else if (CDistributionSpec::EdtHashed == pds->Edt() ||
+				CDistributionSpec::EdtStrictRandom == pds->Edt() ||
+				CDistributionSpec::EdtStrictHashed == pds->Edt())
+		{
+			ULONG ulWorkers = CUtils::UlExtractWorkersFromGroup(pocChild->Pgroup(), false);
+			if (ulWorkers == 0)
+			{
+				hasNonPartial = true;
+			}
+		}
+	}
+
+	if (hasPartial && hasNonPartial)
+	{
+		// Serial Union All cannot mix partial and non-partial plans
+		// Partial plans expect data to be split across workers
+		// Non-partial plans expect to be executed once but would be
+		// executed by every worker in parallel context, causing duplicates
+		return false;
+	}
+	return true;
 }
 
 // EOF

@@ -107,10 +107,15 @@ CXformUtils::ExfpLogicalJoin2PhysicalJoin(CExpressionHandle &exprhdl)
 //
 //	@doc:
 //		Check if memo contains operations incompatible with parallel execution
+//		rgeopidReject: optional array of additional operator IDs to reject
+//		ulRejectCount: number of elements in rgeopidReject
 //
 //---------------------------------------------------------------------------
 BOOL
-CXformUtils::FHasParallelIncompatibleOps(CMemo *pmemo)
+CXformUtils::FHasParallelIncompatibleOps(
+	CMemo *pmemo,
+	const COperator::EOperatorId *rgeopidReject,
+	ULONG ulRejectCount)
 {
 	if (nullptr == pmemo)
 	{
@@ -142,13 +147,6 @@ CXformUtils::FHasParallelIncompatibleOps(CMemo *pmemo)
 				return true;
 			}
 
-			// Check for set operations (incompatible with parallel execution)
-			if (COperator::EopLogicalUnion == eopid ||
-				COperator::EopLogicalUnionAll == eopid)
-			{
-				return true;
-			}
-
 			// Check for Local Limit (subquery LIMIT without ORDER BY)
 			// Local limit applies at segment level, incompatible with worker-level
 			// parallel distribution (WorkerRandom)
@@ -159,6 +157,15 @@ CXformUtils::FHasParallelIncompatibleOps(CMemo *pmemo)
 				// If query_level > 0, this is a subquery limit, which may be local limit
 				// and is incompatible with parallel execution
 				if (popLimit->GetQueryLevel() > 0)
+				{
+					return true;
+				}
+			}
+
+			// Check for user-specified rejected operators
+			for (ULONG ulIdx = 0; ulIdx < ulRejectCount; ulIdx++)
+			{
+				if (rgeopidReject[ulIdx] == eopid)
 				{
 					return true;
 				}
@@ -178,10 +185,15 @@ CXformUtils::FHasParallelIncompatibleOps(CMemo *pmemo)
 //	@doc:
 //		Check if memo (extracted from expression handle) contains
 //		operations incompatible with parallel execution
+//		rgeopidReject: optional array of additional operator IDs to reject
+//		ulRejectCount: number of elements in rgeopidReject
 //
 //---------------------------------------------------------------------------
 BOOL
-CXformUtils::FHasParallelIncompatibleOps(CExpressionHandle &exprhdl)
+CXformUtils::FHasParallelIncompatibleOps(
+	CExpressionHandle &exprhdl,
+	const COperator::EOperatorId *rgeopidReject,
+	ULONG ulRejectCount)
 {
 	CGroupExpression *pgexprHandle = exprhdl.Pgexpr();
 	if (nullptr == pgexprHandle)
@@ -196,7 +208,7 @@ CXformUtils::FHasParallelIncompatibleOps(CExpressionHandle &exprhdl)
 	}
 
 	CMemo *pmemo = pgroup->Pmemo();
-	return FHasParallelIncompatibleOps(pmemo);
+	return FHasParallelIncompatibleOps(pmemo, rgeopidReject, ulRejectCount);
 }
 
 

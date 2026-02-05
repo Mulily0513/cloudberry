@@ -5265,7 +5265,6 @@ CTranslatorDXLToPlStmt::TranslateDXLParallelAppend(
 
 	// create append plan node
 	Append *append = MakeNode(Append);
-	append->first_partial_plan = 0;
 
 	Plan *plan = &(append->plan);
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
@@ -5280,7 +5279,12 @@ CTranslatorDXLToPlStmt::TranslateDXLParallelAppend(
 
 	const ULONG arity = append_dxlnode->Arity();
 	GPOS_ASSERT(EdxlappendIndexFirstChild < arity);
-	append->appendplans = NIL;
+
+	// Separate subplans into non-partial and partial plans.
+	// The Postgres Parallel Append executor requires all non-partial plans
+	// to be placed before any partial plans.
+	List *non_partial_plans = NIL;
+	List *partial_plans = NIL;
 
 	// translate table descriptor into a range table entry
 	CDXLPhysicalParallelAppend *phy_append_dxlop =
@@ -5319,8 +5323,24 @@ CTranslatorDXLToPlStmt::TranslateDXLParallelAppend(
 
 		GPOS_ASSERT(nullptr != child_plan && "child plan cannot be NULL");
 
-		append->appendplans = gpdb::LAppend(append->appendplans, child_plan);
+		// Categorize plan based on parallel_aware flag.
+		// Partial plans (e.g., Parallel Seq Scan) cooperate to scan data,
+		// while non-partial plans (e.g., Result) must be executed by only one worker.
+		if (child_plan->parallel_aware)
+		{
+			partial_plans = gpdb::LAppend(partial_plans, child_plan);
+		}
+		else
+		{
+			non_partial_plans = gpdb::LAppend(non_partial_plans, child_plan);
+		}
 	}
+
+	// Reorder plans: Non-partial plans first, then partial plans.
+	append->appendplans = gpdb::ListConcat(non_partial_plans, partial_plans);
+
+	// Set the index of the first partial plan.
+	append->first_partial_plan = gpdb::ListLength(non_partial_plans);
 
 	CDXLNode *project_list_dxlnode = (*append_dxlnode)[EdxlappendIndexProjList];
 	CDXLNode *filter_dxlnode = (*append_dxlnode)[EdxlappendIndexFilter];

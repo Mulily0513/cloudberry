@@ -45,6 +45,8 @@ CXformImplementUnionAll::CXformImplementUnionAll(CMemoryPool *mp)
 //
 //	@doc:
 //		Actual transformation
+//		Only creates SerialUnionAll.
+//		ParallelUnionAll is now created by CXformImplementIntraSegmentParallelUnionAll.
 //
 //---------------------------------------------------------------------------
 void
@@ -71,8 +73,10 @@ CXformImplementUnionAll::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 		pdrgpexpr->Append(pexprChild);
 	}
 
+	// Only create SerialUnionAll
+	// ParallelUnionAll is now created by CXformImplementIntraSegmentParallelUnionAll
 	CPhysicalUnionAll *popPhysicalSerialUnionAll =
-		factory.PopPhysicalUnionAll(mp, false);
+		factory.PopPhysicalUnionAll(mp, false /*fParallel*/);
 
 	// assemble serial union physical operator
 	CExpression *pexprSerialUnionAll =
@@ -80,24 +84,6 @@ CXformImplementUnionAll::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 
 	// add serial union alternative to results
 	pxfres->Add(pexprSerialUnionAll);
-
-	// parallel union alternative to the result if the GUC is on
-	BOOL fParallel = GPOS_FTRACE(EopttraceEnableParallelAppend);
-
-	if (fParallel)
-	{
-		CPhysicalUnionAll *popPhysicalParallelUnionAll =
-			factory.PopPhysicalUnionAll(mp, true);
-
-		pdrgpexpr->AddRef();
-
-		// assemble physical parallel operator
-		CExpression *pexprParallelUnionAll = GPOS_NEW(mp)
-			CExpression(mp, popPhysicalParallelUnionAll, pdrgpexpr);
-
-		// add parallel union alternative to results
-		pxfres->Add(pexprParallelUnionAll);
-	}
 }
 
 // EOF

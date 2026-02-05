@@ -2935,7 +2935,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&optimizer_parallel_union,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 

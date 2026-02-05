@@ -413,14 +413,6 @@ CPhysicalUnionAll::PdsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl) const
 		return pds;
 	}
 
-	// derive strict random spec, if parallel union all enforces strict random
-	CDistributionSpecRandom *random_dist_spec =
-		PdsStrictRandomParallelUnionAllChildren(mp, exprhdl);
-	if (nullptr != random_dist_spec)
-	{
-		return random_dist_spec;
-	}
-
 	// output has unknown distribution on all segments
 	return GPOS_NEW(mp) CDistributionSpecRandom();
 }

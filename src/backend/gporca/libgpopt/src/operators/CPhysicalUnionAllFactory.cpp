@@ -7,7 +7,6 @@
 #include "gpos/base.h"
 
 #include "gpopt/exception.h"
-#include "gpopt/operators/CPhysicalParallelUnionAll.h"
 #include "gpopt/operators/CPhysicalSerialUnionAll.h"
 #include "gpopt/xforms/CXformUtils.h"
 
@@ -20,7 +19,7 @@ CPhysicalUnionAllFactory::CPhysicalUnionAllFactory(
 }
 
 CPhysicalUnionAll *
-CPhysicalUnionAllFactory::PopPhysicalUnionAll(CMemoryPool *mp, BOOL fParallel)
+CPhysicalUnionAllFactory::PopPhysicalUnionAll(CMemoryPool *mp, BOOL fParallel GPOS_UNUSED)
 {
 	CColRefArray *pdrgpcrOutput = m_popLogicalUnionAll->PdrgpcrOutput();
 	CColRef2dArray *pdrgpdrgpcrInput = m_popLogicalUnionAll->PdrgpdrgpcrInput();
@@ -35,16 +34,10 @@ CPhysicalUnionAllFactory::PopPhysicalUnionAll(CMemoryPool *mp, BOOL fParallel)
 	pdrgpcrOutput->AddRef();
 	pdrgpdrgpcrInput->AddRef();
 
-	if (fParallel)
-	{
-		return GPOS_NEW(mp)
-			CPhysicalParallelUnionAll(mp, pdrgpcrOutput, pdrgpdrgpcrInput);
-	}
-	else
-	{
-		return GPOS_NEW(mp)
-			CPhysicalSerialUnionAll(mp, pdrgpcrOutput, pdrgpdrgpcrInput);
-	}
+	// Parallel union all is now created by CXformImplementIntraSegmentParallelUnionAll
+	// This factory only creates serial union all
+	return GPOS_NEW(mp)
+		CPhysicalSerialUnionAll(mp, pdrgpcrOutput, pdrgpdrgpcrInput);
 }
 
 }  // namespace gpopt

@@ -465,6 +465,12 @@ private:
 						  CDistributionSpecArray *pdrgpdsBaseTables,
 						  ULONG *pulNonGatherMotions, BOOL *pfDML);
 
+	// translate a parallel union all op with worker-level parallelism
+	CDXLNode *PdxlnParallelUnionAll(CExpression *pexprUnionAll,
+									CColRefArray *colref_array,
+									CDistributionSpecArray *pdrgpdsBaseTables,
+									ULONG *pulNonGatherMotions, BOOL *pfDML);
+
 	// translate a partition selector
 	CDXLNode *PdxlnPartitionSelector(CExpression *pexpr,
 									 CColRefArray *colref_array,

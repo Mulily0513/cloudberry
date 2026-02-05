@@ -58,7 +58,7 @@ private:
 	static CDistributionSpec *PdsDeriveFromChildren(CMemoryPool *mp,
 													CExpressionHandle &exprhdl);
 
-protected:
+public:
 	// compute required hashed distribution of the n-th child
 	CDistributionSpecHashed *PdshashedPassThru(
 		CMemoryPool *mp, CDistributionSpecHashed *pdshashedRequired,

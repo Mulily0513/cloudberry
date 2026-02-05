@@ -285,10 +285,20 @@ public:
 													 const CXform *xform);
 
 	// check if memo contains operations incompatible with parallel execution
-	static BOOL FHasParallelIncompatibleOps(CMemo *pmemo);
+	// rgeopidReject: optional array of additional operator IDs to reject
+	// ulRejectCount: number of elements in rgeopidReject
+	static BOOL FHasParallelIncompatibleOps(
+		CMemo *pmemo,
+		const COperator::EOperatorId *rgeopidReject = nullptr,
+		ULONG ulRejectCount = 0);
 
 	// check if memo (extracted from expression handle) contains operations incompatible with parallel execution
-	static BOOL FHasParallelIncompatibleOps(CExpressionHandle &exprhdl);
+	// rgeopidReject: optional array of additional operator IDs to reject
+	// ulRejectCount: number of elements in rgeopidReject
+	static BOOL FHasParallelIncompatibleOps(
+		CExpressionHandle &exprhdl,
+		const COperator::EOperatorId *rgeopidReject = nullptr,
+		ULONG ulRejectCount = 0);
 
 	// extract foreign key
 	static CColRefSet *PcrsFKey(CMemoryPool *mp, CExpressionArray *pdrgpexpr,

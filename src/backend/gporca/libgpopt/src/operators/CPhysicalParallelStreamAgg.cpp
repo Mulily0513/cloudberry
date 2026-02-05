@@ -62,16 +62,18 @@ CPhysicalParallelStreamAgg::CPhysicalParallelStreamAgg(
 				"CPhysicalParallelStreamAgg requires workers > 0");
 	m_ulParallelWorkers = ulParallelWorkers;
 
-	if (COperator::EgbaggtypeGlobal == egbaggtype && fMultiStage)
+	if (COperator::EgbaggtypeGlobal == egbaggtype)
 	{
-		SetDistrRequests(1);
+		SetDistrRequests(1);  // Global: single distribution request
+	}
+	else if (COperator::EgbaggtypeLocal == egbaggtype)
+	{
+		SetDistrRequests(1);  // Local: single distribution request (WorkerRandom only)
 	}
 	else
 	{
-		SetDistrRequests(0);
+		SetDistrRequests(0);  // Intermediate: not supported yet
 	}
-	// Override parent class distribution requests
-	// Parallel stream aggregate only needs one distribution request for WorkerRandom
 }
 
 //---------------------------------------------------------------------------
@@ -148,9 +150,67 @@ CPhysicalParallelStreamAgg::PdsRequired(CMemoryPool *mp,
 										CDrvdPropArray *pdrgpdpCtxt GPOS_UNUSED,
 										ULONG ulOptReq) const
 {
-	// With SetDistrRequests(1), we only have one distribution request
+	GPOS_ASSERT(0 == child_index);
+	// Handle Global aggregate type
+	if (FGlobal())
+	{
+		return PdsRequiredForGlobal(mp, exprhdl, pdsRequired, child_index,
+									ulOptReq);
+	}
+
+	if (exprhdl.NeedsSingletonExecution())
+	{
+		return PdsRequireSingleton(mp, exprhdl, pdsRequired, child_index);
+	}
+
+	// Handle Local aggregate type
+	if (FLocal())
+	{
+		return PdsRequiredForLocal(mp, exprhdl, pdsRequired, child_index,
+								   ulOptReq);
+	}
+
+	return GPOS_NEW(mp) CDistributionSpecRandom();
+
+}
+
+CDistributionSpec *
+CPhysicalParallelStreamAgg::PdsRequiredForLocal(
+	CMemoryPool *mp, CExpressionHandle &exprhdl GPOS_UNUSED,
+	CDistributionSpec *pdsRequired GPOS_UNUSED, ULONG child_index GPOS_UNUSED,
+	ULONG ulOptReq GPOS_ASSERTS_ONLY) const
+{
+	GPOS_ASSERT(FLocal());
+	GPOS_ASSERT(0 == ulOptReq && "Local aggregate only supports single distribution request");
+
+	if (m_pdrgpcrArgDQA != nullptr && 0 != m_pdrgpcrArgDQA->Size())
+	{
+		return PdsMaximalHashed(mp, m_pdrgpcrArgDQA);
+	}
+	// WorkerRandom distribution: each worker independently processes local data fragments
+	// This allows maximum parallelism for partial aggregation
+	return GPOS_NEW(mp) CDistributionSpecAny(this->Eopid());
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CPhysicalParallelStreamAgg::PdsRequiredForGlobal
+//
+//	@doc:
+//		Compute required distribution for Global aggregate type
+//		Global aggregates create HashedWorker distribution on grouping columns
+//		for parallel final aggregation
+//
+//---------------------------------------------------------------------------
+CDistributionSpec *
+CPhysicalParallelStreamAgg::PdsRequiredForGlobal(
+	CMemoryPool *mp, CExpressionHandle &exprhdl GPOS_UNUSED,
+	CDistributionSpec *pdsRequired GPOS_UNUSED, ULONG child_index GPOS_UNUSED,
+	ULONG ulOptReq GPOS_UNUSED) const
+{
+	GPOS_ASSERT(FGlobal());
 	GPOS_ASSERT(0 == ulOptReq &&
-				"CPhysicalParallelStreamAgg only supports single distribution request");
+				"Global aggregate only supports single distribution request");
 
 	if (exprhdl.HasOuterRefs())
 	{
@@ -161,55 +221,110 @@ CPhysicalParallelStreamAgg::PdsRequired(CMemoryPool *mp,
 	{
 		if (CDistributionSpec::EdtSingleton == pdsRequired->Edt())
 		{
-			// pass through input distribution if it is a singleton
 			pdsRequired->AddRef();
 			return pdsRequired;
 		}
 
-		// otherwise, require a singleton explicitly
 		return GPOS_NEW(mp) CDistributionSpecSingleton();
 	}
 
 	if (0 == ulOptReq && (IMDFunction::EfsVolatile ==
 						  exprhdl.DeriveFunctionProperties(0)->Efs()))
 	{
-		// request a singleton distribution if child has volatile functions
 		return GPOS_NEW(mp) CDistributionSpecSingleton();
 	}
 
-	if (FGlobal())
+	ULONG ulWorkers = m_ulParallelWorkers;
+
+	// Create hashed distribution on minimal grouping columns
+	CDistributionSpec *pdsSpec = PdsMaximalHashed(mp, m_pdrgpcrMinimal);
+	if (pdsSpec->Edt() == CDistributionSpec::EdtHashed)
 	{
-		ULONG ulWorkers = m_ulParallelWorkers;
+		CDistributionSpecHashed *pdsHashed =
+			CDistributionSpecHashed::PdsConvert(pdsSpec);
 
-		// Create hashed distribution on minimal grouping columns
-		CDistributionSpec *pdsSpec = PdsMaximalHashed(mp, m_pdrgpcrMinimal);
-		if (pdsSpec->Edt() == CDistributionSpec::EdtHashed)
+		// Extract hash expressions and properties
+		CExpressionArray *pdrgpexpr = pdsHashed->Pdrgpexpr();
+		pdrgpexpr->AddRef();
+		BOOL fNullsColocated = pdsHashed->FNullsColocated();
+		IMdIdArray *opfamilies = pdsHashed->Opfamilies();
+		if (nullptr != opfamilies)
 		{
-			CDistributionSpecHashed *pdsHashed =
-				CDistributionSpecHashed::PdsConvert(pdsSpec);
-
-			// Extract hash expressions and properties
-			CExpressionArray *pdrgpexpr = pdsHashed->Pdrgpexpr();
-			pdrgpexpr->AddRef();
-			BOOL fNullsColocated = pdsHashed->FNullsColocated();
-			IMdIdArray *opfamilies = pdsHashed->Opfamilies();
-			if (nullptr != opfamilies)
-			{
-				opfamilies->AddRef();
-			}
-
-			// Release the temporary hashed distribution
-			pdsHashed->Release();
-
-			// Create HashedWorker distribution to require partial aggregation results
-			return GPOS_NEW(mp) CDistributionSpecHashedWorker(
-				pdrgpexpr, fNullsColocated, ulWorkers, opfamilies);
+			opfamilies->AddRef();
 		}
-		pdsSpec->Release();
-	}
 
-	// if there are grouping columns, require a hash distribution explicitly
+		// Release the temporary hashed distribution
+		pdsHashed->Release();
+
+		// Create HashedWorker distribution to require partial aggregation results
+		return GPOS_NEW(mp) CDistributionSpecHashedWorker(
+			pdrgpexpr, fNullsColocated, ulWorkers, opfamilies);
+	}
+	pdsSpec->Release();
+
+	// Fallback: if there are grouping columns, require a hash distribution explicitly
 	return PdsMaximalHashed(mp, m_pdrgpcrMinimal);
 }
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CPhysicalParallelStreamAgg::FValidContext
+//
+//	@doc:
+//		Check if optimization context is valid;
+//		Reject if parent requires REWINDABLE (e.g., for NL Join inner child)
+//		because ParallelStreamAgg derives NONE (not rewindable)
+//
+//---------------------------------------------------------------------------
+BOOL
+CPhysicalParallelStreamAgg::FValidContext(
+	CMemoryPool *mp GPOS_UNUSED, COptimizationContext *poc,
+	COptimizationContextArray *pdrgpocChild) const
+{
+	GPOS_ASSERT(nullptr != poc);
+	GPOS_ASSERT(nullptr != pdrgpocChild);
+	GPOS_ASSERT(1 == pdrgpocChild->Size());
+
+	CReqdPropPlan *prpp = poc->Prpp();
+	CRewindabilitySpec *prsRequired = prpp->Per()->PrsRequired();
+
+	// If parent requires REWINDABLE or higher, reject
+	// ParallelHashAgg can only provide ErtNone
+	if (prsRequired->IsOriginNLJoin())
+	{
+		// Parent requires rewindability (e.g., NL Join inner child)
+		// but ParallelHashAgg cannot provide it
+		// Reject this plan to avoid issues with parallel worker state
+		return false;
+	}
+
+	// For Local aggregates, validate that child provides worker-level distribution
+	if (FLocal())
+	{
+		COptimizationContext *pocChild = (*pdrgpocChild)[0];
+		CGroupExpression *pgexprChild = pocChild->PgexprBest();
+		if (pgexprChild)
+		{
+			CCostContext *pccBest = pocChild->PccBest();
+			GPOS_ASSERT(nullptr != pccBest);
+			CDrvdPropPlan *pdpplanChild = pccBest->Pdpplan();
+			CDistributionSpec *pdsChild = pdpplanChild->Pds();
+
+			// Local aggregate requires worker-level distribution from child
+			// Reject segment-level distributions (Random, Hashed, Singleton, etc.)
+			if (CDistributionSpec::EdtWorkerRandom != pdsChild->Edt() &&
+				CDistributionSpec::EdtHashedWorker != pdsChild->Edt())
+			{
+				// Child provides segment-level distribution, not worker-level
+				// This would prevent proper parallel execution within each segment
+				// Reject this plan
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
 
 // EOF

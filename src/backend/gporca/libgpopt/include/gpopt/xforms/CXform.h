@@ -139,6 +139,7 @@ public:
 		ExfDifferenceAll2LeftAntiSemiJoin,
 		ExfUnion2UnionAll,
 		ExfImplementUnionAll,
+		ExfImplementIntraSegmentParallelUnionAll,
 		ExfInsert2DML,
 		ExfDelete2DML,
 		ExfUpdate2DML,

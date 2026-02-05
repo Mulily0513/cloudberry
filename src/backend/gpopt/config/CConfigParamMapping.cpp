@@ -274,7 +274,7 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 		 "Force optimizer to always pick 3 stage aggregate plan for scalar distinct qualified aggregate.")},
 
 	{EopttraceEnableParallelAppend, &optimizer_parallel_union,
-	 false,	 // m_negate_param
+	 true,	 // m_negate_param
 	 GPOS_WSZ_LIT("Enable parallel execution for UNION/UNION ALL queries.")},
 
 	{EopttraceArrayConstraints, &optimizer_array_constraints,

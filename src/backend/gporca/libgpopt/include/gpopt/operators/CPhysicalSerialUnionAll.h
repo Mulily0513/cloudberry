@@ -73,6 +73,10 @@ public:
 								   CDrvdPropArray *pdrgpdpCtxt,
 								   ULONG ulOptReq) const override;
 
+	// check if optimization context is valid
+	BOOL FValidContext(CMemoryPool *mp, COptimizationContext *poc,
+					   COptimizationContextArray *pdrgpocChild) const override;
+
 };	// class CPhysicalSerialUnionAll
 
 }  // namespace gpopt

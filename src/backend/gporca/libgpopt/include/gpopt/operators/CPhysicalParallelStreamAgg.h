@@ -45,6 +45,19 @@ namespace gpopt
 class CPhysicalParallelStreamAgg : public CPhysicalStreamAgg
 {
 private:
+	// Helper function for computing required distribution for Local aggregates
+	CDistributionSpec *PdsRequiredForLocal(CMemoryPool *mp,
+										   CExpressionHandle &exprhdl,
+										   CDistributionSpec *pdsRequired,
+										   ULONG child_index,
+										   ULONG ulOptReq) const;
+
+	// Helper function for computing required distribution for Global aggregates
+	CDistributionSpec *PdsRequiredForGlobal(CMemoryPool *mp,
+											CExpressionHandle &exprhdl,
+											CDistributionSpec *pdsRequired,
+											ULONG child_index,
+											ULONG ulOptReq) const;
 public:
 	CPhysicalParallelStreamAgg(const CPhysicalParallelStreamAgg &) = delete;
 
@@ -98,6 +111,8 @@ public:
 								   CDistributionSpec *pdsRequired,
 								   ULONG child_index, CDrvdPropArray *pdrgpdpCtxt,
 								   ULONG ulOptReq) const override;
+	BOOL FValidContext(CMemoryPool *mp, COptimizationContext *poc,
+					   COptimizationContextArray *pdrgpocChild) const override;
 
 };	// class CPhysicalParallelStreamAgg
 
