@@ -72,6 +72,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalParallelHashJoin.o \
               CDXLPhysicalIndexOnlyScan.o \
               CDXLPhysicalIndexScan.o \
+              CDXLPhysicalParallelIndexScan.o \
               CDXLPhysicalJoin.o \
               CDXLPhysicalLimit.o \
               CDXLPhysicalMaterialize.o \

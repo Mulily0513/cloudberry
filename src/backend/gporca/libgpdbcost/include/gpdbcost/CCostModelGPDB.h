@@ -95,6 +95,11 @@ private:
 							   const CCostModelGPDB *pcmgpdb,
 							   const SCostingInfo *pci);
 
+	// cost of parallel index scan
+	static CCost CostParallelIndexScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
+									   const CCostModelGPDB *pcmgpdb,
+									   const SCostingInfo *pci);
+
 	// cost of index only scan
 	static CCost CostIndexOnlyScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								   const CCostModelGPDB *pcmgpdb,

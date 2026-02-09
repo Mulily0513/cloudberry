@@ -103,6 +103,7 @@ OBJS        = CExpression.o \
               CPhysicalHashAggDeduplicate.o \
               CPhysicalHashJoin.o \
               CPhysicalIndexScan.o \
+              CPhysicalParallelIndexScan.o \
               CPhysicalIndexOnlyScan.o \
               CPhysicalInnerHashJoin.o \
               CPhysicalInnerIndexNLJoin.o \

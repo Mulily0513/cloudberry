@@ -75,6 +75,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalHashJoin.h"
 #include "naucrates/dxl/operators/CDXLPhysicalParallelHashJoin.h"
 #include "naucrates/dxl/operators/CDXLPhysicalIndexOnlyScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelIndexScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalLimit.h"
 #include "naucrates/dxl/operators/CDXLPhysicalMaterialize.h"
 #include "naucrates/dxl/operators/CDXLPhysicalMergeJoin.h"
@@ -364,6 +365,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 		{
 			plan = TranslateDXLIndexScan(dxlnode, output_context,
 										 ctxt_translation_prev_siblings);
+			break;
+		}
+		case EdxlopPhysicalParallelIndexScan:
+		{
+			plan = TranslateDXLParallelIndexScan(dxlnode, output_context,
+												 ctxt_translation_prev_siblings);
 			break;
 		}
 		case EdxlopPhysicalIndexOnlyScan:
@@ -1031,6 +1038,110 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexScan(
 	 * available or needed in IndexScan. Ignore them.
 	 */
 	SetParamIds(plan);
+
+	return (Plan *) index_scan;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLParallelIndexScan
+//
+//	@doc:
+//		Translates a DXL parallel index scan node into a ParallelIndexScan node
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLParallelIndexScan(
+	const CDXLNode *index_scan_dxlnode,
+	CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	// translate table descriptor into a range table entry
+	CDXLPhysicalParallelIndexScan *physical_idx_scan_dxlop =
+		CDXLPhysicalParallelIndexScan::Cast(index_scan_dxlnode->GetOperator());
+
+	ULONG parallel_workers = physical_idx_scan_dxlop->UlParallelWorkers();
+
+	// translation context for column mappings in the base relation
+	CDXLTranslateContextBaseTable base_table_context(m_mp);
+
+	const CDXLTableDescr *dxl_table_descr =
+		physical_idx_scan_dxlop->GetDXLTableDescr();
+	const IMDRelation *md_rel =
+		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
+
+	// Lock any table we are to scan, since it may not have been properly locked
+	// by the parser (e.g in case of generated scans for partitioned tables)
+	CMDIdGPDB *mdid = CMDIdGPDB::CastMdid(md_rel->MDId());
+	GPOS_ASSERT(dxl_table_descr->LockMode() != -1);
+	gpdb::GPDBLockRelationOid(mdid->Oid(), dxl_table_descr->LockMode());
+
+	Index index = ProcessDXLTblDescr(dxl_table_descr, &base_table_context);
+
+	IndexScan *index_scan = nullptr;
+	index_scan = MakeNode(IndexScan);
+	index_scan->scan.scanrelid = index;
+
+	CMDIdGPDB *mdid_index = CMDIdGPDB::CastMdid(
+		physical_idx_scan_dxlop->GetDXLIndexDescr()->MDId());
+	const IMDIndex *md_index = m_md_accessor->RetrieveIndex(mdid_index);
+	Oid index_oid = mdid_index->Oid();
+
+	GPOS_ASSERT(InvalidOid != index_oid);
+	// Lock any index we are to scan, since it may not have been properly locked
+	// by the parser (e.g in case of generated scans for partitioned indexes)
+	gpdb::GPDBLockRelationOid(index_oid, dxl_table_descr->LockMode());
+	index_scan->indexid = index_oid;
+
+	Plan *plan = &(index_scan->scan.plan);
+
+	// Set parallel execution flags
+	plan->parallel_aware = true;
+	plan->parallel_safe = true;
+	plan->parallel = (int) parallel_workers;
+
+	TranslatePlan(plan, index_scan_dxlnode, output_context,
+				  m_dxl_to_plstmt_context, &base_table_context,
+				  ctxt_translation_prev_siblings);
+
+	index_scan->indexorderdir = CTranslatorUtils::GetScanDirection(
+		physical_idx_scan_dxlop->GetIndexScanDir());
+
+	if (md_rel->IsNonBlockTable())
+	{
+		CheckSafeTargetListForAOTables(plan->targetlist);
+	}
+
+	// translate index condition list
+	List *index_cond = NIL;
+	List *index_orig_cond = NIL;
+
+	// Translate Index Conditions if Index isn't used for order by.
+	if (!IsIndexForOrderBy(&base_table_context, ctxt_translation_prev_siblings,
+						   output_context,
+						   (*index_scan_dxlnode)[EdxlisIndexCondition]))
+	{
+		TranslateIndexConditions(
+			(*index_scan_dxlnode)[EdxlisIndexCondition],
+			physical_idx_scan_dxlop->GetDXLTableDescr(),
+			false,	// is_bitmap_index_probe
+			md_index, md_rel, output_context, &base_table_context,
+			ctxt_translation_prev_siblings, &index_cond, &index_orig_cond);
+	}
+
+	index_scan->indexqual = index_cond;
+	index_scan->indexqualorig = index_orig_cond;
+	/*
+	 * As of 8.4, the indexstrategy and indexsubtype fields are no longer
+	 * available or needed in IndexScan. Ignore them.
+	 */
+	SetParamIds(plan);
+
+	// Adjust row count to per-worker statistics
+	if (parallel_workers > 1)
+	{
+		plan->plan_rows = ceil(plan->plan_rows / parallel_workers);
+	}
 
 	return (Plan *) index_scan;
 }
@@ -8002,6 +8113,14 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 		CDXLPhysicalParallelAgg *parallel_agg_dxlop =
 			CDXLPhysicalParallelAgg::Cast(dxlop);
 		return parallel_agg_dxlop->GetParallelWorkers();
+	}
+	else if (EdxlopPhysicalParallelIndexScan == dxlop->GetDXLOperator())
+	{
+		// Return parallel workers from the parallel index scan operator
+		// All parallel index scans in the query share the same parallel degree
+		CDXLPhysicalParallelIndexScan *parallel_idx_scan_dxlop =
+			CDXLPhysicalParallelIndexScan::Cast(dxlop);
+		return parallel_idx_scan_dxlop->UlParallelWorkers();
 	}
 	else if (EdxlopPhysicalTableScan == dxlop->GetDXLOperator() ||
 			 EdxlopPhysicalDynamicTableScan == dxlop->GetDXLOperator() ||

@@ -101,6 +101,7 @@ enum Edxltoken
 	EdxltokenPhysicalDynamicBitmapTableScan,
 	EdxltokenPhysicalForeignScan,
 	EdxltokenPhysicalIndexScan,
+	EdxltokenPhysicalParallelIndexScan,
 	EdxltokenPhysicalIndexOnlyScan,
 	EdxltokenPhysicalHashJoin,
 	EdxltokenPhysicalParallelHashJoin,

@@ -20,6 +20,10 @@
 #include "gpopt/operators/CPatternLeaf.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
 
+namespace gpdb {
+	bool IsParallelModeOK(void);
+}
+
 using namespace gpopt;
 
 
@@ -61,6 +65,13 @@ CXformIndexGet2IndexScan::Exfp(CExpressionHandle &exprhdl) const
 	if (exprhdl.DeriveHasSubquery(0))
 	{
 		return CXform::ExfpNone;
+	}
+
+	// If parallel processing is enabled, give lower priority to regular index scan
+	// to allow parallel index scan to take precedence.
+	if (gpdb::IsParallelModeOK())
+	{
+		return CXform::ExfpLow;
 	}
 
 	return CXform::ExfpHigh;

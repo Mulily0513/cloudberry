@@ -495,6 +495,8 @@ CConfigParamMapping::PackConfigParamInBitset(
 		// disable index scan if the corresponding GUC is turned off
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexGet2IndexScan));
+		traceflag_bitset->ExchangeSet(
+			GPOPT_DISABLE_XFORM_TF(CXform::ExfIndexGet2ParallelIndexScan));
 	}
 
 	if (!optimizer_enable_indexonlyscan)

@@ -20,14 +20,16 @@ INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
+ANALYZE foo;
 EXPLAIN SELECT COUNT(*) FROM foo;
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
- Aggregate  (cost=0.00..237.05 rows=1 width=8)
-   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=0.00..237.05 rows=1 width=1)
-         ->  Parallel Seq Scan on foo  (cost=0.00..237.05 rows=1 width=1)
+                                     QUERY PLAN
+-------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=0.00..254.92 rows=1 width=8)
+   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=0.00..254.92 rows=1 width=8)
+         ->  Partial Aggregate  (cost=0.00..254.92 rows=1 width=8)
+               ->  Parallel Seq Scan on foo  (cost=0.00..254.57 rows=183334 width=1)
  Optimizer: GPORCA
-(4 rows)
+(5 rows)
 
 SELECT COUNT(*) FROM foo;
   count  
@@ -38,12 +40,13 @@ SELECT COUNT(*) FROM foo;
 EXPLAIN SELECT COUNT(*) FROM foo WHERE b = 17;
                                      QUERY PLAN                                     
 ------------------------------------------------------------------------------------
- Aggregate  (cost=0.00..237.05 rows=1 width=8)
-   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=0.00..237.05 rows=1 width=1)
-         ->  Parallel Seq Scan on foo  (cost=0.00..237.05 rows=1 width=1)
+ Finalize Aggregate  (cost=0.00..268.00 rows=1 width=8)
+   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=0.00..268.00 rows=1 width=8)
+         ->  Partial Aggregate  (cost=0.00..268.00 rows=1 width=8)
+               ->  Parallel Seq Scan on foo  (cost=0.00..268.00 rows=2 width=1)
                Filter: (b = 17)
  Optimizer: GPORCA
-(5 rows)
+(6 rows)
 
 SELECT COUNT(*) FROM foo WHERE b = 17;
  count 

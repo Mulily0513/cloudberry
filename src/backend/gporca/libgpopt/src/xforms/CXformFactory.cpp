@@ -146,6 +146,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformGet2TableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformGet2ParallelTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformIndexGet2IndexScan(m_mp));
+	Add(GPOS_NEW(m_mp) CXformIndexGet2ParallelIndexScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDynamicGet2DynamicTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDynamicGet2AppendTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDynamicGet2ParallelAppendTableScan(m_mp));

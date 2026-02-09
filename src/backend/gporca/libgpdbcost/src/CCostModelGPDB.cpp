@@ -31,6 +31,7 @@
 #include "gpopt/operators/CPhysicalParallelStreamAgg.h"
 #include "gpopt/operators/CPhysicalIndexOnlyScan.h"
 #include "gpopt/operators/CPhysicalIndexScan.h"
+#include "gpopt/operators/CPhysicalParallelIndexScan.h"
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
 #include "gpopt/operators/CPhysicalParallelHashJoin.h"
@@ -2306,6 +2307,7 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 	COperator *pop = exprhdl.Pop();
 	COperator::EOperatorId op_id = pop->Eopid();
 	GPOS_ASSERT(COperator::EopPhysicalIndexScan == op_id ||
+				COperator::EopPhysicalParallelIndexScan == op_id ||
 				COperator::EopPhysicalDynamicIndexScan == op_id);
 
 	IMDId *rel_mdid = CPhysicalScan::PopConvert(pop)->Ptabdesc()->MDId();
@@ -2353,6 +2355,14 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 						   pdrgpcrIndexColumns, stats, md_accessor, mp);
 		ulUnindexedPredCount = ptr->ResidualPredicateSize();
 	}
+	else if (COperator::EopPhysicalParallelIndexScan == op_id)
+	{
+		// For Parallel Index Scan
+		CPhysicalParallelIndexScan *ptr = CPhysicalParallelIndexScan::PopConvert(pop);
+		GetCommonIndexData(ptr, ulIndexKeys, ulIncludedColWidth,
+						   pdrgpcrIndexColumns, stats, md_accessor, mp);
+		ulUnindexedPredCount = ptr->ResidualPredicateSize();
+	}
 	else
 	{
 		// For Dynamic Index Scan
@@ -2396,6 +2406,117 @@ CCostModelGPDB::CostIndexScan(CMemoryPool *mp GPOS_UNUSED,
 				  dUnindexedPredCost + dUnusedIndexCost));
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		CCostModelGPDB::CostParallelIndexScan
+//
+//	@doc:
+//		Cost of parallel index scan
+//
+//---------------------------------------------------------------------------
+CCost
+CCostModelGPDB::CostParallelIndexScan(CMemoryPool *mp,
+									  CExpressionHandle &exprhdl,
+									  const CCostModelGPDB *pcmgpdb,
+									  const SCostingInfo *pci)
+{
+	GPOS_ASSERT(nullptr != pcmgpdb);
+	GPOS_ASSERT(nullptr != pci);
+
+	COperator *pop = exprhdl.Pop();
+	COperator::EOperatorId op_id = pop->Eopid();
+	GPOS_ASSERT(COperator::EopPhysicalParallelIndexScan == op_id);
+
+	ULONG ulWorkers = 0;
+
+	if (COperator::EopPhysicalParallelIndexScan == pop->Eopid())
+	{
+		CPhysicalParallelIndexScan *popParallelScan = CPhysicalParallelIndexScan::PopConvert(pop);
+		ulWorkers = popParallelScan->UlParallelWorkers();
+	}
+
+	// If only 1 worker, use regular index scan cost
+	if (ulWorkers <= 1)
+	{
+		return CostIndexScan(mp, exprhdl, pcmgpdb, pci);
+	}
+
+	IMDId *rel_mdid = CPhysicalScan::PopConvert(pop)->Ptabdesc()->MDId();
+
+	const CDouble dTableWidth =
+		CPhysicalScan::PopConvert(pop)->PstatsBaseTable()->Width();
+
+	const CDouble dIndexFilterCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpIndexFilterCostUnit)
+			->Get();
+	const CDouble dIndexScanTupCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpIndexScanTupCostUnit)
+			->Get();
+	const CDouble dIndexOnlyScanTupCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpIndexOnlyScanTupCostUnit)
+			->Get();
+	const CDouble dIndexScanTupRandomFactor =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpIndexScanTupRandomFactor)
+			->Get();
+	GPOS_ASSERT(0 < dIndexFilterCostUnit);
+	GPOS_ASSERT(0 < dIndexScanTupCostUnit);
+	GPOS_ASSERT(0 < dIndexScanTupRandomFactor);
+
+	CDouble dRowsIndex = pci->Rows();
+
+	ULONG ulIndexKeys = 1;
+	ULONG ulIncludedColWidth = 0;
+
+	// Getting Meta Data Accessor
+	const COptCtxt *poctxt = COptCtxt::PoctxtFromTLS();
+	CMDAccessor *md_accessor = poctxt->Pmda();
+	CColRefArray *pdrgpcrIndexColumns = nullptr;
+	ULONG ulUnindexedPredCount = 0;
+	IStatistics *stats = nullptr;
+
+	// For Parallel Index Scan
+	CPhysicalParallelIndexScan *ptr = CPhysicalParallelIndexScan::PopConvert(pop);
+	GetCommonIndexData(ptr, ulIndexKeys, ulIncludedColWidth,
+						pdrgpcrIndexColumns, stats, md_accessor, mp);
+	ulUnindexedPredCount = ptr->ResidualPredicateSize();
+
+	CDouble dIndexCostConversionFactor =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpIndexCostConversionFactor)
+			->Get();
+
+	CDouble dUnindexedPredCost =
+		ulUnindexedPredCount * dIndexCostConversionFactor;
+	CDouble dUnusedIndexCost =
+		ComputeUnusedIndexWeight(exprhdl, pdrgpcrIndexColumns, stats, mp,
+								 rel_mdid) *
+		dIndexCostConversionFactor;
+
+	pdrgpcrIndexColumns->Release();
+
+	CDouble dCostPerIndexRow = ulIndexKeys * dIndexFilterCostUnit +
+							   dTableWidth * dIndexScanTupCostUnit +
+							   ulIncludedColWidth * dIndexOnlyScanTupCostUnit;
+
+	CDouble dBaseScanCost = dRowsIndex * dCostPerIndexRow + dIndexScanTupRandomFactor +
+				  dUnindexedPredCost + dUnusedIndexCost;
+
+	// Calculate parallel efficiency (decreases with more workers)
+	CDouble dParallelEfficiency = CalculateParallelEfficiency(ulWorkers);
+
+	// Parallel scan cost = base cost / (workers * efficiency)
+	CDouble dParallelScanCost = dBaseScanCost / (ulWorkers * dParallelEfficiency);
+
+	// Add worker startup cost
+	CDouble dWorkerStartupCost = GetWorkerStartupCost(pcmgpdb, ulWorkers);
+
+	// Total cost
+	return CCost(pci->NumRebinds() * (dParallelScanCost + dWorkerStartupCost));
+}
 
 CCost
 CCostModelGPDB::CostIndexOnlyScan(CMemoryPool *mp GPOS_UNUSED,	  // mp
@@ -3106,6 +3227,11 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalDynamicIndexScan:
 		{
 			return CostIndexScan(m_mp, exprhdl, this, pci);
+		}
+
+		case COperator::EopPhysicalParallelIndexScan:
+		{
+			return CostParallelIndexScan(m_mp, exprhdl, this, pci);
 		}
 
 		case COperator::EopPhysicalBitmapTableScan:

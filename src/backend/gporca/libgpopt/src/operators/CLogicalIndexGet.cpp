@@ -256,6 +256,7 @@ CLogicalIndexGet::PxfsCandidates(CMemoryPool *mp) const
 	CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 
 	(void) xform_set->ExchangeSet(CXform::ExfIndexGet2IndexScan);
+	(void) xform_set->ExchangeSet(CXform::ExfIndexGet2ParallelIndexScan);
 
 	return xform_set;
 }

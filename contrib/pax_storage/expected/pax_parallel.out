@@ -20,13 +20,14 @@ INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
+ANALYZE foo;
 EXPLAIN SELECT COUNT(*) FROM foo;
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
- Finalize Aggregate  (cost=46.39..46.40 rows=1 width=8)
-   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=46.29..46.37 rows=6 width=8)
-         ->  Partial Aggregate  (cost=46.29..46.30 rows=1 width=8)
-               ->  Parallel Seq Scan on foo  (cost=0.00..43.83 rows=983 width=0)
+                                       QUERY PLAN
+----------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=2382.76..2382.77 rows=1 width=8)
+   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=2382.67..2382.75 rows=6 width=8)
+         ->  Partial Aggregate  (cost=2382.67..2382.68 rows=1 width=8)
+               ->  Parallel Seq Scan on foo  (cost=0.00..1924.33 rows=183333 width=0)
  Optimizer: Postgres query optimizer
 (5 rows)
 
@@ -37,14 +38,15 @@ SELECT COUNT(*) FROM foo;
 (1 row)
 
 EXPLAIN SELECT COUNT(*) FROM foo WHERE b = 17;
-                                    QUERY PLAN                                     
------------------------------------------------------------------------------------
- Aggregate  (cost=46.38..46.39 rows=1 width=8)
-   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=0.00..46.36 rows=6 width=0)
-         ->  Parallel Seq Scan on foo  (cost=0.00..46.29 rows=1 width=0)
-               Filter: (b = 17)
+                                       QUERY PLAN
+----------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=2382.77..2382.78 rows=1 width=8)
+   ->  Gather Motion 6:1  (slice1; segments: 6)  (cost=2382.67..2382.75 rows=6 width=8)
+         ->  Partial Aggregate  (cost=2382.67..2382.68 rows=1 width=8)
+               ->  Parallel Seq Scan on foo  (cost=0.00..2382.67 rows=2 width=0)
+                     Filter: (b = 17)
  Optimizer: Postgres query optimizer
-(5 rows)
+(6 rows)
 
 SELECT COUNT(*) FROM foo WHERE b = 17;
  count 

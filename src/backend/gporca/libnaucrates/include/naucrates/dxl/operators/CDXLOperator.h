@@ -130,6 +130,7 @@ enum Edxlopid
 	EdxlopPhysicalDynamicBitmapTableScan,
 	EdxlopPhysicalForeignScan,
 	EdxlopPhysicalIndexScan,
+	EdxlopPhysicalParallelIndexScan,
 	EdxlopPhysicalIndexOnlyScan,
 	EdxlopScalarBitmapIndexProbe,
 	EdxlopPhysicalConstTable,

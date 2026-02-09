@@ -71,6 +71,7 @@ public:
 		ExfGet2TableScan,
 		ExfGet2ParallelTableScan,
 		ExfIndexGet2IndexScan,
+		ExfIndexGet2ParallelIndexScan,
 		ExfDynamicGet2DynamicTableScan,
 		ExfDynamicGet2AppendTableScan,
 		ExfDynamicGet2ParallelAppendTableScan,

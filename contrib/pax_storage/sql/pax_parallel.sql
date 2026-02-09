@@ -23,6 +23,7 @@ INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 INSERT INTO foo SELECT i as a, i as b, 'hello world' as c FROM generate_series(1, 100000) AS i;
 
+ANALYZE foo;
 EXPLAIN SELECT COUNT(*) FROM foo;
 SELECT COUNT(*) FROM foo;
 
