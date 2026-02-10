@@ -574,6 +574,27 @@ CCTEInfo::PruneCTEOutputColumns()
 			}
 		}
 
+		// Ensure at least one column is retained after pruning.
+		// When the CTE is referenced only in contexts like EXISTS subqueries
+		// or count(*), no individual columns are marked as Used. Pruning all
+		// columns would leave an empty output column set, causing a NULL
+		// pointer dereference later in the optimizer (e.g. in
+		// CSubqueryHandler::FRemoveExistentialSubquery via PcrFirst()).
+		BOOL has_used_column = false;
+		for (ULONG ulm = 0; ulm < ulPcr; ulm++)
+		{
+			if (*((*column_prune_marker)[ulm]))
+			{
+				has_used_column = true;
+				break;
+			}
+		}
+
+		if (!has_used_column && ulPcr > 0)
+		{
+			*((*column_prune_marker)[0]) = true;
+		}
+
 		for (ULONG ulCons = 0; ulCons< pops->Size(); ulCons++)
 		{
 			CLogicalCTEConsumer::PopConvert((*pops)[ulCons])
