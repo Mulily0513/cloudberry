@@ -3766,27 +3766,27 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
-                                       QUERY PLAN                                        
------------------------------------------------------------------------------------------
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
  Subquery Scan on emp
    Filter: ((emp.first_emp = 1) OR (emp.last_emp = 1))
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         Merge Key: empsalary.depname, empsalary.enroll_date
+         Merge Key: empsalary.depname, empsalary.enroll_date, empsalary.empno
          ->  WindowAgg
                Partition By: empsalary.depname
-               Order By: empsalary.enroll_date
+               Order By: empsalary.enroll_date, empsalary.empno
                ->  Incremental Sort
-                     Sort Key: empsalary.depname, empsalary.enroll_date
+                     Sort Key: empsalary.depname, empsalary.enroll_date, empsalary.empno
                      Presorted Key: empsalary.depname
                      ->  WindowAgg
                            Partition By: empsalary.depname
-                           Order By: empsalary.enroll_date
+                           Order By: empsalary.enroll_date, empsalary.empno
                            ->  Sort
-                                 Sort Key: empsalary.depname, empsalary.enroll_date DESC
+                                 Sort Key: empsalary.depname, empsalary.enroll_date DESC, empsalary.empno DESC
                                  ->  Seq Scan on empsalary
  Optimizer: Postgres query optimizer
 (17 rows)
@@ -3796,14 +3796,14 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
   depname  | empno | salary | enroll_date | first_emp | last_emp 
 -----------+-------+--------+-------------+-----------+----------
  develop   |     8 |   6000 | 10-01-2006  |         1 |        5
- develop   |     7 |   4200 | 01-01-2008  |         5 |        1
+ develop   |     9 |   4500 | 01-01-2008  |         5 |        1
  personnel |     2 |   3900 | 12-23-2006  |         1 |        2
  personnel |     5 |   3500 | 12-10-2007  |         2 |        1
  sales     |     1 |   5000 | 10-01-2006  |         1 |        3
@@ -4697,7 +4697,8 @@ EXPLAIN (costs off) SELECT * FROM pg_temp.f(2);
          ->  Sort
                Sort Key: s.s
                ->  Function Scan on generate_series s
-(5 rows)
+ Optimizer: Postgres query optimizer
+(7 rows)
 
 SELECT * FROM pg_temp.f(2);
     f    

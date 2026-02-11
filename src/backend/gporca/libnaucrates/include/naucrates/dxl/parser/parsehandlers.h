@@ -111,6 +111,7 @@
 #include "naucrates/dxl/parser/CParseHandlerPhysicalSplit.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalTVF.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalWindow.h"
+#include "naucrates/dxl/parser/CParseHandlerPhysicalParallelWindow.h"
 #include "naucrates/dxl/parser/CParseHandlerPlan.h"
 #include "naucrates/dxl/parser/CParseHandlerPlanHint.h"
 #include "naucrates/dxl/parser/CParseHandlerProjElem.h"

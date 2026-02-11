@@ -94,6 +94,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalParallelTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalValuesScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelWindow.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapBoolOp.h"
 #include "naucrates/dxl/operators/CDXLScalarBitmapIndexProbe.h"
 #include "naucrates/dxl/operators/CDXLScalarBoolExpr.h"
@@ -450,6 +451,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 				plan = TranslateDXLWindowAgg(dxlnode, output_context,
 									  ctxt_translation_prev_siblings);
 			}
+			break;
+		}
+		case EdxlopPhysicalParallelWindow:
+		{
+			plan = TranslateDXLParallelWindow(dxlnode, output_context,
+									  ctxt_translation_prev_siblings);
 			break;
 		}
 		case EdxlopPhysicalSort:
@@ -4312,6 +4319,50 @@ CTranslatorDXLToPlStmt::TranslateDXLWindowHashAgg(
 	child_contexts->Release();
 
 	return (Plan *) window;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLParallelWindow
+//
+//	@doc:
+//		Translate DXL parallel window node into GPDB window plan node
+//		with parallel attributes set
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLParallelWindow(
+	const CDXLNode *window_dxlnode, CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	CDXLPhysicalParallelWindow *dxl_parallel_window =
+		CDXLPhysicalParallelWindow::Cast(window_dxlnode->GetOperator());
+
+	Plan *plan;
+	if (dxl_parallel_window->IsWindowHashAgg())
+	{
+		plan = TranslateDXLWindowHashAgg(window_dxlnode, output_context,
+										 ctxt_translation_prev_siblings);
+	}
+	else
+	{
+		plan = TranslateDXLWindowAgg(window_dxlnode, output_context,
+									 ctxt_translation_prev_siblings);
+	}
+
+	ULONG parallel_workers = dxl_parallel_window->ParallelWorkers();
+	if (parallel_workers > 1)
+	{
+		plan->parallel = parallel_workers;
+		plan->parallel_aware = true;
+		plan->parallel_safe = true;
+	}
+	else
+	{
+		plan->parallel = 0;
+	}
+
+	return plan;
 }
 
 //---------------------------------------------------------------------------
@@ -8375,6 +8426,13 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 		CDXLPhysicalParallelIndexOnlyScan *parallel_ios_dxlop =
 			CDXLPhysicalParallelIndexOnlyScan::Cast(dxlop);
 		return parallel_ios_dxlop->UlParallelWorkers();
+	}
+	else if (EdxlopPhysicalParallelWindow == dxlop->GetDXLOperator())
+	{
+		// Parallel Window operator - return its parallel workers
+		CDXLPhysicalParallelWindow *parallel_window_dxlop =
+			CDXLPhysicalParallelWindow::Cast(dxlop);
+		return parallel_window_dxlop->ParallelWorkers();
 	}
 	else if (EdxlopPhysicalTableScan == dxlop->GetDXLOperator() ||
 			 EdxlopPhysicalDynamicTableScan == dxlop->GetDXLOperator() ||

@@ -82,6 +82,7 @@
 #include "gpopt/xforms/CXformImplementSequence.h"
 #include "gpopt/xforms/CXformImplementSequenceProject.h"
 #include "gpopt/xforms/CXformImplementHashSequenceProject.h"
+#include "gpopt/xforms/CXformImplementParallelSequenceProject.h"
 #include "gpopt/xforms/CXformImplementSplit.h"
 #include "gpopt/xforms/CXformImplementPartitionTopK.h"
 #include "gpopt/xforms/CXformImplementTVF.h"

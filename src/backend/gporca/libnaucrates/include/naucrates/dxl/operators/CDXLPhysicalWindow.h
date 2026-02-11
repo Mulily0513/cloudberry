@@ -90,7 +90,8 @@ public:
 	Cast(CDXLOperator *dxl_op)
 	{
 		GPOS_ASSERT(nullptr != dxl_op);
-		GPOS_ASSERT(EdxlopPhysicalWindow == dxl_op->GetDXLOperator());
+		GPOS_ASSERT(EdxlopPhysicalWindow == dxl_op->GetDXLOperator() ||
+					EdxlopPhysicalParallelWindow == dxl_op->GetDXLOperator());
 
 		return dynamic_cast<CDXLPhysicalWindow *>(dxl_op);
 	}

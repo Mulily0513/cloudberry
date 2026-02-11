@@ -522,6 +522,11 @@ private:
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
 		CParseHandlerBase *parse_handler_root);
 
+	// construct a parse handler for a physical parallel window node
+	static CParseHandlerBase *CreateParallelWindowParseHandler(
+		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+		CParseHandlerBase *parse_handler_root);
+
 	// construct an window function parse handler
 	static CParseHandlerBase *CreateWindowRefParseHandler(
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,

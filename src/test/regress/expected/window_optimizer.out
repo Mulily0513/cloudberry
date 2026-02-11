@@ -3835,8 +3835,8 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
                                     QUERY PLAN                                    
@@ -3846,14 +3846,14 @@ WHERE first_emp = 1 OR last_emp = 1;
          Filter: (((row_number() OVER (?)) = 1) OR ((row_number() OVER (?)) = 1))
          ->  WindowAgg
                Partition By: depname
-               Order By: enroll_date
+               Order By: enroll_date, empno
                ->  Sort
-                     Sort Key: depname, enroll_date DESC
+                     Sort Key: depname, enroll_date DESC, empno DESC
                      ->  WindowAgg
                            Partition By: depname
-                           Order By: enroll_date
+                           Order By: enroll_date, empno
                            ->  Sort
-                                 Sort Key: depname, enroll_date
+                                 Sort Key: depname, enroll_date, empno
                                  ->  Seq Scan on empsalary
  Optimizer: GPORCA
 (15 rows)
@@ -3863,18 +3863,18 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
   depname  | empno | salary | enroll_date | first_emp | last_emp 
 -----------+-------+--------+-------------+-----------+----------
- develop   |     9 |   4500 | 01-01-2008  |         4 |        1
- develop   |     8 |   6000 | 10-01-2006  |         1 |        5
  personnel |     5 |   3500 | 12-10-2007  |         2 |        1
  personnel |     2 |   3900 | 12-23-2006  |         1 |        2
  sales     |     4 |   4800 | 08-08-2007  |         3 |        1
  sales     |     1 |   5000 | 10-01-2006  |         1 |        3
+ develop   |     9 |   4500 | 01-01-2008  |         5 |        1
+ develop   |     8 |   6000 | 10-01-2006  |         1 |        5
 (6 rows)
 
 -- cleanup

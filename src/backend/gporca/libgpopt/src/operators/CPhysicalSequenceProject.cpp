@@ -13,10 +13,12 @@
 
 #include "gpos/base.h"
 
+#include "gpopt/base/CCostContext.h"
 #include "gpopt/base/CDistributionSpecAny.h"
 #include "gpopt/base/CDistributionSpecHashed.h"
 #include "gpopt/base/CDistributionSpecReplicated.h"
 #include "gpopt/base/CDistributionSpecSingleton.h"
+#include "gpopt/base/CDrvdPropPlan.h"
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/base/CWindowFrame.h"
@@ -570,6 +572,34 @@ CPhysicalSequenceProject::OsPrint(IOstream &os) const
 	os << ", ";
 	(void) CWindowFrame::OsPrint(os, m_pdrgpwf);
 	return os << ")";
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CPhysicalSequenceProject::FValidContext
+//
+//	@doc:
+//		Check if optimization context is valid.
+//
+//---------------------------------------------------------------------------
+BOOL
+CPhysicalSequenceProject::FValidContext(
+	CMemoryPool *,	// mp
+	COptimizationContext *,	 // poc
+	COptimizationContextArray *pdrgpocChild) const
+{
+	GPOS_ASSERT(nullptr != pdrgpocChild);
+	GPOS_ASSERT(1 == pdrgpocChild->Size());
+
+	COptimizationContext *pocChild = (*pdrgpocChild)[0];
+	CCostContext *pccBest = pocChild->PccBest();
+	if (nullptr == pccBest)
+	{
+		return false;
+	}
+
+	return true;
 }
 
 

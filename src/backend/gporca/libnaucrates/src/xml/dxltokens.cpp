@@ -155,6 +155,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("DynamicIndexOnlyScan")},
 		{EdxltokenPhysicalTVF, GPOS_WSZ_LIT("TableValuedFunction")},
 		{EdxltokenPhysicalWindow, GPOS_WSZ_LIT("Window")},
+		{EdxltokenPhysicalParallelWindow, GPOS_WSZ_LIT("ParallelWindow")},
 		{EdxltokenPhysicalDMLInsert, GPOS_WSZ_LIT("DMLInsert")},
 		{EdxltokenPhysicalDMLDelete, GPOS_WSZ_LIT("DMLDelete")},
 		{EdxltokenPhysicalDMLUpdate, GPOS_WSZ_LIT("DMLUpdate")},

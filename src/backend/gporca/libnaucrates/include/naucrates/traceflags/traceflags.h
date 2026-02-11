@@ -275,6 +275,8 @@ enum EOptTraceFlag
 	// for top-K per partition queries (e.g., ROW_NUMBER() ... WHERE rn <= K).
 	// This trace flag is mapped to the GUC 'optimizer_force_partition_topk'.
 	EopttraceForcePartitionTopK =  103059,
+	// disable parallel window alternatives
+	EopttraceDisableParallelWindow = 103060,
 
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////

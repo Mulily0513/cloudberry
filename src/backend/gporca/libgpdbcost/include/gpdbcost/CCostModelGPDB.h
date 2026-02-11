@@ -124,10 +124,16 @@ private:
 									 const SCostingInfo *pci);
 
 	// cost of hash sequence project
-	static CCost CostHashSequenceProject(CMemoryPool *mp, 
+	static CCost CostHashSequenceProject(CMemoryPool *mp,
 									CExpressionHandle &exprhdl,
 									const CCostModelGPDB *pcmgpdb,
 									const SCostingInfo *pci);
+
+	// cost of parallel sequence project
+	static CCost CostParallelSequenceProject(CMemoryPool *mp,
+											 CExpressionHandle &exprhdl,
+											 const CCostModelGPDB *pcmgpdb,
+											 const SCostingInfo *pci);
 
 	// cost of CTE producer
 	static CCost CostCTEProducer(CMemoryPool *mp, CExpressionHandle &exprhdl,

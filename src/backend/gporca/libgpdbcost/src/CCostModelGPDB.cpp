@@ -44,6 +44,7 @@
 #include "gpopt/operators/CPhysicalParallelPartitionSelector.h"
 #include "gpopt/operators/CPhysicalSequenceProject.h"
 #include "gpopt/operators/CPhysicalHashSequenceProject.h"
+#include "gpopt/operators/CPhysicalParallelSequenceProject.h"
 #include "gpopt/operators/CPhysicalStreamAgg.h"
 #include "gpopt/operators/CPhysicalUnionAll.h"
 #include "gpopt/operators/CPredicateUtils.h"
@@ -2168,6 +2169,73 @@ CCostModelGPDB::CostSequenceProject(CMemoryPool *mp, CExpressionHandle &exprhdl,
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CCostModelGPDB::CostParallelSequenceProject
+//
+//	@doc:
+//		Cost of parallel sequence project
+//
+//---------------------------------------------------------------------------
+CCost
+CCostModelGPDB::CostParallelSequenceProject(CMemoryPool *mp,
+											CExpressionHandle &exprhdl,
+											const CCostModelGPDB *pcmgpdb,
+											const SCostingInfo *pci)
+{
+	GPOS_ASSERT(nullptr != pcmgpdb);
+	GPOS_ASSERT(nullptr != pci);
+	GPOS_ASSERT(COperator::EopPhysicalParallelSequenceProject ==
+				exprhdl.Pop()->Eopid());
+
+	CPhysicalParallelSequenceProject *popPSP =
+		CPhysicalParallelSequenceProject::PopConvert(exprhdl.Pop());
+	ULONG ulWorkers = popPSP->UlParallelWorkers();
+
+	const CDouble dTupDefaultProcCostUnit =
+		pcmgpdb->GetCostModelParams()
+			->PcpLookup(CCostModelParamsGPDB::EcpTupDefaultProcCostUnit)
+			->Get();
+	GPOS_ASSERT(0 < dTupDefaultProcCostUnit);
+
+	// GlobalTwoStep with force-split: assign minimal cost to favor two-phase split
+	if (GPOS_FTRACE(EopttraceForceSplitWindowFunc) &&
+		popPSP->Pspt() == COperator::EsptypeGlobalTwoStep)
+	{
+		return CCost(dTupDefaultProcCostUnit);
+	}
+
+	const DOUBLE num_rows_outer = pci->PdRows()[0];
+	const DOUBLE dWidthOuter = pci->GetWidth()[0];
+
+	ULONG ulSortCols = 0;
+	COrderSpecArray *pdrgpos = popPSP->Pdrgpos();
+	const ULONG ulOrderSpecs = pdrgpos->Size();
+	for (ULONG ul = 0; ul < ulOrderSpecs; ul++)
+	{
+		COrderSpec *pos = (*pdrgpos)[ul];
+		ulSortCols += pos->UlSortColumns();
+	}
+
+	ULONG ulCostFactor = std::max(ulSortCols, (ULONG) 1);
+	CDouble dBaseCost =
+		ulCostFactor * num_rows_outer * dWidthOuter * dTupDefaultProcCostUnit;
+
+	CCost costChild =
+		CostChildren(mp, exprhdl, pci, pcmgpdb->GetCostModelParams());
+
+	if (ulWorkers <= 1)
+	{
+		return CCost(pci->NumRebinds() * dBaseCost) + costChild;
+	}
+
+	CDouble dParallelEfficiency = CalculateParallelEfficiency(ulWorkers);
+	CDouble dParallelCost = dBaseCost / (ulWorkers * dParallelEfficiency);
+
+	return CCost(pci->NumRebinds() * dParallelCost) +
+		   costChild;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CCostModelGPDB::CostHashSequenceProject
 //
 //	@doc:
@@ -2208,7 +2276,6 @@ CCostModelGPDB::CostHashSequenceProject(CMemoryPool *mp, CExpressionHandle &expr
 		COrderSpec *pos = (*pdrgpos)[ul];
 		ulSortCols += pos->UlSortColumns();
 	}
-
 	// we process (sorted window of) input tuples to compute window function values
 	// Use at least 1 to account for the base cost of evaluating window functions
 	// even when there are no sort columns (e.g., no ORDER BY in the window spec)
@@ -3365,6 +3432,11 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalSequenceProject:
 		{
 			return CostSequenceProject(m_mp, exprhdl, this, pci);
+		}
+
+		case COperator::EopPhysicalParallelSequenceProject:
+		{
+			return CostParallelSequenceProject(m_mp, exprhdl, this, pci);
 		}
 
 		case COperator::EopPhysicalHashSequenceProject:

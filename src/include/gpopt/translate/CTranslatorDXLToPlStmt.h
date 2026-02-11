@@ -335,6 +335,13 @@ private:
 			*ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate DXL parallel window node into GPDB window plan node with parallel attributes
+	Plan *TranslateDXLParallelWindow(
+		const CDXLNode *window_dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray
+			*ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
 	// translate DXL sort node into GPDB Sort plan node
 	Plan *TranslateDXLSort(
 		const CDXLNode *sort_dxlnode, CDXLTranslateContext *output_context,

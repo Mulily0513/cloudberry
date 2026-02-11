@@ -371,6 +371,7 @@ CLogicalSequenceProject::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfImplementSequenceProject);
 	if (GPOS_FTRACE(EopttraceEnableWindowHashAgg))
 		(void) xform_set->ExchangeSet(CXform::ExfImplementHashSequenceProject);
+	(void) xform_set->ExchangeSet(CXform::ExfImplementParallelSequenceProject);
 
 	return xform_set;
 }

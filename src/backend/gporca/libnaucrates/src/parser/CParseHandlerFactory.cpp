@@ -131,6 +131,7 @@ CParseHandlerFactory::Init(CMemoryPool *mp)
 		{EdxltokenIndexDescr, &CreateIdxDescrParseHandler},
 
 		{EdxltokenPhysicalWindow, &CreateWindowParseHandler},
+		{EdxltokenPhysicalParallelWindow, &CreateParallelWindowParseHandler},
 		{EdxltokenScalarWindowref, &CreateWindowRefParseHandler},
 		{EdxltokenWindowFrame, &CreateWindowFrameParseHandler},
 		{EdxltokenScalarWindowFrameLeadingEdge,
@@ -1810,6 +1811,16 @@ CParseHandlerFactory::CreateWindowParseHandler(
 {
 	return GPOS_NEW(mp)
 		CParseHandlerPhysicalWindow(mp, parse_handler_mgr, parse_handler_root);
+}
+
+// creates a parse handler for parsing a parallel window node
+CParseHandlerBase *
+CParseHandlerFactory::CreateParallelWindowParseHandler(
+	CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+	CParseHandlerBase *parse_handler_root)
+{
+	return GPOS_NEW(mp) CParseHandlerPhysicalParallelWindow(
+		mp, parse_handler_mgr, parse_handler_root);
 }
 
 // creates a parse handler for parsing WindowRef operator

@@ -362,6 +362,7 @@ bool		optimizer_enable_hashjoin;
 bool		optimizer_enable_parallel_hashjoin;
 bool		optimizer_enable_parallel_hashagg;
 bool		optimizer_enable_parallel_groupagg;
+bool		optimizer_enable_parallel_window;
 bool		optimizer_enable_dynamictablescan;
 bool		optimizer_enable_dynamicindexscan;
 bool		optimizer_enable_dynamicindexonlyscan;
@@ -2421,6 +2422,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_EXPLAIN
 		},
 		&optimizer_enable_parallel_hashagg,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_enable_parallel_window", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Enables the optimizer's use of parallel window aggregate plans."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&optimizer_enable_parallel_window,
 		true,
 		NULL, NULL, NULL
 	},

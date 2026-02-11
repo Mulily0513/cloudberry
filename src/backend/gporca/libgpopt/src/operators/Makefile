@@ -146,6 +146,7 @@ OBJS        = CExpression.o \
               CPhysicalSequence.o \
               CPhysicalSequenceProject.o \
               CPhysicalHashSequenceProject.o \
+              CPhysicalParallelSequenceProject.o \
               CPhysicalSerialUnionAll.o \
               CPhysicalSort.o \
               CPhysicalSplit.o \

@@ -40,7 +40,7 @@ SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM emps
                ->  Sort
                      Sort Key: depname
                      ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (10 rows)
 
 SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM empsalary ORDER BY depname, salary;
@@ -67,7 +67,7 @@ SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM emps
    Merge Key: depname, salary
    ->  Sort
          Sort Key: depname, salary
-         ->  WindowAgg
+         ->  Parallel WindowAgg
                Partition By: depname
                ->  Sort
                      Sort Key: depname
@@ -75,7 +75,7 @@ SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM emps
                            Hash Key: depname
                            Hash Module: 3
                            ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (13 rows)
 
 SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM empsalary ORDER BY depname, salary;
@@ -83,13 +83,13 @@ SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM emps
 -----------+-------+--------+-------
  develop   |     7 |   4200 | 25100
  develop   |     9 |   4500 | 25100
- develop   |    10 |   5200 | 25100
  develop   |    11 |   5200 | 25100
+ develop   |    10 |   5200 | 25100
  develop   |     8 |   6000 | 25100
  personnel |     5 |   3500 |  7400
  personnel |     2 |   3900 |  7400
- sales     |     4 |   4800 | 14600
  sales     |     3 |   4800 | 14600
+ sales     |     4 |   4800 | 14600
  sales     |     1 |   5000 | 14600
 (10 rows)
 
@@ -106,7 +106,7 @@ SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary
          ->  Sort
                Sort Key: depname, salary
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary) FROM empsalary;
@@ -130,7 +130,7 @@ SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
-   ->  WindowAgg
+   ->  Parallel WindowAgg
          Partition By: depname
          Order By: salary
          ->  Sort
@@ -139,7 +139,7 @@ SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary
                      Hash Key: depname
                      Hash Module: 3
                      ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (11 rows)
 
 SELECT depname, empno, salary, rank() OVER (PARTITION BY depname ORDER BY salary) FROM empsalary;
@@ -169,7 +169,7 @@ SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PA
          ->  Sort
                Sort Key: depname
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (7 rows)
 
 SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PARTITION BY depname);
@@ -193,7 +193,7 @@ SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PA
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
-   ->  WindowAgg
+   ->  Parallel WindowAgg
          Partition By: depname
          ->  Sort
                Sort Key: depname
@@ -201,22 +201,22 @@ SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PA
                      Hash Key: depname
                      Hash Module: 3
                      ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (10 rows)
 
 SELECT depname, empno, salary, sum(salary) OVER w FROM empsalary WINDOW w AS (PARTITION BY depname);
   depname  | empno | salary |  sum  
 -----------+-------+--------+-------
- develop   |    10 |   5200 | 25100
+ develop   |    11 |   5200 | 25100
  develop   |     7 |   4200 | 25100
  develop   |     9 |   4500 | 25100
  develop   |     8 |   6000 | 25100
- develop   |    11 |   5200 | 25100
+ develop   |    10 |   5200 | 25100
  personnel |     5 |   3500 |  7400
  personnel |     2 |   3900 |  7400
+ sales     |     3 |   4800 | 14600
  sales     |     1 |   5000 | 14600
  sales     |     4 |   4800 | 14600
- sales     |     3 |   4800 | 14600
 (10 rows)
 
 -- w4
@@ -235,7 +235,7 @@ SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITI
                ->  Sort
                      Sort Key: depname, salary
                      ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (11 rows)
 
 SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITION BY depname ORDER BY salary) ORDER BY rank() OVER w;
@@ -262,7 +262,7 @@ SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITI
    Merge Key: (rank() OVER (?))
    ->  Sort
          Sort Key: (rank() OVER (?))
-         ->  WindowAgg
+         ->  Parallel WindowAgg
                Partition By: depname
                Order By: salary
                ->  Sort
@@ -271,7 +271,7 @@ SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITI
                            Hash Key: depname
                            Hash Module: 3
                            ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (14 rows)
 
 SELECT depname, empno, salary, rank() OVER w FROM empsalary WINDOW w AS (PARTITION BY depname ORDER BY salary) ORDER BY rank() OVER w;
@@ -301,17 +301,17 @@ FROM empsalary GROUP BY depname;
  WindowAgg
    Order By: depname
    ->  Sort
-         Sort Key: depname
+         Sort Key: depname DESC
          ->  WindowAgg
                Order By: depname
                ->  Gather Motion 3:1  (slice1; segments: 3)
                      Merge Key: depname
-                     ->  Sort
-                           Sort Key: depname DESC
-                           ->  HashAggregate
-                                 Group Key: depname
+                     ->  GroupAggregate
+                           Group Key: depname
+                           ->  Sort
+                                 Sort Key: depname
                                  ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (14 rows)
 
 SELECT sum(salary),
@@ -320,9 +320,9 @@ SELECT sum(salary),
 FROM empsalary GROUP BY depname;
   sum  | row_number |  sum  
 -------+------------+-------
- 25100 |          1 | 47100
-  7400 |          2 | 22000
  14600 |          3 | 14600
+  7400 |          2 | 22000
+ 25100 |          1 | 47100
 (3 rows)
 
 set enable_parallel = on;
@@ -331,23 +331,26 @@ SELECT sum(salary),
 	row_number() OVER (ORDER BY depname),
 	sum(sum(salary)) OVER (ORDER BY depname DESC)
 FROM empsalary GROUP BY depname;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
  WindowAgg
    Order By: depname
    ->  Sort
-         Sort Key: depname
+         Sort Key: depname DESC
          ->  WindowAgg
                Order By: depname
-               ->  Gather Motion 3:1  (slice1; segments: 3)
+               ->  Gather Motion 6:1  (slice1; segments: 6)
                      Merge Key: depname
-                     ->  Sort
-                           Sort Key: depname DESC
-                           ->  HashAggregate
-                                 Group Key: depname
-                                 ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
-(14 rows)
+                     ->  GroupAggregate
+                           Group Key: depname
+                           ->  Sort
+                                 Sort Key: depname
+                                 ->  Redistribute Motion 6:6  (slice2; segments: 6)
+                                       Hash Key: depname
+                                       Hash Module: 3
+                                       ->  Parallel Seq Scan on empsalary
+ Optimizer: GPORCA
+(17 rows)
 
 SELECT sum(salary),
 	row_number() OVER (ORDER BY depname),
@@ -355,9 +358,9 @@ SELECT sum(salary),
 FROM empsalary GROUP BY depname;
   sum  | row_number |  sum  
 -------+------------+-------
- 25100 |          1 | 47100
-  7400 |          2 | 22000
  14600 |          3 | 14600
+  7400 |          2 | 22000
+ 25100 |          1 | 47100
 (3 rows)
 
 -- w6
@@ -377,7 +380,7 @@ FROM empsalary WINDOW w1 AS (ORDER BY salary), w2 AS (ORDER BY salary);
                ->  Sort
                      Sort Key: salary
                      ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (10 rows)
 
 SELECT sum(salary) OVER w1, count(*) OVER w2
@@ -412,7 +415,7 @@ FROM empsalary WINDOW w1 AS (ORDER BY salary), w2 AS (ORDER BY salary);
                ->  Sort
                      Sort Key: salary
                      ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (10 rows)
 
 SELECT sum(salary) OVER w1, count(*) OVER w2
@@ -445,7 +448,7 @@ SELECT sum(salary) OVER w, rank() OVER w FROM empsalary WINDOW w AS (PARTITION B
          ->  Sort
                Sort Key: depname, salary DESC
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 SELECT sum(salary) OVER w, rank() OVER w FROM empsalary WINDOW w AS (PARTITION BY depname ORDER BY salary DESC);
@@ -469,7 +472,7 @@ SELECT sum(salary) OVER w, rank() OVER w FROM empsalary WINDOW w AS (PARTITION B
                             QUERY PLAN                            
 ------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
-   ->  WindowAgg
+   ->  Parallel WindowAgg
          Partition By: depname
          Order By: salary
          ->  Sort
@@ -478,7 +481,7 @@ SELECT sum(salary) OVER w, rank() OVER w FROM empsalary WINDOW w AS (PARTITION B
                      Hash Key: depname
                      Hash Module: 3
                      ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (11 rows)
 
 SELECT sum(salary) OVER w, rank() OVER w FROM empsalary WINDOW w AS (PARTITION BY depname ORDER BY salary DESC);
@@ -507,22 +510,22 @@ SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), 
 			AVG(salary) OVER (PARTITION BY depname) < salary
 		THEN 200 END AS depadj FROM empsalary
 )s;
-                            QUERY PLAN                             
--------------------------------------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  WindowAgg
    ->  WindowAgg
-         Order By: s.empno
+         Order By: empno
          ->  Gather Motion 3:1  (slice1; segments: 3)
-               Merge Key: s.empno
-               ->  Sort
-                     Sort Key: s.empno
-                     ->  Subquery Scan on s
+               Merge Key: empno
+               ->  Result
+                     ->  Sort
+                           Sort Key: empno
                            ->  WindowAgg
-                                 Partition By: empsalary.depname
+                                 Partition By: depname
                                  ->  Sort
-                                       Sort Key: empsalary.depname
+                                       Sort Key: depname
                                        ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (14 rows)
 
 SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), MAX(depadj) OVER () FROM(
@@ -559,21 +562,21 @@ SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), 
 ------------------------------------------------------------------------------------------
  WindowAgg
    ->  WindowAgg
-         Order By: s.empno
+         Order By: empno
          ->  Gather Motion 6:1  (slice1; segments: 6)
-               Merge Key: s.empno
-               ->  Sort
-                     Sort Key: s.empno
-                     ->  Subquery Scan on s
-                           ->  WindowAgg
-                                 Partition By: empsalary.depname
+               Merge Key: empno
+               ->  Result
+                     ->  Sort
+                           Sort Key: empno
+                           ->  Parallel WindowAgg
+                                 Partition By: depname
                                  ->  Sort
-                                       Sort Key: empsalary.depname
+                                       Sort Key: depname
                                        ->  Redistribute Motion 6:6  (slice2; segments: 6)
-                                             Hash Key: empsalary.depname
+                                             Hash Key: depname
                                              Hash Module: 3
                                              ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (17 rows)
 
 SELECT empno, depname, salary, bonus, depadj, MIN(bonus) OVER (ORDER BY empno), MAX(depadj) OVER () FROM(
@@ -611,7 +614,7 @@ select sum(salary) over (order by enroll_date range between '1 year'::interval p
          ->  Sort
                Sort Key: enroll_date
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date range between '1 year'::interval preceding and '1 year'::interval following),
@@ -643,7 +646,7 @@ select sum(salary) over (order by enroll_date range between '1 year'::interval p
          ->  Sort
                Sort Key: enroll_date
                ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date range between '1 year'::interval preceding and '1 year'::interval following),
@@ -676,7 +679,7 @@ select sum(salary) over (order by enroll_date desc range between '1 year'::inter
          ->  Sort
                Sort Key: enroll_date DESC
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date desc range between '1 year'::interval preceding and '1 year'::interval following),
@@ -708,7 +711,7 @@ select sum(salary) over (order by enroll_date desc range between '1 year'::inter
          ->  Sort
                Sort Key: enroll_date DESC
                ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date desc range between '1 year'::interval preceding and '1 year'::interval following),
@@ -741,7 +744,7 @@ select sum(salary) over (order by enroll_date desc range between '1 year'::inter
          ->  Sort
                Sort Key: enroll_date DESC
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date desc range between '1 year'::interval following and '1 year'::interval following),
@@ -773,7 +776,7 @@ select sum(salary) over (order by enroll_date desc range between '1 year'::inter
          ->  Sort
                Sort Key: enroll_date DESC
                ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date desc range between '1 year'::interval following and '1 year'::interval following),
@@ -806,7 +809,7 @@ select sum(salary) over (order by enroll_date range between '1 year'::interval p
          ->  Sort
                Sort Key: enroll_date
                ->  Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date range between '1 year'::interval preceding and '1 year'::interval following
@@ -838,7 +841,7 @@ select sum(salary) over (order by enroll_date range between '1 year'::interval p
          ->  Sort
                Sort Key: enroll_date
                ->  Parallel Seq Scan on empsalary
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (8 rows)
 
 select sum(salary) over (order by enroll_date range between '1 year'::interval preceding and '1 year'::interval following
@@ -880,8 +883,8 @@ set local min_parallel_table_scan_size = 0;
 -- If parallel-aware append encounters a motion hazard, fall back to parallel-oblivious append.
 explain(costs off, verbose)
 select b, count(*) from t1 group by b union all select b, count(*) from t2 group by b;
-                                                       QUERY PLAN                                                       
-------------------------------------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.b, (count(*))
    ->  Append
@@ -903,16 +906,16 @@ select b, count(*) from t1 group by b union all select b, count(*) from t2 group
                      Hash Module: 3
                      ->  Parallel Seq Scan on window_parallel.t2
                            Output: t2.b
- Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0', optimizer = 'off'
- Optimizer: Postgres query optimizer
+ Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0'
+ Optimizer: GPORCA
 (23 rows)
 
 set local enable_parallel_append = off;
 -- Naturally, use parallel-oblivious append directly when parallel-aware mode is disabled.
 explain(costs off, verbose)
 select b, count(*) from t1 group by b union all select b, count(*) from t2 group by b;
-                                                       QUERY PLAN                                                        
--------------------------------------------------------------------------------------------------------------------------
+                                              QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.b, (count(*))
    ->  Append
@@ -934,8 +937,8 @@ select b, count(*) from t1 group by b union all select b, count(*) from t2 group
                      Hash Module: 3
                      ->  Parallel Seq Scan on window_parallel.t2
                            Output: t2.b
- Settings: enable_parallel = 'on', enable_parallel_append = 'off', min_parallel_table_scan_size = '0', optimizer = 'off'
- Optimizer: Postgres query optimizer
+ Settings: enable_parallel = 'on', enable_parallel_append = 'off', min_parallel_table_scan_size = '0'
+ Optimizer: GPORCA
 (23 rows)
 
 -- Ensure compatibility between different paths when using parallel workers
@@ -944,8 +947,8 @@ set max_parallel_workers_per_gather = 3;
 alter table t2 set(parallel_workers=3);
 explain(costs off, verbose)
 select b, count(*) from t1 group by b union all select b, count(*) from t2 group by b;
-                                                       QUERY PLAN                                                       
-------------------------------------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
  Gather Motion 9:1  (slice1; segments: 9)
    Output: t1.b, (count(*))
    ->  Append
@@ -967,8 +970,8 @@ select b, count(*) from t1 group by b union all select b, count(*) from t2 group
                      Hash Module: 3
                      ->  Parallel Seq Scan on window_parallel.t2
                            Output: t2.b
- Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0', optimizer = 'off'
- Optimizer: Postgres query optimizer
+ Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0'
+ Optimizer: GPORCA
 (23 rows)
 
 -- Could not drive a parallel plan if no partial paths are avaliable
@@ -976,59 +979,63 @@ alter table t2 set(parallel_workers=0);
 -- parallel-aware
 explain(costs off, verbose)
 select b, count(*) from t1 group by b union all select b, count(*) from t2 group by b;
-                                                       QUERY PLAN                                                       
-------------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Gather Motion 9:1  (slice1; segments: 9)
    Output: t1.b, (count(*))
    ->  Append
          ->  HashAggregate
                Output: t1.b, count(*)
                Group Key: t1.b
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               ->  Redistribute Motion 6:9  (slice2; segments: 6)
                      Output: t1.b
                      Hash Key: t1.b
-                     ->  Seq Scan on window_parallel.t1
+                     Hash Module: 3
+                     ->  Parallel Seq Scan on window_parallel.t1
                            Output: t1.b
          ->  HashAggregate
                Output: t2.b, count(*)
                Group Key: t2.b
-               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+               ->  Redistribute Motion 9:9  (slice3; segments: 9)
                      Output: t2.b
                      Hash Key: t2.b
-                     ->  Seq Scan on window_parallel.t2
+                     Hash Module: 3
+                     ->  Parallel Seq Scan on window_parallel.t2
                            Output: t2.b
- Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0', optimizer = 'off'
- Optimizer: Postgres query optimizer
-(21 rows)
+ Settings: enable_parallel = 'on', enable_parallel_append = 'on', min_parallel_table_scan_size = '0'
+ Optimizer: GPORCA
+(23 rows)
 
 set local enable_parallel_append = off;
 -- Also applies to parallel-oblivious
 explain(costs off, verbose)
 select b, count(*) from t1 group by b union all select b, count(*) from t2 group by b;
-                                                       QUERY PLAN                                                        
--------------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
+                                              QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------
+ Gather Motion 9:1  (slice1; segments: 9)
    Output: t1.b, (count(*))
    ->  Append
          ->  HashAggregate
                Output: t1.b, count(*)
                Group Key: t1.b
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               ->  Redistribute Motion 6:9  (slice2; segments: 6)
                      Output: t1.b
                      Hash Key: t1.b
-                     ->  Seq Scan on window_parallel.t1
+                     Hash Module: 3
+                     ->  Parallel Seq Scan on window_parallel.t1
                            Output: t1.b
          ->  HashAggregate
                Output: t2.b, count(*)
                Group Key: t2.b
-               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+               ->  Redistribute Motion 9:9  (slice3; segments: 9)
                      Output: t2.b
                      Hash Key: t2.b
-                     ->  Seq Scan on window_parallel.t2
+                     Hash Module: 3
+                     ->  Parallel Seq Scan on window_parallel.t2
                            Output: t2.b
- Settings: enable_parallel = 'on', enable_parallel_append = 'off', min_parallel_table_scan_size = '0', optimizer = 'off'
- Optimizer: Postgres query optimizer
-(21 rows)
+ Settings: enable_parallel = 'on', enable_parallel_append = 'off', min_parallel_table_scan_size = '0'
+ Optimizer: GPORCA
+(23 rows)
 
 abort;
 --
@@ -1036,7 +1043,10 @@ abort;
 --
 -- start_ignore
 drop schema window_parallel cascade;
-NOTICE:  drop cascades to table empsalary
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table empsalary
+drop cascades to table t1
+drop cascades to table t2
 -- end_ignore
 reset min_parallel_table_scan_size;
 reset enable_parallel;

@@ -109,6 +109,7 @@ OBJS        = CParseHandlerAgg.o \
               CParseHandlerPhysicalSplit.o \
               CParseHandlerPhysicalTVF.o \
               CParseHandlerPhysicalWindow.o \
+              CParseHandlerPhysicalParallelWindow.o \
               CParseHandlerPlan.o \
               CParseHandlerPlanHint.o \
               CParseHandlerProjElem.o \

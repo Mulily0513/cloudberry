@@ -200,6 +200,10 @@ public:
 		return false;
 	}
 
+	// check if optimization context is valid
+	BOOL FValidContext(CMemoryPool *mp, COptimizationContext *poc,
+					   COptimizationContextArray *pdrgpocChild) const override;
+
 	//-------------------------------------------------------------------------------------
 	//-------------------------------------------------------------------------------------
 	//-------------------------------------------------------------------------------------
@@ -212,7 +216,8 @@ public:
 	PopConvert(COperator *pop)
 	{
 		GPOS_ASSERT(nullptr != pop);
-		GPOS_ASSERT(EopPhysicalSequenceProject == pop->Eopid());
+		GPOS_ASSERT(EopPhysicalSequenceProject == pop->Eopid() ||
+					EopPhysicalParallelSequenceProject == pop->Eopid());
 
 		return dynamic_cast<CPhysicalSequenceProject *>(pop);
 	}

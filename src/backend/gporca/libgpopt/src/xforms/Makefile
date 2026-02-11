@@ -64,6 +64,7 @@ OBJS        = CDecorrelator.o \
               CXformImplementSequence.o \
               CXformImplementSequenceProject.o \
               CXformImplementHashSequenceProject.o \
+              CXformImplementParallelSequenceProject.o \
               CXformImplementSplit.o \
               CXformImplementTVF.o \
               CXformImplementTVFNoArgs.o \

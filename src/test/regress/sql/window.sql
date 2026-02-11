@@ -1017,8 +1017,8 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
 
@@ -1027,8 +1027,8 @@ SELECT * FROM
           empno,
           salary,
           enroll_date,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date) AS first_emp,
-          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC) AS last_emp
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date, empno) AS first_emp,
+          row_number() OVER (PARTITION BY depname ORDER BY enroll_date DESC, empno DESC) AS last_emp
    FROM empsalary) emp
 WHERE first_emp = 1 OR last_emp = 1;
 

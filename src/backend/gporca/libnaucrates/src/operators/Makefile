@@ -96,6 +96,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalParallelTableScan.o \
               CDXLPhysicalValuesScan.o \
               CDXLPhysicalWindow.o \
+              CDXLPhysicalParallelWindow.o \
               CDXLProperties.o \
               CDXLScalar.o \
               CDXLScalarAggref.o \

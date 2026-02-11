@@ -1,5 +1,4 @@
 set force_parallel_mode = 0;
-set optimizer = off;
 
 create schema window_parallel;
 set search_path to window_parallel;
@@ -266,4 +265,3 @@ reset min_parallel_table_scan_size;
 reset enable_parallel;
 reset gp_appendonly_insert_files;
 reset force_parallel_mode;
-reset optimizer;
