@@ -1552,12 +1552,12 @@ begin;
 alter table tt14t drop column f3;
 -- f3 is still in the view ...
 select pg_get_viewdef('tt14v', true);
-         pg_get_viewdef         
---------------------------------
-  SELECT t.f1,                 +
-     t.f3,                     +
-     t.f4                      +
-    FROM tt14f() t(f1, f3, f4);
+         pg_get_viewdef          
+---------------------------------
+  SELECT t.f1,                  +
+     t."?dropped?column?" AS f3,+
+     t.f4                       +
+    FROM tt14f() t(f1, f4);
 (1 row)
 
 -- but will fail at execution
