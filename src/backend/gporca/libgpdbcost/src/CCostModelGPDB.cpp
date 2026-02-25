@@ -2424,8 +2424,10 @@ CCostModelGPDB::CostParallelIndexScan(CMemoryPool *mp,
 	GPOS_ASSERT(nullptr != pci);
 
 	COperator *pop = exprhdl.Pop();
+#ifdef GPOS_DEBUG
 	COperator::EOperatorId op_id = pop->Eopid();
 	GPOS_ASSERT(COperator::EopPhysicalParallelIndexScan == op_id);
+#endif	// GPOS_DEBUG
 
 	ULONG ulWorkers = 0;
 
