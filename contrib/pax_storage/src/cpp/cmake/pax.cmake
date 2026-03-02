@@ -221,7 +221,6 @@ add_custom_command(TARGET pax POST_BUILD
 if (BUILD_GTEST)
   find_package(GTest REQUIRED)
 
-  ADD_DEFINITIONS(-DRUN_GTEST)
   file(GLOB test_case_sources
     pax_gtest_helper.cc
     pax_gtest.cc
@@ -229,6 +228,7 @@ if (BUILD_GTEST)
     ${CMAKE_CURRENT_SOURCE_DIR}/*/*/*_test.cc)
 
   add_executable(test_main ${pax_target_src} ${test_case_sources})
+  target_compile_definitions(test_main PRIVATE RUN_GTEST)
   add_dependencies(test_main ${pax_target_dependencies} GTest::gtest_main GTest::gmock)
   target_include_directories(test_main PUBLIC ${pax_target_include} ${CMAKE_CURRENT_SOURCE_DIR} ${gtest_SOURCE_DIR}/include)
 
@@ -239,13 +239,13 @@ endif(BUILD_GTEST)
 if(BUILD_GBENCH)
   find_package(benchmark REQUIRED)
 
-  ADD_DEFINITIONS(-DRUN_GBENCH)
   file(GLOB bench_sources
       pax_gbench.cc
       ${CMAKE_CURRENT_SOURCE_DIR}/*/*_bench.cc
       ${CMAKE_CURRENT_SOURCE_DIR}/*/*/*_bench.cc)
 
     add_executable(bench_main ${pax_target_src} ${bench_sources})
+    target_compile_definitions(bench_main PRIVATE RUN_GBENCH)
     add_dependencies(bench_main ${pax_target_dependencies} GTest::gtest_main GTest::gmock)
     target_include_directories(bench_main PUBLIC ${pax_target_include} ${CMAKE_CURRENT_SOURCE_DIR})
     link_directories(contrib/googlebench/src)
