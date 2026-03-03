@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.plugins.hudi.utilities;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.plugins.hudi.utilities;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.plugins.hudi.utilities;
 
 import cloud.elastic.dlagent.api.error.DlRuntimeException;
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;

@@ -22,6 +22,8 @@ public:
 
 	virtual int64_t read(void *values, void *nulls);
 
+	virtual int64_t read(void *values, void *nulls, void *tid);
+
 	virtual void destroyHandler();
 
 private:

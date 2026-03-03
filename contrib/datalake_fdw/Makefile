@@ -79,6 +79,9 @@ OBJS = 	src/datalake_fdw.o \
 		src/provider/iceberg/iceberg_task_reader.o \
 		src/provider/iceberg/iceberg_position_filter.o \
 		src/provider/iceberg/iceberg_read.o \
+		src/provider/iceberg/iceberg_write.o \
+		src/provider/iceberg/iceberg_posdel_write.o \
+		src/provider/iceberg/iceberg_file_index.o \
 		src/provider/hudi/hudi_btree_merger.o \
 		src/provider/hudi/hudi_deltalog_filter.o \
 		src/provider/hudi/hudi_hashtab_merger.o \
@@ -92,7 +95,8 @@ OBJS = 	src/datalake_fdw.o \
 		src/provider/avro/write/avroWrite.o \
 		src/provider/providerWrapper.o \
 		src/provider/provider.o \
-		src/hdw_gopher_cache/hdw_gopher_cache.o
+		src/hdw_gopher_cache/hdw_gopher_cache.o \
+		src/common/fileMetadata.o
 
 # Avoid building LLVM Bitcode for datalake_fdw module.
 with_llvm = no
@@ -115,7 +119,7 @@ else
     $(info Please specify JANSSON_STATIC_PATH with: make JANSSON_STATIC_PATH="/path/to/lib")
 endif
 
-PG_CPPFLAGS = -DENABLE_NLS -DSNAPPY_CODEC_AVAILABLE
+PG_CPPFLAGS = -DSNAPPY_CODEC_AVAILABLE
 
 EXTENSION = datalake_fdw
 DATA = datalake_fdw--1.0.sql
@@ -136,15 +140,16 @@ REGRESS = setup \
         hive_connecter_read_new_text_s3 hive_connecter_read_text_s3 \
         orc_read parquet_read avro_read iresearch_orc_test iresearch_orc_vec_test \
         oss_read_new_text oss_read_text grammar_convert gphdfs_ignore_file gphdfs_custom \
-        oss_read_new_text_limit_segment oss_read_orc_limit_segment oss_read_parquet_limit_segment oss_read_text_limit_segment
+        oss_read_new_text_limit_segment oss_read_orc_limit_segment oss_read_parquet_limit_segment oss_read_text_limit_segment \
+		iceberg_test
 endif
 REGRESS_OPTS += --init-file=test/init_file
 
 arrow_dist_dir = $(abspath $(top_builddir)/contrib/apache-arrow/dist)
 
-PG_CPPFLAGS += -fPIC -I$(arrow_dist_dir)/include
+PG_CPPFLAGS += -fPIC -I$(arrow_dist_dir)/include -I../../src/interfaces
 PG_CFLAGS += -Wno-error=stringop-overflow
-PG_CFLAGS += -I $(shell pg_config --includedir)
+PG_CFLAGS += -I $(shell pg_config --includedir) -I../../src/interfaces
 PG_LDFLAGS += $(shell pg_config --ldflags) -L$(arrow_dist_dir)/lib
 
 ifdef USE_PGXS

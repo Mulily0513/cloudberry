@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.model;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,9 @@ package cloud.elastic.dlagent.api.model;
  * under the License.
  */
 
+
+
+package cloud.elastic.dlagent.api.model;
 
 import org.apache.commons.lang.StringUtils;
 import cloud.elastic.dlagent.api.utilities.EnumGpdbType;
@@ -173,6 +174,16 @@ public class Metadata {
 
     public void setOutputParameters(Map<String, String> outputParameters) {
         this.outputParameters = outputParameters;
+    }
+
+    private String location;
+
+    public void setLocation(String location) {
+        this.location = location;
+    }
+
+    public String getLocation() {
+        return location;
     }
 
     /**

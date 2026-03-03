@@ -504,6 +504,80 @@ datalake_churl_read(CHURL_HANDLE handle, char *buf, size_t max_size)
 	return n;
 }
 
+/*
+ * Finish upload and read response data
+ *
+ * This function should be called after writing data in upload mode to:
+ * 1. Finish the upload and wait for HTTP response (first call)
+ * 2. Read remaining response data from buffer (subsequent calls)
+ *
+ * Parameters:
+ *     handle - churl context handle
+ *     buf - buffer to store read data
+ *     max_size - maximum number of bytes to read
+ *
+ * Returns:
+ *     Number of bytes read, or 0 if no more data available
+ *
+ * Note: This function can be called multiple times to read large responses
+ *       in chunks. On first call, it finishes the upload. On subsequent calls,
+ *       it reads from the already-filled download buffer.
+ */
+size_t
+datalake_churl_finish_upload_and_read(CHURL_HANDLE handle, char *buf, size_t max_size)
+{
+	churl_context *context = (churl_context *) handle;
+	churl_buffer *context_buffer;
+	int			n = 0;
+
+	Assert(context);
+	Assert(buf);
+	Assert(max_size > 0);
+
+	/* If upload is already finished, just read remaining data from buffer */
+	if (!context->upload)
+	{
+		context_buffer = context->download_buffer;
+		n = context_buffer->top - context_buffer->bot;
+
+		if (n > max_size)
+			n = max_size;
+
+		if (n > 0)
+			memcpy(buf, context_buffer->ptr + context_buffer->bot, n);
+
+		context_buffer->bot += n;
+
+		return n;
+	}
+
+	/* First call: finish the upload and wait for response.
+	 * This will trigger write_callback which populates download_buffer
+	 * with response data during the HTTP transaction.
+	 */
+	finish_upload(context);
+
+	/* Mark upload as complete to avoid calling finish_upload again in cleanup */
+	context->upload = false;
+
+	/* Read response from download_buffer.
+	 * All response data is already in the buffer after finish_upload completes.
+	 */
+	context_buffer = context->download_buffer;
+
+	n = context_buffer->top - context_buffer->bot;
+
+	if (n > max_size)
+		n = max_size;
+
+	if (n > 0)
+		memcpy(buf, context_buffer->ptr + context_buffer->bot, n);
+
+	context_buffer->bot += n;
+
+	return n;
+}
+
 void
 datalake_churl_cleanup(CHURL_HANDLE handle, bool after_error)
 {

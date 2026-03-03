@@ -25,13 +25,13 @@ void parquetWrite::createHandler(void *sstate)
 
 void parquetWrite::setOption(dataLakeOptions *options)
 {
-	option.compression = options->compress;
-	option.writeFileSize = options->fileSizeLimit;
+    option.compression = options->compress;
+    option.writeFileSize = options->fileSizeLimit;
 }
 
 std::string parquetWrite::generateParquetFileName(const std::string &filePath, uint32 fileSliceIndex)
 {
-	return generateWriteFileName(filePath, std::string(datalakeGetCompressionName(option.compression)), PARQUET_WRITE_SUFFIX, GpIdentity.segindex, fileSliceIndex);
+	return generateWriteFileName(filePath, std::string(datalakeGetCompressionName(option.compression)), PARQUET_WRITE_SUFFIX);
 }
 
 int64_t parquetWrite::write(const void *buf, int64_t length)

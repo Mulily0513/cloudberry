@@ -1,4 +1,3 @@
-#include <uuid/uuid.h>
 #include <sys/time.h>
 #include <sstream>
 #include "src/provider/orc/read/orcReadRecordBatch.h"
@@ -12,6 +11,12 @@
 #include "src/provider/avro/read/avroRead.h"
 #include "src/provider/avro/write/avroWrite.h"
 #include "src/provider/iceberg/iceberg_read.h"
+#include "src/provider/iceberg/iceberg_write.h"
+
+extern "C" {
+#include "utils/builtins.h"
+}
+#include "src/provider/iceberg/iceberg_posdel_write.h"
 #include "src/provider/hudi/hudi_read.h"
 #include "provider.h"
 extern "C" {
@@ -25,83 +30,102 @@ using Datalake::Internal::archiveRead;
 using Datalake::Internal::archiveWrite;
 using Datalake::Internal::orcReadRecordBatch;
 using Datalake::Internal::icebergRead;
+using Datalake::Internal::icebergWrite;
+using Datalake::Internal::icebergPosDeleteWrite;
 using Datalake::Internal::hudiRead;
 using Datalake::Internal::textFileRead;
 
 
-std::shared_ptr<Provider> getProvider(DLTblFmt type, bool readFdw, bool vectorization)
+std::shared_ptr<Provider> getProvider(DLTblFmt type, DLCmdType cmd, bool vectorization)
 {
-	if (readFdw)
+	switch (cmd)
 	{
-		if (FORMAT_IS_TEXT(type) || FORMAT_IS_CSV(type) || FORMAT_IS_CUSTOM(type))
-		{
-			if (external_table_new_text)
-				return std::make_shared<textFileRead>();
-			else
-				return std::make_shared<archiveRead>();
-		}
-		else if (FORMAT_IS_ORC(type))
-		{
-			if (vectorization)
+		case DL_OP_READ:
+			if (FORMAT_IS_TEXT(type) || FORMAT_IS_CSV(type) || FORMAT_IS_CUSTOM(type))
 			{
-				return std::make_shared<orcReadRecordBatch>();
+				if (external_table_new_text)
+					return std::make_shared<textFileRead>();
+				else
+					return std::make_shared<archiveRead>();
+			}
+			else if (FORMAT_IS_ORC(type))
+			{
+				if (vectorization)
+				{
+					return std::make_shared<orcReadRecordBatch>();
+				}
+				else
+				{
+					return std::make_shared<orcRead>();
+				}
+			}
+			else if (FORMAT_IS_PARQUET(type))
+			{
+				return std::make_shared<parquetRead>();
+			}
+			else if (FORMAT_IS_AVRO(type))
+			{
+				return std::make_shared<avroRead>();
+			}
+			else if (FORMAT_IS_ICEBERG(type))
+			{
+				return std::make_shared<icebergRead>();
+			}
+			else if (FORMAT_IS_HUDI(type))
+			{
+				return std::make_shared<hudiRead>();
 			}
 			else
 			{
-				return std::make_shared<orcRead>();
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						errmsg("unknow format. "
+						"datalake_fdw support read format text|csv|custom|orc|parquet|avro|hudi|iceberg.")));
 			}
-		}
-		else if (FORMAT_IS_PARQUET(type))
-		{
-			return std::make_shared<parquetRead>();
-		}
-		else if (FORMAT_IS_AVRO(type))
-		{
-			return std::make_shared<avroRead>();
-		}
-		else if (FORMAT_IS_ICEBERG(type))
-		{
-			return std::make_shared<icebergRead>();
-		}
-		else if (FORMAT_IS_HUDI(type))
-		{
-			return std::make_shared<hudiRead>();
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-					errmsg("unknow format. "
-					"datalake_fdw support read format text|csv|custom|orc|parquet|avro|hudi|iceberg.")));
-		}
+			break;
+		case DL_OP_WRITE:
+			if (FORMAT_IS_TEXT(type) || FORMAT_IS_CSV(type) || FORMAT_IS_CUSTOM(type))
+			{
+				return std::make_shared<archiveWrite>();
+			}
+			else if (FORMAT_IS_ORC(type))
+			{
+				return std::make_shared<orcWrite>();
+			}
+			else if (FORMAT_IS_PARQUET(type))
+			{
+				return std::make_shared<parquetWrite>();
+			}
+			else if (FORMAT_IS_AVRO(type))
+			{
+				return std::make_shared<avroWrite>();
+			}
+			else if (FORMAT_IS_ICEBERG(type))
+			{
+				return std::make_shared<icebergWrite>();
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						errmsg("unknow format. "
+						"datalake_fdw support write format text|csv|custom|orc|parquet|avro|iceberg.")));
+			}
+			break;
+		case DL_OP_DELETE:
+			if (FORMAT_IS_ICEBERG(type))
+			{
+				return std::make_shared<icebergPosDeleteWrite>();
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						errmsg("datalake_fdw support delete format iceberg.")));
+			}
+			break;
 	}
-	else
-	{
-		if (FORMAT_IS_TEXT(type) || FORMAT_IS_CSV(type) || FORMAT_IS_CUSTOM(type))
-		{
-			return std::make_shared<archiveWrite>();
-		}
-		else if (FORMAT_IS_ORC(type))
-		{
-			return std::make_shared<orcWrite>();
-		}
-		else if (FORMAT_IS_PARQUET(type))
-		{
-			return std::make_shared<parquetWrite>();
-		}
-		else if (FORMAT_IS_AVRO(type))
-		{
-			return std::make_shared<avroWrite>();
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-					errmsg("unknow format. "
-					"datalake_fdw support write format text|csv|custom|orc|parquet|avro.")));
-		}
-	}
-	return NULL;
+	return nullptr;
 }
 
 void Provider::createHandler(void* sstate)
@@ -110,6 +134,11 @@ void Provider::createHandler(void* sstate)
 }
 
 int64_t Provider::read(void *values, void *nulls)
+{
+	return 0;
+}
+
+int64_t Provider::read(void *values, void *nulls, void *tid)
 {
 	return 0;
 }
@@ -192,8 +221,12 @@ CompressType Provider::getCompressType(char* type)
 	return compresstype;
 }
 
-std::string Provider::generateWriteFileName(const std::string &writePrefix, const std::string &compress, const std::string &suffix, int segid, int fileSliceIndex)
+std::string Provider::generateWriteFileName(const std::string &writePrefix, const std::string &compress, const std::string &suffix)
 {
+	// Generate UUID using PostgreSQL built-in function (version 4, random)
+	Datum uuid_d = OidFunctionCall0(F_GEN_RANDOM_UUID);
+	char *uuid = DatumGetCString(OidFunctionCall1(F_UUID_OUT, uuid_d));
+
 	std::stringstream fileName;
 	if (!writePrefix.empty())
 	{
@@ -204,7 +237,8 @@ std::string Provider::generateWriteFileName(const std::string &writePrefix, cons
 		}
 	}
 
-	fileName << "seg" << segid << "-" << fileSliceIndex;
+	// Use UUID as filename (UUID is already unique)
+	fileName << uuid;
 	if (!compress.empty())
 	{
 		fileName << "." << compress;
@@ -213,5 +247,8 @@ std::string Provider::generateWriteFileName(const std::string &writePrefix, cons
 	{
 		fileName << "." << suffix;
 	}
-	return fileName.str();
+
+	std::string result = fileName.str();
+	pfree(uuid);
+	return result;
 }

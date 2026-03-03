@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.io;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,9 @@ package cloud.elastic.dlagent.api.io;
  * under the License.
  */
 
+
+
+package cloud.elastic.dlagent.api.io;
 
 import java.io.DataInput;
 import java.io.DataOutput;

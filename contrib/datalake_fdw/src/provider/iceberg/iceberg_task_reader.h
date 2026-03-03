@@ -10,6 +10,7 @@ typedef struct IcebergTaskReader
 	Reader       *dataReader;
 	FileScanTask *fileScanTask;
 	int           taskId;
+	uint32        fileId;			/* File ID in the index map */
 } IcebergTaskReader;
 
 Reader *createIcebergTaskReader(void *args);

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 package cloud.elastic.dlagent.api.utilities;
 
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -74,6 +75,15 @@ public enum EnumGpdbType {
     EnumGpdbType(String typeName, DataType dataType, byte modifiersNum) {
         this(typeName, dataType);
         this.modifiersNum = modifiersNum;
+    }
+
+    public static EnumGpdbType getEnumGpdbType(DataType dataType) {
+        for (EnumGpdbType type : values()) {
+            if (type.getDataType() == dataType) {
+                return type;
+            }
+        }
+        return null;
     }
 
     /**

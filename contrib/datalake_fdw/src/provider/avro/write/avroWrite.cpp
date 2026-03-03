@@ -27,8 +27,7 @@ int64_t avroWrite::write(const void* buf, int64_t length)
 
 std::string& avroWrite::generateAvroFileName(const std::string &filePath)
 {
-    int segid = GpIdentity.segindex;
-    file_name = generateWriteFileName(filePath, datalakeGetCompressionName(option.compression), AVRO_WRITE_SUFFIX, segid, 0);
+    file_name = generateWriteFileName(filePath, datalakeGetCompressionName(option.compression), AVRO_WRITE_SUFFIX);
     return file_name;
 }
 

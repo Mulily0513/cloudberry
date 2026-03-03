@@ -1,14 +1,18 @@
 #include "postgres.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/hsearch.h"
 #include "nodes/parsenodes.h"
 #include "gopher/gopher.h"
+#include "common/hashfn.h"
 
 #include "src/common/fileSystemWrapper.h"
 #include "src/provider/iceberg/iceberg_task_reader.h"
+#include "src/provider/iceberg/iceberg_file_index.h"
 #include "src/provider/hudi/hudi_task_reader.h"
 #include "row_reader.h"
 #include "src/common/dataBufferArray_c.h"
+#include "src/datalake_def.h"
 
 extern bool disableCacheFile;
 
@@ -17,6 +21,7 @@ static DatalakeRemoteFileHandle *openRemoteHandles;
 
 static void flatCombinedTasks(List *combinedScanTasks, List **fileScanTasks);
 static bool isCacheEnabled(char *cacheEnabled);
+static void icebergFileIndexMapInitialize(DatalakeRowReader *reader);
 
 static List *
 createFieldDescription(TupleDesc tupleDesc)
@@ -122,9 +127,37 @@ static Reader deltaLakeHandler = {
 	NULL
 };
 
+typedef struct FileMapEntry {
+    char    *filename;
+    int     file_id;
+} FileMapEntry;
+
+/* 
+ * Custom hash func: Derefference pointer and hash the string content
+ */
+static uint32
+filename_hash(const void *key, Size keysize)
+{
+    const char *str = (const char *) key;
+    return DatumGetUInt32(hash_any((const unsigned char *) str, strlen(str)));
+}
+
+/* 
+ * Custom hash cmp: Derefference pointer and compare the string content
+ */
+static int
+filename_match(const void *key1, const void *key2, Size keysize)
+{
+    const char *s1 = (const char *) key1;
+    const char *s2 = (const char *) key2;
+
+    return strcmp(s1, s2);
+}
+
 DatalakeRowReader *
 datalakeCreateRowReader(MemoryContext mcxt,
 				TupleDesc tupleDesc,
+				int nTblColumn,
 				bool *attrUsed,
 				gopherFS gopherFilesystem,
 				List *combinedScanTasks,
@@ -142,7 +175,10 @@ datalakeCreateRowReader(MemoryContext mcxt,
 	reader->mcxt = mcxt;
 	reader->tableOptions = tableOptions;
 	reader->buffer = datalake_buffer_arr_create(tupleDesc->natts + 8);
+	reader->format = format;
+	reader->fileIndexMapInitialized = false;  /* Will be lazily initialized on first iteration */
 
+	/* Set handler based on format */
 	if (FORMAT_IS_ICEBERG(format))
 		reader->handler = &icebergHandler;
 	else if (FORMAT_IS_HUDI(format))
@@ -163,6 +199,18 @@ datalakeCreateRowReader(MemoryContext mcxt,
 bool
 datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 {
+	/*
+	 * For Iceberg tables, lazily initialize fileIndexMap on first iteration.
+	 * This ensures we only build the index when actually needed (i.e., during UPDATE/DELETE),
+	 * avoiding unnecessary overhead for plain SELECT queries.
+	 */
+	if (FORMAT_IS_ICEBERG(reader->format) &&
+		datalake_iceberg_file_index_map != NULL &&
+		!reader->fileIndexMapInitialized)
+	{
+		icebergFileIndexMapInitialize(reader);
+	}
+
 	while (true)
 	{
 		if (reader->handler->Next(reader->curReader, record))
@@ -172,18 +220,34 @@ datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 		else if (list_length(reader->fileScanTasks) > 0)
 		{
 			DatalakeReaderInitInfo initInfo;
+			FileScanTask *curTask;
 
 			reader->handler->Close(reader->curReader);
 			MemoryContextSwitchTo(reader->curMcxt);
+
+			curTask = list_nth(reader->fileScanTasks, 0);
 
 			initInfo.taskId = reader->curReaderIndex++;
 			initInfo.mcxt = reader->mcxt;
 			initInfo.datafileDesc = reader->datafileDesc;
 			initInfo.attrUsed = reader->attrUsed;
 			initInfo.gopherFilesystem = reader->gopherFilesystem;
-			initInfo.fileScanTask = list_nth(reader->fileScanTasks, 0);
+			initInfo.fileScanTask = curTask;
 			initInfo.tableOptions = reader->tableOptions;
 			initInfo.buffer = reader->buffer;
+
+			/* For Iceberg tables, use the file ID stored in the task */
+			if (datalake_iceberg_file_index_map != NULL)
+			{
+				uint32 fileId = curTask->fileId;
+				initInfo.fileId = fileId;
+				elog(DEBUG2, "Task %d using file ID %u for %s",
+					 initInfo.taskId, fileId, curTask->dataFile->filePath);
+			}
+			else
+			{
+				initInfo.fileId = 0;  /* Not used for non-Iceberg tables */
+			}
 
 			MemoryContextReset(reader->taskMcxt);
 			MemoryContextSwitchTo(reader->taskMcxt);
@@ -236,6 +300,81 @@ flatCombinedTasks(List *combinedScanTasks, List **fileScanTasks)
 
 		list_free(combinedScanTask);
 	}
+}
+
+/*
+ * Lazy initialization function for Iceberg file index map.
+ * This function is called on the first iteration to build the file index map.
+ * It deduplicates files using a hash table and populates the global fileIndexMap.
+ */
+static void
+icebergFileIndexMapInitialize(DatalakeRowReader *reader)
+{
+	ListCell *lc;
+	uint32 fileCount = 0;
+	HTAB *filePathToIdMap = NULL;  /* Map: filePath -> fileId */
+	HASHCTL hashCtl;
+
+	Assert(!reader->fileIndexMapInitialized);
+
+	/* Create hash set for file path deduplication */
+	MemSet(&hashCtl, 0, sizeof(hashCtl));
+	hashCtl.keysize = sizeof(char*);  /* Max file path length */
+	hashCtl.entrysize = sizeof(FileMapEntry);  /* Store fileId as value */
+	hashCtl.hash = filename_hash;
+	hashCtl.match = filename_match;
+	hashCtl.hcxt = reader->mcxt;
+
+	filePathToIdMap = hash_create("Iceberg file path to ID map",
+	                              1024,  /* Initial size */
+	                              &hashCtl,
+	                              HASH_ELEM | HASH_COMPARE | HASH_FUNCTION | HASH_CONTEXT);
+
+	/* Build file index by scanning all tasks, deduplicating files */
+	foreach(lc, reader->fileScanTasks)
+	{
+		FileScanTask *task = (FileScanTask *) lfirst(lc);
+		const char *filePath = task->dataFile->filePath;
+		int64 recordCount = task->dataFile->recordCount;
+		bool found;
+		FileMapEntry *entry;
+		uint32 fileId;
+
+		/* Check if file path already has an assigned ID */
+		entry = (FileMapEntry *) hash_search(filePathToIdMap,
+		                                     (void *) &filePath,
+		                                     HASH_FIND, &found);
+
+		if (!found)
+		{
+			/* File not seen before, assign new ID and add to global index */
+			fileId = icebergAddFile(datalake_iceberg_file_index_map, filePath, recordCount);
+
+			/* Store ID in hash map for future lookups */
+			entry = (FileMapEntry *) hash_search(filePathToIdMap,
+			                                     (void *) &filePath,
+			                                     HASH_ENTER, &found);
+			entry->file_id = fileId;
+
+			fileCount++;
+		}
+		else
+		{
+			/* File already exists, retrieve assigned ID */
+			fileId = entry->file_id;
+		}
+
+		/* Store file ID in task for later use */
+		task->fileId = fileId;
+	}
+
+	/* Clean up hash map */
+	hash_destroy(filePathToIdMap);
+
+	elog(DEBUG1, "Built Iceberg file index with %u unique files", fileCount);
+
+	/* Mark as initialized */
+	reader->fileIndexMapInitialized = true;
 }
 
 static bool
@@ -342,10 +481,11 @@ datalakeProtocolImportStart(dataLakeFdwScanState *scanstate, DatalakeProtocolCon
 												ALLOCSET_DEFAULT_MAXSIZE);
 
 	context->file->reader = datalakeCreateRowReader(context->rowContext,
-											scanstate->rel->rd_att,
-											attrUsed,
-											context->file->gopherFilesystem,
-											combinedScanTasks,
-											scanstate->options->format,
-											tableOptions);
+													scanstate->scan_tupdesc,
+													scanstate->rel->rd_att->natts,
+													attrUsed,
+													context->file->gopherFilesystem,
+													combinedScanTasks,
+													scanstate->options->format,
+													tableOptions);
 }

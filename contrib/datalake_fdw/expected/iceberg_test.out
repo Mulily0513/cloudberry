@@ -1,0 +1,185 @@
+-- DDL
+CREATE FOREIGN TABLE iceberg_products (
+    id INT,
+    product_name TEXT,
+    category TEXT,
+    price NUMERIC(10, 2),
+    stock_date DATE
+)
+SERVER hive_server
+OPTIONS (filepath 'icebergdb.products', catalog_type 'hive', format 'iceberg', server_name 'hive-cluster-1', table_identifier 'icebergdb.products');
+CREATE TABLE local_inventory (
+    inventory_id SERIAL PRIMARY KEY,
+    product_id INT,
+    warehouse_location TEXT,
+    quantity INT
+);
+-- Insert
+INSERT INTO iceberg_products (id, product_name, category, price, stock_date)
+VALUES (1, 'Laptop Pro', 'Electronics', 1299.99, '2023-10-26');
+INSERT INTO iceberg_products (id, product_name, category, price, stock_date)
+VALUES
+    (2, 'Wireless Mouse', 'Accessories', 75.50, '2023-10-25'),
+    (3, 'Mechanical Keyboard', 'Accessories', 150.00, '2023-10-25'),
+    (4, '4K Monitor', 'Electronics', 799.00, '2023-10-24'),
+    (5, 'USB-C Hub', NULL, 49.99, '2023-10-26');
+SELECT count(*) FROM iceberg_products;
+ count 
+-------
+     5
+(1 row)
+
+SELECT product_name FROM iceberg_products WHERE id = 1;
+ product_name 
+--------------
+ Laptop Pro
+(1 row)
+
+SELECT * FROM iceberg_products ORDER BY id;
+ id |    product_name     |  category   |  price  | stock_date 
+----+---------------------+-------------+---------+------------
+  1 | Laptop Pro          | Electronics | 1299.99 | 10-26-2023
+  2 | Wireless Mouse      | Accessories |   75.50 | 10-25-2023
+  3 | Mechanical Keyboard | Accessories |  150.00 | 10-25-2023
+  4 | 4K Monitor          | Electronics |  799.00 | 10-24-2023
+  5 | USB-C Hub           |             |   49.99 | 10-26-2023
+(5 rows)
+
+SELECT id, product_name FROM iceberg_products WHERE category = 'Electronics';
+ id | product_name 
+----+--------------
+  1 | Laptop Pro
+  4 | 4K Monitor
+(2 rows)
+
+SELECT id, product_name FROM iceberg_products WHERE price > 200;
+ id | product_name 
+----+--------------
+  1 | Laptop Pro
+  4 | 4K Monitor
+(2 rows)
+
+SELECT id, product_name FROM iceberg_products WHERE stock_date = '2023-10-26';
+ id | product_name 
+----+--------------
+  5 | USB-C Hub
+  1 | Laptop Pro
+(2 rows)
+
+SELECT id, product_name FROM iceberg_products WHERE category IS NULL;
+ id | product_name 
+----+--------------
+  5 | USB-C Hub
+(1 row)
+
+SELECT product_name, price FROM iceberg_products WHERE category = 'Accessories' AND price < 100;
+  product_name  | price 
+----------------+-------
+ Wireless Mouse | 75.50
+(1 row)
+
+SELECT category, count(*), avg(price) FROM iceberg_products GROUP BY category ORDER BY category;
+  category   | count |          avg          
+-------------+-------+-----------------------
+ Accessories |     2 |  112.7500000000000000
+ Electronics |     2 | 1049.4950000000000000
+             |     1 |   49.9900000000000000
+(3 rows)
+
+-- Update
+UPDATE iceberg_products SET price = 1249.99 WHERE id = 1;
+UPDATE iceberg_products SET category = 'Peripherals' WHERE category = 'Accessories';
+SELECT price FROM iceberg_products WHERE id = 1;
+  price  
+---------
+ 1249.99
+(1 row)
+
+SELECT count(*) FROM iceberg_products WHERE category = 'Peripherals';
+ count 
+-------
+     2
+(1 row)
+
+-- Delete
+DELETE FROM iceberg_products WHERE id = 5;
+SELECT * FROM iceberg_products WHERE id = 5;
+ id | product_name | category | price | stock_date 
+----+--------------+----------+-------+------------
+(0 rows)
+
+-- Join
+INSERT INTO local_inventory (product_id, warehouse_location, quantity)
+VALUES
+    (1, 'Warehouse A', 50),
+    (2, 'Warehouse B', 200),
+    (4, 'Warehouse A', 30),
+    (99, 'Warehouse C', 10);
+SELECT
+    p.product_name,
+    p.price,
+    i.warehouse_location,
+    i.quantity
+FROM
+    iceberg_products p
+JOIN
+    local_inventory i ON p.id = i.product_id
+ORDER BY p.product_name;
+  product_name  |  price  | warehouse_location | quantity 
+----------------+---------+--------------------+----------
+ 4K Monitor     |  799.00 | Warehouse A        |       30
+ Laptop Pro     | 1249.99 | Warehouse A        |       50
+ Wireless Mouse |   75.50 | Warehouse B        |      200
+(3 rows)
+
+SELECT
+    p.id,
+    p.product_name,
+    i.quantity
+FROM
+    iceberg_products p
+LEFT JOIN
+    local_inventory i ON p.id = i.product_id
+ORDER BY p.id;
+ id |    product_name     | quantity 
+----+---------------------+----------
+  1 | Laptop Pro          |       50
+  2 | Wireless Mouse      |      200
+  3 | Mechanical Keyboard |         
+  4 | 4K Monitor          |       30
+(4 rows)
+
+SELECT
+    p.product_name,
+    i.product_id,
+    i.warehouse_location
+FROM
+    iceberg_products p
+RIGHT JOIN
+    local_inventory i ON p.id = i.product_id
+ORDER BY i.product_id;
+  product_name  | product_id | warehouse_location 
+----------------+------------+--------------------
+ Laptop Pro     |          1 | Warehouse A
+ Wireless Mouse |          2 | Warehouse B
+ 4K Monitor     |          4 | Warehouse A
+                |         99 | Warehouse C
+(4 rows)
+
+SELECT
+    p.product_name,
+    p.price,
+    i.warehouse_location
+FROM
+    iceberg_products p
+JOIN
+    local_inventory i ON p.id = i.product_id
+WHERE
+    i.warehouse_location = 'Warehouse A' AND p.price < 1000;
+ product_name | price  | warehouse_location 
+--------------+--------+--------------------
+ 4K Monitor   | 799.00 | Warehouse A
+(1 row)
+
+DROP TABLE local_inventory;
+DROP FOREIGN TABLE iceberg_products;

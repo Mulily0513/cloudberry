@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.service.bridge;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,7 +17,11 @@ package cloud.elastic.dlagent.service.bridge;
  * under the License.
  */
 
+
+package cloud.elastic.dlagent.service.bridge;
+
 import cloud.elastic.dlagent.api.io.Writable;
+import cloud.elastic.dlagent.api.model.MetadataFetcher;
 import cloud.elastic.dlagent.api.model.RequestContext;
 import cloud.elastic.dlagent.service.utilities.BasePluginFactory;
 import cloud.elastic.dlagent.service.utilities.GSSFailureHandler;
@@ -39,10 +41,24 @@ import java.nio.charset.StandardCharsets;
  * record as invalid for GPDB.
  */
 public class ReadBridge extends BaseBridge {
-    private static final String DEFAULT_RESPONSE = "{}";
+    private MetadataFetcher accessor;
 
     public ReadBridge(BasePluginFactory pluginFactory, RequestContext context, GSSFailureHandler failureHandler) {
         super(pluginFactory, context, failureHandler);
+        String accessorClassName = context.getMetadataFetcher();
+        LOG.debug("Creating accessor '{}'", accessorClassName);
+
+        this.accessor = pluginFactory.getPlugin(context, accessorClassName);
+    }
+
+    /**
+     * A function that is called by the failure handler before a new retry attempt after a failure.
+     * It re-creates the accessor from the factory in case the accessor implementation is not idempotent.
+     */
+    protected void beforeRetryCallback() {
+        String accessorClassName = context.getMetadataFetcher();
+        LOG.debug("Creating accessor '{}'", accessorClassName);
+        this.accessor = pluginFactory.getPlugin(context, accessorClassName);
     }
 
     /**
@@ -52,20 +68,6 @@ public class ReadBridge extends BaseBridge {
     public boolean open() throws Exception {
         // using lambda and not a method reference accessor::openForRead as the accessor will be changed by the retry function
         return failureHandler.execute(context.getConfiguration(), "open", () -> accessor.open(), this::beforeRetryCallback);
-    }
-
-    protected Writable makeOutput(Object value) throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.configure(MapperFeature.USE_ANNOTATIONS, true); // enable annotations for serialization
-        mapper.setSerializationInclusion(JsonInclude.Include.NON_EMPTY); // ignore empty fields
-
-        if (value == null) {
-            byte[] output = DEFAULT_RESPONSE.getBytes(StandardCharsets.UTF_8);
-            return new BufferWritable(output, output.length);
-        }
-
-        byte[] output = mapper.writeValueAsBytes(value);
-        return new BufferWritable(output, output.length);
     }
 
     @Override
@@ -86,6 +88,26 @@ public class ReadBridge extends BaseBridge {
         return makeOutput(accessor.getSchema(pattern));
     }
 
+    @Override
+    public Writable batchAppend() throws Exception {
+        return makeOutput(accessor.batchAppend());
+    }
+
+    @Override
+    public Writable getOrCreateSchema() throws Exception {
+        return makeOutput(accessor.getOrCreateSchema());
+    }
+
+    @Override
+    public Writable rowUpdate() throws Exception {
+        return makeOutput(accessor.rowUpdate());
+    }
+
+    @Override
+    public Writable getCurrentSnapshotSummary() throws Exception {
+        return makeOutput(accessor.getCurrentSnapshotSummary());
+    }
+
     /**
      * Close the underlying resource
      */
@@ -97,4 +119,5 @@ public class ReadBridge extends BaseBridge {
             throw e;
         }
     }
+
 }

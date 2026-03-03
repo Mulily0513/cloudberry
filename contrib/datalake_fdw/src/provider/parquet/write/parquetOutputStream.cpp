@@ -10,6 +10,7 @@ bool gopherWriteFileSystem::OpenFile(const std::string& path, bool append)
     filePath_ = path;
     closed_ = false;
     pos_ = 0;
+    bytes_written = 0;
     datalakeOpenFile(stream_, filePath_.c_str(), O_WRONLY);
     return true;
 }
@@ -30,5 +31,6 @@ bool gopherWriteFileSystem::OpenFile(const std::string& path, bool append)
 {
     datalakeWriteFile(stream_, (void*)data, nbytes);
     pos_ += nbytes;
+    bytes_written += nbytes;
     return ::parquet_arrow::Status::OK();
 }

@@ -26,6 +26,7 @@
 #include "nodes/nodeFuncs.h"
 #include "utils/rel.h"
 #include "src/datalake_def.h"
+#include "headers.h"
 
 /*
  * Context for single query execution by dlproxy
@@ -46,6 +47,7 @@ typedef struct
 	size_t          buffer_size;
 	char           *relName;
 	char           *schemaName;
+	List		   *file_list;
 } datalake_gphadoop_context;
 
 typedef struct
@@ -67,6 +69,15 @@ iceberg_get_external_fragments(Oid relid,
 							   List *targetList,
 							   List *locations);
 
+extern void
+iceberg_commit_external_write(Oid relid,
+							  List *file_list,
+							  List *location);
+
+extern IcebergTableStatistics*
+iceberg_get_current_snapshot_statistics(Oid relid,
+									 List *locations);
+
 extern List *
 hudi_get_external_fragments(Oid relid,
 							Index relno,
@@ -84,6 +95,21 @@ internal_get_external_fragments(char *profile,
 								parse_callback parseFn);
 
 extern void
+internal_commit_external_write(Oid relid, 
+							   List *file_list,
+							   List *locations);
+
+extern void 
+internal_commit_external_update(Oid relid, 
+							   List *file_list,
+							   List *locations);
+
+extern IcebergTableStatistics*
+internal_get_current_snapshot_statistics(Oid relid,
+									  List *locations,
+									  parse_callback parseFn);
+
+extern void
 datalake_destroy_context(datalake_gphadoop_context *context, bool afterError);
 
 extern datalake_gphadoop_context *
@@ -91,6 +117,12 @@ datalake_create_context(Oid relid, const char *uriStr, transform_callback transf
 
 extern datalake_gphadoop_context *
 datalake_create_context2(char *relName, char *schemaName, const char *uriStr, transform_callback transformFn);
+
+extern datalake_gphadoop_context *
+datalake_create_write_context_(Oid relid,
+								List *fileList,
+								const char *uriStr,
+								transform_callback transform);
 
 extern datalake_gphadoop_context *
 datalake_create_fragment_context(Oid relid,
@@ -102,7 +134,6 @@ datalake_create_fragment_context(Oid relid,
 
 extern void
 datalakeDoRPC(datalake_gphadoop_context *context);
-
 
 
 #endif							/* _PROTOCOL_H_ */

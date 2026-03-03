@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.service.profile;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,9 @@ package cloud.elastic.dlagent.service.profile;
  * under the License.
  */
 
+
+
+package cloud.elastic.dlagent.service.profile;
 
 import cloud.elastic.dlagent.api.model.PluginConf;
 import org.slf4j.Logger;

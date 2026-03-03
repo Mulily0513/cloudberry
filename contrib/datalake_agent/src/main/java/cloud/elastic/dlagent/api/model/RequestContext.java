@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.model;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,9 @@ package cloud.elastic.dlagent.api.model;
  * under the License.
  */
 
+
+package cloud.elastic.dlagent.api.model;
+
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
@@ -27,7 +28,6 @@ import org.apache.hadoop.conf.Configuration;
 import cloud.elastic.dlagent.api.utilities.ColumnDescriptor;
 import cloud.elastic.dlagent.api.utilities.Utilities;
 
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -58,7 +58,6 @@ public class RequestContext {
      * name).
      */
     private String dataSource;
-
 
     private String metadataFetcher;
 
@@ -166,6 +165,13 @@ public class RequestContext {
 
     private String defaultPartitionName;
 
+    private List<Fragment> fragments = new ArrayList<Fragment>();
+
+    /**
+     * File list for write operations.
+     */
+    private List<cloud.elastic.dlagent.service.rest.FileListRequest.FileEntry> fileList;
+
     public String getDefaultPartitionName() {
         return "__HIVE_DEFAULT_PARTITION__";
     }
@@ -248,7 +254,7 @@ public class RequestContext {
             return 1024 * 1024 * 1024;
         }
 
-        return splitSize * 1024 * 1204;
+        return splitSize * 1024 * 1024;
     }
 
     public void setSplitSize(String splitSize) {

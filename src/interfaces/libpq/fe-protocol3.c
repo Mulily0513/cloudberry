@@ -52,7 +52,7 @@
 #define VALID_LONG_MESSAGE_TYPE(id) \
 	((id) == 'T' || (id) == 'D' || (id) == 'd' || (id) == 'V' || \
 	 (id) == 'E' || (id) == 'N' || (id) == 'A' || (id) == 'Y' || \
-	 (id) == 'y' || (id) == 'o' || (id) == 'e')
+	 (id) == 'y' || (id) == 'o' || (id) == 'e' || (id) == 'f')
 
 
 static void handleSyncLoss(PGconn *conn, char id, int msgLength);
@@ -69,6 +69,8 @@ static void reportErrorPosition(PQExpBuffer msg, const char *query,
 static int	build_startup_packet(const PGconn *conn, char *packet,
 								 const PQEnvironmentOption *options);
 
+
+int	(*FDWRecvProtocol) (PGconn *conn, int msgLength) = NULL;
 
 /*
  * parseInput: if appropriate, parse input data from backend
@@ -587,6 +589,18 @@ pqParseInput3(PGconn *conn)
 					}
 					break;
 #endif
+				case 'f':
+					if (FDWRecvProtocol)
+						FDWRecvProtocol(conn, msgLength);
+					else
+					{
+						appendPQExpBuffer(&conn->errorMessage,
+										  libpq_gettext("received FDW protocol message 'f' but no handler is registered\n"));
+						pqSaveErrorResult(conn);
+						conn->asyncStatus = PGASYNC_READY;
+						conn->inCursor += msgLength;
+					}
+					break;
 				default:
 					appendPQExpBuffer(&conn->errorMessage,
 									  libpq_gettext("unexpected response from server; first received character was \"%c\"\n"),

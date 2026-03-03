@@ -22,6 +22,7 @@ extern "C"
 #endif
 
 #include <stdio.h>
+#include <stdbool.h>
 
 /*
  * postgres_ext.h defines the backend's externally visible types,
@@ -185,6 +186,11 @@ typedef struct pg_result PGresult;
  * The contents of this struct are not supposed to be known to applications.
  */
 typedef struct pg_cancel PGcancel;
+
+/* PGresAttValue represents a single attribute value within a tuple.
+ * The contents of this struct are not supposed to be known to applications.
+ */
+typedef struct pgresAttValue PGresAttValue;
 
 /* PGnotify represents the occurrence of a NOTIFY message.
  * Ideally this would be an opaque typedef, but it's so simple that it's
@@ -474,6 +480,8 @@ extern int	PQsendQueryPrepared(PGconn *conn,
 								int resultFormat);
 extern int	PQsetSingleRowMode(PGconn *conn);
 extern PGresult *PQgetResult(PGconn *conn);
+extern bool pqAddTuple(PGresult *res, PGresAttValue *tup,
+					   const char **errmsgp);
 
 /* Routines for managing an asynchronous query */
 extern int	PQisBusy(PGconn *conn);
@@ -677,6 +685,35 @@ typedef int (*PQsslKeyPassHook_OpenSSL_type) (char *buf, int size, PGconn *conn)
 extern PQsslKeyPassHook_OpenSSL_type PQgetSSLKeyPassHook_OpenSSL(void);
 extern void PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook);
 extern int	PQdefaultSSLKeyPassHook_OpenSSL(char *buf, int size, PGconn *conn);
+
+/*
+ * FDWRecvProtocol - hook for handling FDW custom protocol message 'f'.
+ *
+ * Called by pqParseInput3() when a message with type 'f' is received from
+ * the server (QE).  The hook is responsible for parsing the message body
+ * out of the connection's input buffer and storing the result (e.g. file
+ * metadata) into conn->result.
+ *
+ * The hook MUST advance conn->inCursor by exactly msgLength bytes, either
+ * by reading the data or by skipping it on error.  Failure to do so will
+ * corrupt subsequent protocol message parsing.
+ *
+ * Parameters:
+ *   conn      - the PGconn whose input buffer contains the message body;
+ *               conn->inCursor points to the first byte of the payload.
+ *   msgLength - number of bytes in the message body (excluding the 1-byte
+ *               message type and 4-byte length header already consumed by
+ *               the caller).
+ *
+ * Returns:
+ *   Always 0.  Errors are not indicated by the return value; instead the
+ *   hook reports them by calling pqSaveErrorResult() and writing into
+ *   conn->errorMessage.  The caller does not check the return value.
+ *
+ * If this pointer is NULL, the message body is silently skipped and an
+ * error is reported to conn->errorMessage.
+ */
+extern int	(*FDWRecvProtocol) (PGconn *conn, int msgLength);
 
 #ifdef __cplusplus
 }

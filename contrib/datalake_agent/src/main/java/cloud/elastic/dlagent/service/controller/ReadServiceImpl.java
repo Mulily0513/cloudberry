@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package cloud.elastic.dlagent.service.controller;
 
-import com.google.common.io.CountingOutputStream;
 import lombok.extern.slf4j.Slf4j;
 import cloud.elastic.dlagent.api.model.ConfigurationFactory;
 import cloud.elastic.dlagent.api.model.RequestContext;
+import cloud.elastic.dlagent.api.model.ServiceMethodConstants;
 import cloud.elastic.dlagent.service.MetricsReporter;
 import cloud.elastic.dlagent.service.bridge.Bridge;
 import cloud.elastic.dlagent.service.bridge.BridgeFactory;
@@ -12,8 +31,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.DataOutputStream;
 import java.io.OutputStream;
-import java.time.Duration;
-import java.time.Instant;
 
 /**
  * Implementation of the ReadService.
@@ -44,73 +61,35 @@ public class ReadServiceImpl extends BaseServiceImpl<OperationStats> implements 
         invokeWithErrorHandling(() -> processData(context, () -> writeStream(context, outputStream)));
     }
 
-    private OperationResult writeStream(RequestContext context, OutputStream outputStream) {
-        OperationStats queryStats = new OperationStats(metricsReporter, context);
-        OperationResult queryResult = new OperationResult();
-
-        // dataStream (and outputStream as the result) will close automatically at the end of the try block
-        CountingOutputStream countingOutputStream = new CountingOutputStream(outputStream);
-        String sourceName = context.getDataSource();
-        try {
-            processRequest(countingOutputStream, context, queryStats);
-        } catch (Exception e) {
-            // the exception is not re-thrown but passed to the caller in the queryResult so that
-            // the caller has a chance to inspect / report query stats before re-throwing the exception
-            queryResult.setException(e);
-            queryResult.setSourceName(sourceName);
-        } finally {
-            queryResult.setStats(queryStats);
-        }
-
-        return queryResult;
-    }
-
-    private void processRequest(CountingOutputStream countingOutputStream,
-                                RequestContext context,
-                                OperationStats queryStats) throws Exception {
-        DataOutputStream dos = new DataOutputStream(countingOutputStream);
-        boolean success = false;
-        Instant startTime = Instant.now();
-        Bridge bridge = null;
-
-        try {
-            bridge = getBridge(context);
-            log.debug("Starting processing request: methodName {} resource {} tableName {}",
-                    context.getMethod(), context.getDataSource(), context.getTableName());
-            bridge.open();
-
-            call(bridge, context, dos, queryStats);
-            success = true;
-        } finally {
-            if (bridge != null) {
-                try {
-                    bridge.close();
-                } catch (Exception e) {
-                    log.warn("Ignoring error encountered during bridge.close()", e);
-                }
-            }
-
-            Duration duration = Duration.between(startTime, Instant.now());
-            queryStats.reportCompletedRpcCount();
-            log.debug("Finished processing request: methodName {} resource {} tableName in {} ms.",
-                    context.getMethod(), context.getDataSource(), duration.toMillis());
-            metricsReporter.reportTimer(queryStats.getOperation().getMetric(), duration, context, success);
-        }
-    }
-
-    private void call(Bridge bridge, RequestContext context, DataOutputStream dos, OperationStats queryStats) throws Exception{
+    protected void call(Bridge bridge, RequestContext context, DataOutputStream dos, OperationStats queryStats) throws Exception{
         switch (context.getMethod()) {
-            case "getPartitions":
+            case ServiceMethodConstants.GET_PARTITIONS:
                 queryStats.setOperation(OperationStats.Operation.PARTITION_GET);
                 bridge.getPartitions(context.getTableName()).write(dos);
                 break;
-            case "getFragments":
+            case ServiceMethodConstants.GET_FRAGMENTS:
                 queryStats.setOperation(OperationStats.Operation.FRAGMENT_GET);
                 bridge.getFragments(context.getTableName()).write(dos);
                 break;
-            case "getSchema":
+            case ServiceMethodConstants.GET_SCHEMA:
                 queryStats.setOperation(OperationStats.Operation.METADATA_GET);
                 bridge.getSchema(context.getTableName()).write(dos);
+                break;
+            case ServiceMethodConstants.BATCH_APPEND:
+                queryStats.setOperation(OperationStats.Operation.BATCH_APPEND);
+                bridge.batchAppend().write(dos);
+                break;
+            case ServiceMethodConstants.GET_OR_CREATE_SCHEMA:
+                queryStats.setOperation(OperationStats.Operation.SCHEMA_GET_OR_CREATE);
+                bridge.getOrCreateSchema().write(dos);
+                break;
+            case ServiceMethodConstants.ROW_UPDATE:
+                queryStats.setOperation(OperationStats.Operation.ROW_UPDATE);
+                bridge.rowUpdate().write(dos);
+                break;
+            case ServiceMethodConstants.GET_CURRENT_SNAPSHOT_SUMMARY:
+                queryStats.setOperation(OperationStats.Operation.CURRENT_SNAPSHOT_SUMMARY_GET);
+                bridge.getCurrentSnapshotSummary().write(dos);
                 break;
             default:
                 throw new UnsupportedOperationException("unknown method:\""+ context.getMethod() + "\".");

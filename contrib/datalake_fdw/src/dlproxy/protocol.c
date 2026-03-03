@@ -34,6 +34,7 @@
 #include "optimizer/optimizer.h"
 
 #include "src/datalake_def.h"
+#include "src/common/fileMetadata.h"
 
 #define BUFFER_SIZE 4096
 
@@ -45,8 +46,13 @@ typedef struct
 
 /* helper function declarations */
 static void build_uri_for_read(datalake_gphadoop_context *context);
+static void build_uri_for_write(datalake_gphadoop_context *context);
 static void add_querydata_to_http_headers(datalake_gphadoop_context *context, transform_callback transform);
+static void add_write_querydata_to_http_headers(datalake_gphadoop_context *context, transform_callback transform);
 static size_t fill_buffer(datalake_gphadoop_context *context, char *start, size_t size);
+static void expand_buffer_if_needed(datalake_gphadoop_context *context);
+static void read_all_response_data(datalake_gphadoop_context *context);
+static void read_all_post_response_data(datalake_gphadoop_context *context);
 
 static const TypeInfoElt typeInfoElts[] = {
 	{"int4", INT4OID},
@@ -123,12 +129,14 @@ transform_datalake_options(const char *key)
 	return key;
 }
 
-static List *
+static FDW_TableMeta *
 parseSchemaResponse(char *buffer, size_t buffer_size)
 {
-	List         *result = NIL;
+	FDW_TableMeta *result = palloc0(sizeof(FDW_TableMeta));
+	List         *fields = NIL;
 	json_t       *jroot;
 	json_t       *jfields;
+	json_t		 *jlocation;
 	json_error_t  jerror;
 	int           i;
 
@@ -155,7 +163,13 @@ parseSchemaResponse(char *buffer, size_t buffer_size)
 			columnDef->fieldTypeMod2 = atoi(json_string_value(json_array_get(jmods, 1)));
 		}
 
-		result = lappend(result, columnDef);
+		fields = lappend(fields, columnDef);
+	}
+
+	jlocation = json_object_get(jroot, "location");
+	if (jlocation)
+	{
+		result->location = pstrdup(json_string_value(jlocation));
 	}
 
 	json_decref(jroot);
@@ -270,6 +284,43 @@ create_context_(Oid relid,
 }
 
 datalake_gphadoop_context *
+datalake_create_write_context_(Oid relid,
+								List *fileList,
+								const char *uriStr,
+								transform_callback transform)
+{
+	/* parse and set uri */
+	DatalakeGPHDUri        *uri = datalake_parseGPHDUri(uriStr);
+
+	/* set context */
+	datalake_gphadoop_context *context = palloc0(sizeof(datalake_gphadoop_context));
+
+	context->gphd_uri = uri;
+	initStringInfo(&context->uri);
+
+	/*
+	 * Open relation with NoLock.
+	 *
+	 * Safe here because this is only called from dataLakeEndForeignModify()
+	 * during INSERT/UPDATE/DELETE, where RowExclusiveLock is already held
+	 * on the relation by the executor. The outer lock prevents DROP/ALTER.
+	 */
+	if (OidIsValid(relid))
+	{
+		context->relation = table_open(relid, NoLock);
+	}
+	build_uri_for_write(context);
+	context->churl_headers = datalake_churl_headers_init();
+	context->file_list = fileList;
+	add_write_querydata_to_http_headers(context, transform);
+
+	context->buffer = palloc(BUFFER_SIZE);
+	context->buffer_size = BUFFER_SIZE;
+
+	return context;
+}
+
+datalake_gphadoop_context *
 datalake_create_context(Oid relid, const char *uriStr, transform_callback transform)
 {
 	return create_context_(relid, 0, NULL, NULL, NULL, NULL, uriStr, transform);
@@ -296,30 +347,102 @@ datalake_create_fragment_context(Oid relid,
 void
 datalakeDoRPC(datalake_gphadoop_context *context)
 {
+	/*
+	 * Determine if this is a write operation with file_list to send.
+	 * If file_list is present and non-empty, use POST with JSON body.
+	 * Otherwise, use GET (download).
+	 */
+	if (context->file_list != NIL && list_length(context->file_list) > 0)
+	{
+		/* Write operation: use POST with file_list in request body */
+		StringInfoData json_data;
+
+		FDW_serialize_file_list_to_json(context->file_list, &json_data);
+
+		elog(DEBUG2, "datalakeDoRPC: sending POST request with JSON body size: %d, file count: %d",
+			 (int)json_data.len,
+			 list_length(context->file_list));
+
+		/* Use POST (upload) to send request body */
+		context->churl_handle = datalake_churl_init_upload(context->uri.data, context->churl_headers);
+
+		/* Write JSON data to request body */
+		datalake_churl_write(context->churl_handle, json_data.data, json_data.len);
+
+		/* Read all response data */
+		read_all_post_response_data(context);
+
+		context->completed = true;
+
+		/* Clean up resources */
+		datalake_churl_cleanup(context->churl_handle, false);
+		context->churl_handle = NULL;
+
+		/* Clean up JSON buffer with NULL check for safety */
+		if (json_data.data)
+			pfree(json_data.data);
+	}
+	else
+	{
+		/* Read operation: use GET (download) */
+		context->churl_handle = datalake_churl_init_download(context->uri.data, context->churl_headers);
+
+		/* read some bytes to make sure the connection is established */
+		datalake_churl_read_check_connectivity(context->churl_handle);
+
+		/* Read all response data */
+		read_all_response_data(context);
+
+		context->completed = true;
+
+		/* check if the connection terminated with an error */
+		datalake_churl_read_check_connectivity(context->churl_handle);
+	}
+}
+
+/*
+ * Expand buffer if needed by doubling its size
+ */
+static void
+expand_buffer_if_needed(datalake_gphadoop_context *context)
+{
+	if (context->buffer_pos == context->buffer_size)
+	{
+		context->buffer_size *= 2;
+		context->buffer = repalloc(context->buffer, context->buffer_size);
+	}
+}
+
+/*
+ * Read all response data into buffer for GET requests
+ */
+static void
+read_all_response_data(datalake_gphadoop_context *context)
+{
 	size_t n;
-
-	context->churl_handle = datalake_churl_init_download(context->uri.data, context->churl_headers);
-
-	/* read some bytes to make sure the connection is established */
-	datalake_churl_read_check_connectivity(context->churl_handle);
-
 	while ((n = fill_buffer(context,
 							context->buffer + context->buffer_pos,
 							context->buffer_size - context->buffer_pos)) != 0)
 	{
 		context->buffer_pos += n;
-
-		if (context->buffer_pos == context->buffer_size)
-		{
-			context->buffer_size *= 2;
-			context->buffer = repalloc(context->buffer, context->buffer_size);
-		}
+		expand_buffer_if_needed(context);
 	}
+}
 
-	context->completed = true;
-
-	/* check if the connection terminated with an error */
-	datalake_churl_read_check_connectivity(context->churl_handle);
+/*
+ * Read all response data into buffer for POST requests
+ */
+static void
+read_all_post_response_data(datalake_gphadoop_context *context)
+{
+	size_t n;
+	while ((n = datalake_churl_finish_upload_and_read(context->churl_handle,
+													   context->buffer + context->buffer_pos,
+													   context->buffer_size - context->buffer_pos)) != 0)
+	{
+		context->buffer_pos += n;
+		expand_buffer_if_needed(context);
+	}
 }
 
 /*
@@ -340,6 +463,21 @@ build_uri_for_read(datalake_gphadoop_context *context)
 	elog(DEBUG2, "dlproxy: uri %s for read", context->uri.data);
 }
 
+static void 
+build_uri_for_write(datalake_gphadoop_context *context)
+{
+	resetStringInfo(&context->uri);
+	appendStringInfo(&context->uri, "http://%s/%s/write",
+					 datalake_get_authority(), DLPROXY_SERVICE_PREFIX);
+
+	if ((LOG >= log_min_messages) || (LOG >= client_min_messages))
+	{
+		appendStringInfo(&context->uri, "?trace=true");
+	}
+
+	elog(DEBUG2, "dlproxy: uri %s for write", context->uri.data);
+}
+
 /*
  * Add key/value pairs to connection header. These values are the context of the query and used
  * by the remote component.
@@ -358,6 +496,22 @@ add_querydata_to_http_headers(datalake_gphadoop_context *context, transform_call
 	inputData.relName = context->relName;
 	inputData.schemaName     = context->schemaName;
 	datalake_build_http_headers(&inputData, transform);
+}
+
+static void
+add_write_querydata_to_http_headers(datalake_gphadoop_context *context, transform_callback transform)
+{
+	DlProxyInputData inputData = {0};
+
+	inputData.headers		= context->churl_headers;
+	inputData.gphduri		= context->gphd_uri;
+	inputData.rel			= context->relation;
+	inputData.relName		= context->relName;
+	inputData.schemaName	= context->schemaName;
+	datalake_build_http_headers(&inputData, transform);
+
+	/* Set JSON content type for POST request body */
+	datalake_churl_headers_append(context->churl_headers, "Content-Type", "application/json");
 }
 
 /*
@@ -444,6 +598,127 @@ internal_get_external_fragments(char *profile,
 	return result;
 }
 
+static void
+internal_commit_external_common(Oid relid, List *file_list, List *locations,
+								const char *method)
+{
+	volatile datalake_gphadoop_context *context = NULL;
+
+	PG_TRY();
+	{
+		char *catalogType = get_catalog_type("iceberg", locations);
+
+		context = datalake_create_write_context_(relid,
+												file_list,
+												strVal(linitial(locations)),
+												transform_datalake_options);
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-PROFILE", "iceberg");
+
+		if (pg_strcasecmp(catalogType, "hive") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphive.conf0gphdfs.conf");
+		}
+		else if (pg_strcasecmp(catalogType, "s3") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "s3.conf");
+		}
+		else
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphdfs.conf");
+		}
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CATALOG-TYPE", catalogType);
+		pfree(catalogType);
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-METHOD", method);
+
+		datalakeDoRPC((datalake_gphadoop_context *) context);
+
+		datalake_destroy_context((datalake_gphadoop_context *) context, false);
+		context = NULL;
+	}
+	PG_CATCH();
+	{
+		if (context)
+			datalake_destroy_context((datalake_gphadoop_context *) context, true);
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+void
+internal_commit_external_write(Oid relid,
+								List *file_list,
+								List *locations)
+{
+	internal_commit_external_common(relid, file_list, locations, "batchAppend");
+}
+
+void
+internal_commit_external_update(Oid relid, List *file_list, List *locations)
+{
+	internal_commit_external_common(relid, file_list, locations, "rowUpdate");
+}
+
+IcebergTableStatistics*
+internal_get_current_snapshot_statistics(Oid relid, List *locations, parse_callback parseFn)
+{
+	List				   *result = NIL;
+	IcebergTableStatistics *statistics = NULL;
+	volatile datalake_gphadoop_context *context = NULL;
+
+	PG_TRY();
+	{
+		context = create_context_(relid,
+								0,
+								NULL,
+								NULL,
+								NULL,
+								NULL,
+								strVal(linitial(locations)),
+								transform_datalake_options);
+	
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-PROFILE", "iceberg");
+
+		char *catalogType = get_catalog_type("iceberg", locations);
+		if (pg_strcasecmp(catalogType, "hive") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphive.conf0gphdfs.conf");
+		}
+		else if (pg_strcasecmp(catalogType, "s3") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "s3.conf");
+		}
+		else
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphdfs.conf");
+		}
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CATALOG-TYPE", catalogType);
+		pfree(catalogType);
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-METHOD", "getCurrentSnapshotSummary");
+
+		datalakeDoRPC((datalake_gphadoop_context *) context);
+		result = parseFn(context->buffer, context->buffer_pos);
+		statistics = (IcebergTableStatistics *) linitial(result);
+
+		datalake_destroy_context((datalake_gphadoop_context *) context, false);
+		context = NULL;
+	}
+	PG_CATCH();
+	{
+		if (context)
+			datalake_destroy_context((datalake_gphadoop_context *) context, true);
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return statistics;
+}
+
 List *
 datalake_get_external_fragments(Oid relid,
 					   Index relno,
@@ -464,6 +739,61 @@ datalake_get_external_fragments(Oid relid,
 		return hive_get_external_partitions(relid, locations);
 }
 
+void
+commit_external_write(Oid relid, List *file_list, List *locations)
+{
+	iceberg_commit_external_write(relid, file_list, locations);
+}
+
+FDW_TableMeta*
+get_external_schema_or_create(Oid relid, char *profile, List *locations)
+{
+	FDW_TableMeta *result;
+	volatile datalake_gphadoop_context *context = NULL;
+
+	PG_TRY();
+	{
+		char *catalogType = get_catalog_type(profile, locations);
+
+		context = datalake_create_context(relid, strVal(linitial(locations)), transform_datalake_options);
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-PROFILE", profile);
+
+		if (pg_strcasecmp(catalogType, "hive") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphive.conf0gphdfs.conf");
+		}
+		else if (pg_strcasecmp(catalogType, "s3") == 0)
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "s3.conf");
+		}
+		else
+		{
+			datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CONFIG", "gphdfs.conf");
+		}
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-CATALOG-TYPE", catalogType);
+		pfree(catalogType);
+
+		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-METHOD", "getOrCreateSchema");
+
+		datalakeDoRPC((datalake_gphadoop_context *) context);
+		result = parseSchemaResponse(context->buffer, context->buffer_pos);
+
+		datalake_destroy_context((datalake_gphadoop_context *) context, false);
+		context = NULL;
+	}
+	PG_CATCH();
+	{
+		if (context)
+			datalake_destroy_context((datalake_gphadoop_context *) context, true);
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return result;
+}
+
 List *
 datalake_get_external_schema(char *profile, char *relName, char *schemaName, List *locations)
 {
@@ -472,6 +802,7 @@ datalake_get_external_schema(char *profile, char *relName, char *schemaName, Lis
 
 	PG_TRY();
 	{
+		FDW_TableMeta *tableMeta;
 		char *catalogType = get_catalog_type(profile, locations);
 
 		context = datalake_create_context2(relName, schemaName, strVal(linitial(locations)), transform_datalake_options);
@@ -495,7 +826,10 @@ datalake_get_external_schema(char *profile, char *relName, char *schemaName, Lis
 		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-METHOD", "getSchema");
 
 		datalakeDoRPC((datalake_gphadoop_context *) context);
-		result = parseSchemaResponse(context->buffer, context->buffer_pos);
+		tableMeta = parseSchemaResponse(context->buffer, context->buffer_pos);
+		result = tableMeta->fields;
+		tableMeta->fields = NIL;  /* prevent freeFDWTableMeta from releasing the list we keep */
+		freeFDWTableMeta(tableMeta);
 
 		datalake_destroy_context((datalake_gphadoop_context *) context, false);
 		context = NULL;

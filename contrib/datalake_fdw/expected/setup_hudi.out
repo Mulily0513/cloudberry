@@ -1,16 +1,15 @@
 -- Create extension
 CREATE EXTENSION IF NOT EXISTS datalake_fdw;
 CREATE EXTENSION IF NOT EXISTS hive_connector;
-
 -- Create data wrapper 
 CREATE FOREIGN DATA WRAPPER datalake_fdw
 HANDLER datalake_fdw_handler
 VALIDATOR datalake_fdw_validator
 OPTIONS (mpp_execute 'all segments');
-
 -- Create server and user mapping for hudi and iceberg
 SELECT public.create_foreign_server('sync_server', 'gpadmin', 'datalake_fdw', 'hdfs-cluster-1');
  create_foreign_server 
 -----------------------
  t
 (1 row)
+

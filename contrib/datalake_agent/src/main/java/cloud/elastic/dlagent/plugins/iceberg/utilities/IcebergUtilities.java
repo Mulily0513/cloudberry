@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.plugins.iceberg.utilities;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,21 +17,36 @@ package cloud.elastic.dlagent.plugins.iceberg.utilities;
  * under the License.
  */
 
+
+package cloud.elastic.dlagent.plugins.iceberg.utilities;
+
 import cloud.elastic.dlagent.api.error.DlRuntimeException;
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
 import cloud.elastic.dlagent.api.io.DataType;
+import cloud.elastic.dlagent.api.model.Fragment;
 import cloud.elastic.dlagent.api.model.Metadata;
+import cloud.elastic.dlagent.api.model.Partition;
 import cloud.elastic.dlagent.api.model.RequestContext;
 import cloud.elastic.dlagent.api.utilities.ColumnDescriptor;
 import cloud.elastic.dlagent.api.utilities.EnumGpdbType;
+import cloud.elastic.dlagent.api.utilities.GpdbFragmentMetadata;
 import cloud.elastic.dlagent.api.utilities.Utilities;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergDataFile;
+import cloud.elastic.dlagent.service.rest.FileListRequest;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileMetadata;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.apache.iceberg.Table;
+import org.apache.iceberg.types.Types.NestedField;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
@@ -232,5 +245,93 @@ public class IcebergUtilities {
             return tableName.split("\\.")[0];
         }
         return "polaris";
+    }
+
+    /**
+     * 
+     */
+    public Schema formSchemaFromTupleDes(RequestContext context) {
+        List<NestedField> fields = new ArrayList<>();
+        for (ColumnDescriptor cd : context.getTupleDescription()) {
+            Type icebergType = GpdbToIcebergType.getGpdbToIcebergType(cd);
+            NestedField field = NestedField.optional(cd.columnIndex(), cd.columnName(), icebergType);
+            fields.add(field);
+        }
+        return new Schema(fields);
+    }
+
+    /**
+     * Create DataFile from FileEntry (from JSON POST request body).
+     *
+     * @param fileEntry FileEntry from JSON request body
+     * @return DataFile for Iceberg
+     */
+    public DataFile transFileFromFileEntry(FileListRequest.FileEntry fileEntry) {
+        // Parse format string to FileFormat enum
+        org.apache.iceberg.FileFormat format;
+        String formatStr = fileEntry.getFormat();
+        if (formatStr == null) {
+            format = org.apache.iceberg.FileFormat.PARQUET; // default
+        } else {
+            switch (formatStr.toUpperCase()) {
+                case "PARQUET":
+                    format = org.apache.iceberg.FileFormat.PARQUET;
+                    break;
+                case "ORC":
+                    format = org.apache.iceberg.FileFormat.ORC;
+                    break;
+                case "AVRO":
+                    format = org.apache.iceberg.FileFormat.AVRO;
+                    break;
+                default:
+                    format = org.apache.iceberg.FileFormat.PARQUET;
+                    break;
+            }
+        }
+
+        return DataFiles.builder(PartitionSpec.unpartitioned())
+                        .withPath(fileEntry.getFilePath())
+                        .withFormat(format)
+                        .withFileSizeInBytes(fileEntry.getFileSize() != null ? fileEntry.getFileSize() : 0L)
+                        .withRecordCount(fileEntry.getRecordCount() != null ? fileEntry.getRecordCount() : 0L)
+                        .build();
+    }
+
+    /**
+     * Create DeleteFile from FileEntry (for POSITION_DELETE).
+     *
+     * @param fileEntry FileEntry from JSON request body
+     * @return DeleteFile for Iceberg
+     */
+    public DeleteFile transPosDeleteFromFileEntry(FileListRequest.FileEntry fileEntry) {
+        // Parse format string to FileFormat enum
+        org.apache.iceberg.FileFormat format;
+        String formatStr = fileEntry.getFormat();
+        if (formatStr == null) {
+            format = org.apache.iceberg.FileFormat.PARQUET; // default
+        } else {
+            switch (formatStr.toUpperCase()) {
+                case "PARQUET":
+                    format = org.apache.iceberg.FileFormat.PARQUET;
+                    break;
+                case "ORC":
+                    format = org.apache.iceberg.FileFormat.ORC;
+                    break;
+                case "AVRO":
+                    format = org.apache.iceberg.FileFormat.AVRO;
+                    break;
+                default:
+                    format = org.apache.iceberg.FileFormat.PARQUET;
+                    break;
+            }
+        }
+
+        return FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+                           .withPath(fileEntry.getFilePath())
+                           .withFormat(format)
+                           .withFileSizeInBytes(fileEntry.getFileSize() != null ? fileEntry.getFileSize() : 0L)
+                           .withRecordCount(fileEntry.getRecordCount() != null ? fileEntry.getRecordCount() : 0L)
+                           .ofPositionDeletes()
+                           .build();
     }
 }

@@ -163,3 +163,46 @@ iceberg_get_external_fragments(Oid relid,
 											locations,
 											parseFragmentResponse);
 }
+
+extern void
+iceberg_commit_external_write(Oid relid,
+							  List *file_list,
+							  List *location)
+{
+	internal_commit_external_write(relid, file_list, location);
+}
+
+static List*
+parseStatisticsResponse(char *buffer, size_t buffer_size)
+{
+	List		 *result = NIL;
+	json_t       *jroot;
+	json_error_t  jerror;
+
+	jroot = json_loadb(buffer, buffer_size, 0, &jerror);
+	if (jroot == NULL)
+		elog(ERROR, "failed to decode message:\"%s\", errMessage: %s line: %d",
+					pnstrdup(buffer, buffer_size), jerror.text, jerror.line);
+
+	IcebergTableStatistics *icebergStatistics = palloc(sizeof(IcebergTableStatistics));
+	icebergStatistics->recordCount = atoll(json_string_value(json_object_get(jroot, "total-records")));
+	icebergStatistics->bytesInDataFile = atoll(json_string_value(json_object_get(jroot, "total-files-size")));
+	json_decref(jroot);
+	result = lappend(result, icebergStatistics);
+
+	return result;
+}
+
+IcebergTableStatistics*
+iceberg_get_current_snapshot_statistics(Oid relid, List *locations)
+{
+	/* Assert relid is valid */
+	Assert(OidIsValid(relid));
+
+	/* Assert locations list is not empty */
+	Assert(locations != NIL);
+	Assert(list_length(locations) > 0);
+	Assert(linitial(locations) != NULL);
+
+	return internal_get_current_snapshot_statistics(relid, locations, parseStatisticsResponse);
+}

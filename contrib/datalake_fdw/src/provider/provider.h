@@ -5,8 +5,13 @@
 #include <vector>
 #include <memory>
 #include <iostream>
-#include "src/common/fileSystemWrapper.h"
+
+extern "C" 
+{
 #include "src/datalake_type.h"
+}
+
+#include "src/common/fileSystemWrapper.h"
 
 #define DATALAKE_EXPORT_NAME ("datalake")
 #define PARQUET_WRITE_SUFFIX ("parquet")
@@ -23,6 +28,8 @@ public:
 
 	virtual int64_t read(void *values, void *nulls);
 
+	virtual int64_t read(void *values, void *nulls, void *tid);
+
 	virtual int64_t read(void **recordBatch);
 
 	virtual int64_t readWithBuffer(void* buffer, int64_t length);
@@ -37,10 +44,10 @@ public:
 
 	virtual const char* getReadFileName();
 
-	virtual std::string generateWriteFileName(const std::string &writePrefix, const std::string &compress, const std::string &suffix, int segid, int fileSliceIndex);
+	virtual std::string generateWriteFileName(const std::string &writePrefix, const std::string &compress, const std::string &suffix);
 
 };
 
-std::shared_ptr<Provider> getProvider(DLTblFmt type, bool readFdw, bool vectorization);
+std::shared_ptr<Provider> getProvider(DLTblFmt type, DLCmdType cmd, bool vectorization);
 
 #endif //PROVIDER_H

@@ -106,7 +106,7 @@ columType orcWrite::columnBelongType(int attColumn)
 
 void orcWrite::initORC()
 {
-	fileName = generateWriteFileName(prefix, "", ORC_WRITE_SUFFIX, segid, currentSliceId);
+	fileName = generateWriteFileName(prefix, "", ORC_WRITE_SUFFIX);
 	uint64_t blockSize = 64 * 1024;     // 64K
 	orc::CompressionKind compression = orc::CompressionKind_NONE;
 	writeOptions.setStripeSize(stripeSize);

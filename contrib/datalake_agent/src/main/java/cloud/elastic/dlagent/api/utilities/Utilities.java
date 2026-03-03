@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.utilities;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.api.utilities;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.api.utilities;
 
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
 import cloud.elastic.dlagent.api.io.DataType;

@@ -19,6 +19,40 @@ typedef struct datalakeTableFieldDefination
 	int32 fieldTypeMod2;
 } datalakeTableFieldDefination;
 
+typedef struct
+{
+	char *name;
+	char *location;
+	List *fields;
+} FDW_TableMeta;
+
+static inline void
+freeFDWTableMeta(FDW_TableMeta *meta)
+{
+	if (meta == NULL)
+		return;
+
+	if (meta->fields)
+	{
+		ListCell *lc;
+		foreach(lc, meta->fields)
+		{
+			datalakeTableFieldDefination *field = (datalakeTableFieldDefination *) lfirst(lc);
+			if (field->fieldName)
+				pfree(field->fieldName);
+			if (field->fieldTypeName)
+				pfree(field->fieldTypeName);
+			pfree(field);
+		}
+		list_free(meta->fields);
+	}
+	if (meta->name)
+		pfree(meta->name);
+	if (meta->location)
+		pfree(meta->location);
+	pfree(meta);
+}
+
 typedef struct datalakeCombinedScanTask
 {
 	List *fileTasks;
@@ -38,6 +72,12 @@ datalake_get_external_fragments(Oid relid,
 					   List *locations,
 					   DLTblFmt formatType,
 					   bool iswritable);
+
+extern void
+commit_external_write(Oid relid, List *file_list, List *locations);
+
+extern FDW_TableMeta*
+get_external_schema_or_create(Oid relid, char *profile, List *locations);
 
 extern List *
 datalakeParsePartitionResponse(char *buffer, size_t buffer_size);

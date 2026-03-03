@@ -4,9 +4,13 @@ extern "C"
 {
 #include "postgres.h"
 #include "utils/memutils.h"
+#include "catalog/pg_type_d.h"
 }
 
 #include <vector>
+#include <string_view>
+#include <utility>
+#include <array>
 
 struct DatalakeInternalRecord;
 struct List;

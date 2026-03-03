@@ -46,6 +46,7 @@
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/cost.h"
+#include "optimizer/appendinfo.h"
 #include "parser/parsetree.h"
 #include "parser/parse_relation.h"
 #if (PG_VERSION_NUM >= 140000)
@@ -57,7 +58,10 @@
 #include "utils/typcache.h"
 #include "utils/acl.h"
 #include "tcop/utility.h"
-#include <uuid/uuid.h>
+#include "src/common/fileMetadata.h"
+#include "dlproxy/protocol.h"
+#include "cdb/cdbdispatchresult.h"
+#include "src/provider/iceberg/iceberg_file_index.h"
 
 
 PG_MODULE_MAGIC;
@@ -115,6 +119,11 @@ static void dataLakeReScanForeignScan(ForeignScanState *node);
 
 static void dataLakeEndForeignScan(ForeignScanState *node);
 
+static void dataLakeAddForeignUpdateTargets(PlannerInfo *root,
+											Index rtindex,
+											RangeTblEntry *target_rte,
+											Relation target_relation);
+
 /* Foreign updates */
 static List *dataLakePlanForeignModify(PlannerInfo *root,
 									ModifyTable *plan,
@@ -124,6 +133,13 @@ static List *dataLakePlanForeignModify(PlannerInfo *root,
 static void dataLakeBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo, List *fdw_private, int subplan_index, int eflags);
 
 static TupleTableSlot *dataLakeExecForeignInsert(EState *estate, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+
+static TupleTableSlot *dataLakeExecForeignUpdate(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+
+static TupleTableSlot *dataLakeExecForeignDelete (EState *estate,
+												  ResultRelInfo *rinfo,
+												  TupleTableSlot *slot,
+												  TupleTableSlot *planSlot);
 
 static void dataLakeEndForeignModify(EState *estate, ResultRelInfo *resultRelInfo);
 
@@ -165,13 +181,22 @@ void freeFdwPrivate(dataLakeFdwScanState *sstate, ForeignScan *foreignScan);
 
 static void InitParseStateTo(dataLakeFdwScanState *dataLakesstate, CopyToState cstate);
 
-static void initModify(ResultRelInfo *resultRelInfo);
+static void initModify(ModifyTableState *state, ResultRelInfo *resultRelInfo);
 
 static void initCopyStateForModify(ResultRelInfo *resultRelInfo);
 
 static void insertModify(ResultRelInfo *resultRelInfo, TupleTableSlot *slot);
 
 static void endModify(ResultRelInfo *resultRelInfo);
+
+static void prepareIcebergDeleteJunkSlot(ResultRelInfo *rinfo, TupleTableSlot *planSlot,
+										 const char *opName);
+
+/* Callback function to clean up global fileIndexMap on memory context reset */
+static void fileIndexMapCallback(void *arg);
+
+/* Callback function to clean up FDW_ResultMetaList on memory context reset */
+static void resultMetaListCallback(void *arg);
 
 bool hasZeorSelectedPartition(dataLakeFdwScanState *dataLakesstate);
 
@@ -180,8 +205,6 @@ void CsvTextErrorCallback(dataLakeFdwScanState *dataLakesstate);
 void DatalakeErrorCallback(void *arg);
 
 List* buildAttnameList(dataLakeFdwScanState *sstate);
-
-static char* generateWriteFileDir();
 
 #if (PG_VERSION_NUM < 140000)
 static CopyState
@@ -206,6 +229,7 @@ static void datalake_ProcessUtility(PlannedStmt *pstmt,
 									QueryCompletion *qc);
 
 ProcessUtility_hook_type datalake_prev_ProcessUtility = NULL;
+ProcessDispatchResult_hook_type datalake_prev_ProcessDispatchResult = NULL;
 
 /*
  * Workspace for analyzing a foreign table.
@@ -386,6 +410,9 @@ _PG_init(void)
 
 	datalake_prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = datalake_ProcessUtility;
+	datalake_prev_ProcessDispatchResult = ProcessDispatchResult_hook;
+	ProcessDispatchResult_hook = FDW_RecvMeta;
+	FDWRecvProtocol = RecvMetaMethod;
 }
 
 static void
@@ -460,7 +487,8 @@ datalake_fdw_handler(PG_FUNCTION_ARGS)
 	 * AddForeignUpdateTargets set to NULL, no extra target expressions are
 	 * added
 	 */
-	fdw_routine->AddForeignUpdateTargets = NULL;
+	// fdw_routine->AddForeignUpdateTargets = icebergAddForeignUpdateTargets;
+	fdw_routine->AddForeignUpdateTargets = dataLakeAddForeignUpdateTargets;
 
 	/*
 	 * PlanForeignModify set to NULL, no additional plan-time actions are
@@ -474,8 +502,8 @@ datalake_fdw_handler(PG_FUNCTION_ARGS)
 	 * ExecForeignUpdate and ExecForeignDelete set to NULL since updates and
 	 * deletes are not supported
 	 */
-	fdw_routine->ExecForeignUpdate = NULL;
-	fdw_routine->ExecForeignDelete = NULL;
+	fdw_routine->ExecForeignUpdate = dataLakeExecForeignUpdate;
+	fdw_routine->ExecForeignDelete = dataLakeExecForeignDelete;
 	fdw_routine->EndForeignModify = dataLakeEndForeignModify;
 	fdw_routine->IsForeignRelUpdatable = dataLakeIsForeignRelUpdatable;
 	fdw_routine->IsForeignScanParallelSafe = dataLakeIsForeignScanParallelSafe;
@@ -487,24 +515,7 @@ datalake_fdw_handler(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(fdw_routine);
 }
 
-static char* generateWriteFileDir()
-{
-	StringInfoData prefix;
-    char uuid_str[36] = {0};
-	char timestamp_str[32] = {0};
-	initStringInfo(&prefix);
 
-	time_t second = time(NULL);
-	int64_t timestamp = second;
-	snprintf(timestamp_str, sizeof(timestamp_str), "%ld", timestamp);
-
-	uuid_t uuid;
-    uuid_generate_time(uuid);
-    uuid_unparse(uuid, uuid_str);
-	
-	appendStringInfo(&prefix, "%s-%s", timestamp_str, uuid_str);
-    return prefix.data;
-}
 
 static void
 extract_used_attributes(RelOptInfo *baserel)
@@ -532,8 +543,18 @@ extract_used_attributes(RelOptInfo *baserel)
     }
 }
 
+/*
+ * datalakeBuildRetrievedAttrsList
+ *		Build an explicit list of attribute numbers to retrieve for a scan.
+ *
+ * Unlike datalakeDeparseTargetList() in deparse.c (which returns NIL for
+ * whole-row references, relying on the caller to interpret NIL as "all
+ * columns"), this function always returns an explicit list of all non-dropped
+ * column numbers.  This is needed by the FDW scan path, which passes the
+ * list through fdw_private and expects it to be self-contained.
+ */
 static void
-datalakeDeparseTargetList(Relation rel, Bitmapset *attrs_used, List **retrieved_attrs)
+datalakeBuildRetrievedAttrsList(Relation rel, Bitmapset *attrs_used, List **retrieved_attrs)
 {
 	TupleDesc	tupdesc = RelationGetDescr(rel);
 	bool		have_wholerow;
@@ -544,9 +565,6 @@ datalakeDeparseTargetList(Relation rel, Bitmapset *attrs_used, List **retrieved_
 	/* If there's a whole-row reference, we'll need all the columns. */
 	have_wholerow = bms_is_member(0 - FirstLowInvalidHeapAttributeNumber, attrs_used);
 
-	if (have_wholerow)
-		return;
-
 	for (i = 1; i <= tupdesc->natts; i++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, i - 1);
@@ -555,7 +573,8 @@ datalakeDeparseTargetList(Relation rel, Bitmapset *attrs_used, List **retrieved_
 		if (attr->attisdropped)
 			continue;
 
-		if (bms_is_member(i - FirstLowInvalidHeapAttributeNumber, attrs_used))
+		if (have_wholerow ||
+			bms_is_member(i - FirstLowInvalidHeapAttributeNumber, attrs_used))
 		{
 			*retrieved_attrs = lappend_int(*retrieved_attrs, i);
 		}
@@ -592,11 +611,10 @@ dataLakeGetForeignPaths(PlannerInfo *root,
 
 	rel = table_open(rte->relid, NoLock);
 
-
 	/* Collect used attributes to reduce number of read columns during scan */
-    extract_used_attributes(baserel);
+	extract_used_attributes(baserel);
 
-	datalakeDeparseTargetList(rel, fdw_private->attrs_used, &fdw_private->retrieved_attrs);
+	datalakeBuildRetrievedAttrsList(rel, fdw_private->attrs_used, &fdw_private->retrieved_attrs);
 
 	path = create_foreignscan_path(root, baserel,
 #if PG_VERSION_NUM >= 90600
@@ -620,48 +638,6 @@ dataLakeGetForeignPaths(PlannerInfo *root,
 
 	add_path(baserel, (Path *) path, root);
 	set_cheapest(baserel);
-}
-
-/*
- * Build a target list (ie, a list of TargetEntry) for the Path's output.
- *
- * This is almost just make_tlist_from_pathtarget(), but we also have to
- * deal with replacing nestloop params.
- */
-static List *
-build_path_tlist(PlannerInfo *root, Path *path)
-{
-	List	   *tlist = NIL;
-	Index	   *sortgrouprefs = path->pathtarget->sortgrouprefs;
-	int			resno = 1;
-	ListCell   *v;
-
-	foreach(v, path->pathtarget->exprs)
-	{
-		Node	   *node = (Node *) lfirst(v);
-		TargetEntry *tle;
-
-		/*
-		 * If it's a parameterized path, there might be lateral references in
-		 * the tlist, which need to be replaced with Params.  There's no need
-		 * to remake the TargetEntry nodes, so apply this to each list item
-		 * separately.
-		 */
-		/* Not implemented yet! */
-		if (path->param_info)
-			Assert(false);
-
-		tle = makeTargetEntry((Expr *) node,
-							  resno,
-							  NULL,
-							  false);
-		if (sortgrouprefs)
-			tle->ressortgroupref = sortgrouprefs[resno - 1];
-
-		tlist = lappend(tlist, tle);
-		resno++;
-	}
-	return tlist;
 }
 
 /*
@@ -694,16 +670,10 @@ dataLakeGetForeignPlan(PlannerInfo *root,
 
 	scan_clauses = extract_actual_clauses(scan_clauses, false);
 
-
 	List* private_lists = list_make2(makeString("scan"), fdw_private->retrieved_attrs);
-	/* Planner prefers physical tlist (the targetlist containing all Vars in order) for ForiegnScan,
-	 * so as to allow self-defined optimization. So we need build tlist by path to extract the Vars we
-	 * actually need.
-	 */
-	List *fdwtlist = build_path_tlist(root, &best_path->path);
 
 	return make_foreignscan(
-							fdwtlist,
+							tlist,
 							scan_clauses,
 							scan_relid,
 							NIL,	/* no expressions to evaluate */
@@ -748,6 +718,7 @@ dataLakeBeginForeignScan(ForeignScanState *node, int eflags)
 		return;
 
 	dataLakeFdwScanState *dataLakesstate  	= (dataLakeFdwScanState *) palloc0(sizeof(dataLakeFdwScanState));
+	dataLakesstate->scan_tupdesc			= CreateTupleDescCopy(node->ss.ps.scandesc);
 	Oid			foreigntableid 				= RelationGetRelid(node->ss.ss_currentRelation);
 	dataLakesstate->options 				= datalakeGetOptions(foreigntableid);
 	dataLakesstate->rel						= node->ss.ss_currentRelation;
@@ -802,7 +773,7 @@ dataLakeBeginForeignScan(ForeignScanState *node, int eflags)
 
 	dataLakesstate->selected_segments = selected_segments;
 	dataLakesstate->options->readFdw = true;
-	dataLakesstate->provider = initProvider(dataLakesstate->options->format, dataLakesstate->options->readFdw, dataLakesstate->options->vectorization);
+	dataLakesstate->provider = initProvider(dataLakesstate->options->format, DL_OP_READ, dataLakesstate->options->vectorization);
 	dataLakesstate->rel = node->ss.ss_currentRelation;
 	dataLakesstate->fragments = fragmentData;
 	dataLakesstate->retrieved_attrs = retrieved_attrs;
@@ -964,6 +935,7 @@ dataLakeIterateForeignScan(ForeignScanState *node)
 		* file, so no need to evaluate default expressions.
 		*/
 		ExecClearTuple(slot);
+		memset(slot->tts_isnull, 1, slot->tts_tupleDescriptor->natts * sizeof(bool));
 
 		iterateScanStatus(node, dataLakesstate);
 
@@ -1056,6 +1028,34 @@ dataLakeEndForeignScan(ForeignScanState *node)
 	elog(DEBUG5, "datalake_fdw: dataLakeEndForeignScan ends on segment: %d", DATALAKE_SEGMENT_ID);
 }
 
+void dataLakeAddForeignUpdateTargets(PlannerInfo *root, Index rtindex, RangeTblEntry *target_rte, Relation target_relation)
+{
+	Oid			reloid;
+	Oid			vartypeid;
+	int32		type_mod;
+	Oid			type_coll;
+	Var			*var;
+
+	reloid = RelationGetRelid(target_relation);
+	get_atttypetypmodcoll(reloid, GpSegmentIdAttributeNumber, &vartypeid, &type_mod, &type_coll);
+	var = makeVar(rtindex,
+				GpSegmentIdAttributeNumber,
+				vartypeid,
+				type_mod,
+				type_coll,
+				0);
+	add_row_identity_var(root, var, rtindex, "gp_segment_id");
+
+	get_atttypetypmodcoll(reloid, SelfItemPointerAttributeNumber, &vartypeid, &type_mod, &type_coll);
+	var = makeVar(rtindex,
+				SelfItemPointerAttributeNumber,
+				vartypeid,
+				type_mod,
+				type_coll,
+				0);
+	add_row_identity_var(root, var, rtindex, "ctid");
+}
+
 /*
  * dataLakePlanForeignModify
  * 		Generate file prefix
@@ -1065,8 +1065,10 @@ static List *dataLakePlanForeignModify(PlannerInfo *root,
 									   Index resultRelation,
 									   int subplan_index)
 {
-	char *fileDir = generateWriteFileDir();
-	return list_make1(makeString(fileDir));
+	RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
+	
+	char *filePrefix = datalakeGetExternalWriteLocation(rte->relid);
+	return list_make1(makeString(filePrefix));
 }
 
 
@@ -1085,34 +1087,84 @@ dataLakeBeginForeignModify(ModifyTableState *mtstate,
 
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 		return;
-
+	int			i;
 	dataLakeFdwScanState *dataLakesstate  = (dataLakeFdwScanState *) palloc0(sizeof(dataLakeFdwScanState));
+	dataLakesstate->modify_state = (dataLakeModifyState *) palloc0(sizeof(dataLakeModifyState));
 	Relation	relation 			= resultRelInfo->ri_RelationDesc;
 	dataLakesstate->options 		= datalakeGetOptions(RelationGetRelid(relation));
 	dataLakesstate->rel				= relation;
 	dataLakesstate->options->readFdw = false;
 	resultRelInfo->ri_FdwState = dataLakesstate;
+	dataLakesstate->modify_state->us_provider = NULL;
+	dataLakesstate->modify_state->us_slot = NULL;
+	dataLakesstate->cmd = mtstate->operation;
 
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		// master
+		MemoryContextCallback *mcb;
+
+		FDW_ResultMetaList = NIL;
+
+		mcb = MemoryContextAlloc(CurrentMemoryContext,
+								  sizeof(MemoryContextCallback));
+		mcb->func = resultMetaListCallback;
+		mcb->arg = NULL;
+		MemoryContextRegisterResetCallback(CurrentMemoryContext, mcb);
+
 		return;
 	}
 
 	Value *val = lfirst(list_nth_cell(fdw_private, FdwModifyFileDir));
-	char *fileDir = val->val.str;
-	int prefixLen = strlen(dataLakesstate->options->prefix);
-	StringInfoData filePrefix;
-	initStringInfo(&filePrefix);
-	appendStringInfo(&filePrefix, "%s", dataLakesstate->options->prefix);
-	if (dataLakesstate->options->prefix[prefixLen - 1] != '/')
-	{
-		appendStringInfo(&filePrefix, "/");
-	}
-	appendStringInfo(&filePrefix, "%s", fileDir);
-	dataLakesstate->fragments = lappend(dataLakesstate->fragments, filePrefix.data);
+	dataLakesstate->fragments = lappend(dataLakesstate->fragments, pstrdup(val->val.str));
 
-	initModify(resultRelInfo);
+	if (mtstate->operation == CMD_UPDATE || mtstate->operation == CMD_DELETE)
+	{
+		dataLakesstate->modify_state->us_ctid_no = ExecFindJunkAttributeInTlist(outerPlanState(mtstate)->plan->targetlist, "ctid");
+		if (!AttributeNumberIsValid(dataLakesstate->modify_state->us_ctid_no))
+			elog(ERROR, "could not find junk ctid column");
+
+		TupleDesc target_tupdesc = CreateTemplateTupleDesc(2);
+		for (i = 0; i < DATALAKE_ICEBERG_JUNK_NUM; i++)
+		{
+			IcebergJunkInfo *info = &datalake_iceberg_junk_info[i];
+			TupleDescInitEntry(target_tupdesc, (AttrNumber) (i + 1), info->name, info->type, -1, 0);
+		}
+		dataLakesstate->modify_state->us_slot = MakeSingleTupleTableSlot(target_tupdesc, &TTSOpsVirtual);
+
+		/*
+		 * For Iceberg UPDATE/DELETE operations, create global fileIndexMap.
+		 * This will be used to map file IDs to file paths during the modify phase.
+		 * It will be freed in EndForeignModify.
+		 * We also register a memory context callback to ensure cleanup on error/abort.
+		 */
+		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format) &&
+			datalake_iceberg_file_index_map == NULL)
+		{
+			MemoryContextCallback *mcb;
+
+			datalake_iceberg_file_index_map = icebergCreateFileIndexMap();
+			if (datalake_iceberg_file_index_map == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("failed to create Iceberg file index map")));
+
+			/*
+			 * Register a callback to clean up the fileIndexMap when the memory context
+			 * is reset or deleted. This ensures cleanup happens even in case of errors
+			 * or transaction abort.
+			 */
+			mcb = MemoryContextAlloc(CurrentMemoryContext,
+									  sizeof(MemoryContextCallback));
+			mcb->func = fileIndexMapCallback;
+			mcb->arg = NULL;
+			MemoryContextRegisterResetCallback(CurrentMemoryContext, mcb);
+
+			elog(DEBUG2, "datalake_fdw: Created global Iceberg file index map in BeginForeignModify for %s",
+					mtstate->operation == CMD_UPDATE ? "UPDATE" : "DELETE");
+		}
+	}
+
+	initModify(mtstate, resultRelInfo);
 
 	elog(DEBUG5, "datalake_fdw: dataLakeBeginForeignModify ends on segment: %d", DATALAKE_SEGMENT_ID);
 }
@@ -1128,10 +1180,86 @@ dataLakeExecForeignInsert(EState *estate,
 					 TupleTableSlot *planSlot)
 {
 	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignInsert starts on segment: %d", DATALAKE_SEGMENT_ID);
-
 	insertModify(resultRelInfo, slot);
 
 	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignInsert ends on segment: %d", DATALAKE_SEGMENT_ID);
+	return slot;
+}
+
+/*
+ * prepareIcebergDeleteJunkSlot
+ *		Common helper for UPDATE and DELETE: decode ctid from the plan slot
+ *		to obtain the Iceberg file path and row position, then fill the
+ *		junk slot that the delete-file writer expects.
+ */
+static void
+prepareIcebergDeleteJunkSlot(ResultRelInfo *rinfo, TupleTableSlot *planSlot,
+							 const char *opName)
+{
+	dataLakeFdwScanState	*sstate		= (dataLakeFdwScanState*)rinfo->ri_FdwState;
+	dataLakeModifyState		*mstate		= sstate->modify_state;
+	TupleTableSlot			*junk_slot;
+	Datum		datum;
+	bool		isNull;
+	ItemPointer	ctid;
+	uint32		fileId;
+	int64		position;
+	const char *filePath;
+
+	Assert(mstate);
+	junk_slot = mstate->us_slot;
+	ExecClearTuple(junk_slot);
+
+	datum = ExecGetJunkAttribute(planSlot,
+								mstate->us_ctid_no,
+								&isNull);
+	/* shouldn't ever get a null result... */
+	if (isNull)
+		elog(ERROR, "ctid is NULL");
+	ctid = (ItemPointer) DatumGetPointer(datum);
+
+	/* Decode tid to get fileId and position */
+	icebergDecodeTID(ctid, &fileId, &position);
+
+	/* Get file path from global fileIndexMap */
+	filePath = icebergGetFilePath(datalake_iceberg_file_index_map, fileId);
+	if (filePath == NULL)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+					errmsg("Failed to get file path for file ID %u in Iceberg %s", fileId, opName)));
+	}
+
+	/* Fill junk slot with file path and position */
+	junk_slot->tts_values[0] = CStringGetDatum(filePath);
+	junk_slot->tts_isnull[0] = false;
+	junk_slot->tts_values[1] = Int64GetDatum((int64) position);
+	junk_slot->tts_isnull[1] = false;
+
+	elog(DEBUG2, "datalake_fdw: %s writing delete file=%s, pos="UINT64_FORMAT" for file ID %u",
+			opName, filePath, position, fileId);
+}
+
+TupleTableSlot *dataLakeExecForeignUpdate(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+	dataLakeFdwScanState	*sstate		= (dataLakeFdwScanState*)rinfo->ri_FdwState;
+	dataLakeModifyState		*mstate		= sstate->modify_state;
+	MemoryContext			 oldcontext;
+
+	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignUpdate starts on segment: %d", DATALAKE_SEGMENT_ID);
+
+	prepareIcebergDeleteJunkSlot(rinfo, planSlot, "UPDATE");
+
+	MemoryContextReset(sstate->rowcontext);
+	oldcontext = MemoryContextSwitchTo(sstate->rowcontext);
+
+	slot_getallattrs(slot);
+	writeToProvider(sstate->provider, slot, 0);
+	writeToProvider(mstate->us_provider, mstate->us_slot, 0);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignUpdate ends on segment: %d", DATALAKE_SEGMENT_ID);
 	return slot;
 }
 
@@ -1146,13 +1274,24 @@ dataLakeEndForeignModify(EState *estate,
 	elog(DEBUG5, "datalake_fdw: dataLakeEndForeignModify starts on segment: %d", DATALAKE_SEGMENT_ID);
 
 	dataLakeFdwScanState *dataLakesstate = (dataLakeFdwScanState*)resultRelInfo->ri_FdwState;
+	/*
+	 * Do nothing in EXPLAIN (no ANALYZE) case.  resultRelInfo->ri_FdwState
+	 * stays NULL.
+	 */
+	if (dataLakesstate == NULL)
+	{
+		return;
+	}
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
 		// master
-		if (dataLakesstate)
+		if (dataLakesstate->options->format == DL_ICEBERG_TABLE && FDW_ResultMetaList != NIL)
 		{
-			pfree(dataLakesstate);
+			datalakeCommitExternalWrite(resultRelInfo->ri_RelationDesc, dataLakesstate, FDW_ResultMetaList);
 		}
+		list_free_deep(FDW_ResultMetaList);
+		FDW_ResultMetaList = NIL;
+		pfree(dataLakesstate);
 		return;
 	}
 	else
@@ -1161,6 +1300,27 @@ dataLakeEndForeignModify(EState *estate,
 	}
 
 	elog(DEBUG5, "datalake_fdw: dataLakeEndForeignModify ends on segment: %d", DATALAKE_SEGMENT_ID);
+}
+
+TupleTableSlot *dataLakeExecForeignDelete(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+	dataLakeFdwScanState	*sstate		= (dataLakeFdwScanState*)rinfo->ri_FdwState;
+	dataLakeModifyState		*mstate		= sstate->modify_state;
+	MemoryContext			 oldcontext;
+
+	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignDelete starts on segment: %d", DATALAKE_SEGMENT_ID);
+
+	prepareIcebergDeleteJunkSlot(rinfo, planSlot, "DELETE");
+
+	MemoryContextReset(sstate->rowcontext);
+	oldcontext = MemoryContextSwitchTo(sstate->rowcontext);
+
+	writeToProvider(mstate->us_provider, mstate->us_slot, 0);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignDelete ends on segment: %d", DATALAKE_SEGMENT_ID);
+	return slot;
 }
 
 /*
@@ -1173,9 +1333,28 @@ static int
 dataLakeIsForeignRelUpdatable(Relation rel)
 {
 	elog(DEBUG5, "datalake_fdw: dataLakeIsForeignRelUpdatable starts on segment: %d", DATALAKE_SEGMENT_ID);
+	int updatable = 0;
+	dataLakeOptions *opts = datalakeGetOptions(RelationGetRelid(rel));
+	switch (opts->format)
+	{
+		case DL_ICEBERG_TABLE:
+			/* Iceberg supports INSERT, UPDATE, and DELETE */
+			updatable = (1u << (int) CMD_INSERT) |
+						(1u << (int) CMD_UPDATE) |
+						(1u << (int) CMD_DELETE);
+			break;
+		case DL_HUDI_TABLE:
+			/* Hudi is read-only */
+			updatable = 0;
+			break;
+		default:
+			/* Other formats support INSERT only */
+			updatable = (1u << (int) CMD_INSERT);
+			break;
+	}
+	datalakeFreeDatalakeOptions(opts);
 	elog(DEBUG5, "datalake_fdw: dataLakeIsForeignRelUpdatable ends on segment: %d", DATALAKE_SEGMENT_ID);
-	/* Only INSERTs are allowed at the moment */
-	return 1u << (unsigned int) CMD_INSERT | 0u << (unsigned int) CMD_UPDATE | 0u << (unsigned int) CMD_DELETE;
+	return updatable;
 }
 
 static bool dataLakeIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
@@ -1384,7 +1563,20 @@ iterateScanStatus(ForeignScanState *node, dataLakeFdwScanState *dataLakesstate)
 		MemoryContextReset(dataLakesstate->rowcontext);
 		MemoryContext oldContext = MemoryContextSwitchTo(dataLakesstate->rowcontext);
 
-		found = readFromProvider(dataLakesstate->provider, (void*)node->ss.ss_ScanTupleSlot->tts_values, (void*)node->ss.ss_ScanTupleSlot->tts_isnull);
+		/* Use new interface that fills tid for Iceberg tables */
+		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format))
+		{
+			found = readFromProviderWithTid(dataLakesstate->provider,
+									(void*)node->ss.ss_ScanTupleSlot->tts_values,
+									(void*)node->ss.ss_ScanTupleSlot->tts_isnull,
+									(void*)&(node->ss.ss_ScanTupleSlot->tts_tid));
+		}
+		else
+		{
+			found = readFromProvider(dataLakesstate->provider,
+									(void*)node->ss.ss_ScanTupleSlot->tts_values,
+									(void*)node->ss.ss_ScanTupleSlot->tts_isnull);
+		}
 
 		MemoryContextSwitchTo(oldContext);
 	}
@@ -1400,6 +1592,29 @@ iterateScanStatus(ForeignScanState *node, dataLakeFdwScanState *dataLakesstate)
 				dataLakesstate->cstate.cstate_scan->cdbsreh->processed++;
 			}
 		}
+
+		/*
+		 * For Iceberg UPDATE/DELETE operations, we need to use heap_form_tuple to create
+		 * a HeapTuple so system columns (ctid, gp_segment_id) can be properly retrieved.
+		 * System columns are retrieved via heap_getsysattr, not from tts_values array.
+		 *
+		 * gp_segment_id: heap_getsysattr returns GpIdentity.segindex automatically
+		 * ctid: heap_getsysattr returns tup->t_self (which we set from tts_tid)
+		 */
+		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format))
+		{
+			TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+			HeapTuple	htup;
+			htup = heap_form_tuple(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+
+			/* Set ctid - heap_getsysattr will read from tup->t_self */
+			htup->t_self = slot->tts_tid;
+
+			/* Store HeapTuple in slot */
+			ExecStoreHeapTuple(htup, slot, false);
+			return;
+		}
+
 		ExecStoreVirtualTuple(node->ss.ss_ScanTupleSlot);
 	}
 }
@@ -1473,12 +1688,20 @@ freeFdwPrivate(dataLakeFdwScanState *sstate, ForeignScan *foreignScan)
 }
 
 static void
-initModify(ResultRelInfo *resultRelInfo)
+initModify(ModifyTableState *state, ResultRelInfo *resultRelInfo)
 {
 	dataLakeFdwScanState* dataLakesstate = (dataLakeFdwScanState*)resultRelInfo->ri_FdwState;
-	dataLakesstate->provider = initProvider(dataLakesstate->options->format, dataLakesstate->options->readFdw, dataLakesstate->options->vectorization);
 	void *sstate = (void*)dataLakesstate;
-	createHandler(dataLakesstate->provider, sstate);
+	if (state->operation == CMD_UPDATE || state->operation == CMD_DELETE)
+	{
+		dataLakesstate->modify_state->us_provider = initProvider(dataLakesstate->options->format, DL_OP_DELETE, dataLakesstate->options->vectorization);
+		createHandler(dataLakesstate->modify_state->us_provider, sstate);
+	}
+	if (state->operation == CMD_INSERT || state->operation == CMD_UPDATE)
+	{
+		dataLakesstate->provider = initProvider(dataLakesstate->options->format, DL_OP_WRITE, dataLakesstate->options->vectorization);
+		createHandler(dataLakesstate->provider, sstate);
+	}
 
 	if (FORMAT_IS_CUSTOM(dataLakesstate->options->format) ||
 		FORMAT_IS_CSV(dataLakesstate->options->format) ||
@@ -1660,6 +1883,35 @@ insertModify(ResultRelInfo *resultRelInfo, TupleTableSlot *slot)
 	}
 }
 
+/*
+ * fileIndexMapCallback
+ *		Callback function to clean up global fileIndexMap when memory context is reset.
+ *		This ensures cleanup happens even in case of errors or transaction abort.
+ */
+static void
+fileIndexMapCallback(void *arg)
+{
+	/* Free global fileIndexMap for Iceberg tables */
+	if (datalake_iceberg_file_index_map != NULL)
+	{
+		elog(DEBUG2, "datalake_fdw: Cleaning up global Iceberg file index map via callback");
+		icebergFreeFileIndexMap(datalake_iceberg_file_index_map);
+		datalake_iceberg_file_index_map = NULL;
+	}
+}
+
+/*
+ * resultMetaListCallback
+ *		Callback function to reset FDW_ResultMetaList when memory context is reset.
+ *		This ensures the global pointer does not become a dangling reference
+ *		in case of errors or transaction abort.
+ */
+static void
+resultMetaListCallback(void *arg)
+{
+	FDW_ResultMetaList = NIL;
+}
+
 static void
 endModify(ResultRelInfo *resultRelInfo)
 {
@@ -1680,9 +1932,28 @@ endModify(ResultRelInfo *resultRelInfo)
 #endif
 	}
 
-	destroyHandler(dataLakesstate->provider);
+	if (dataLakesstate->provider)
+	{
+		destroyHandler(dataLakesstate->provider);
+	}
+	if (dataLakesstate->modify_state->us_provider)
+	{
+		destroyHandler(dataLakesstate->modify_state->us_provider);
+	}
+
+	/* Free global fileIndexMap for Iceberg tables */
+	if (datalake_iceberg_file_index_map != NULL)
+	{
+		icebergFreeFileIndexMap(datalake_iceberg_file_index_map);
+		datalake_iceberg_file_index_map = NULL;
+	}
+
 	if (dataLakesstate)
 	{
+		if (dataLakesstate->modify_state)
+		{
+			pfree(dataLakesstate->modify_state);
+		}
 		datalakeFreeDatalakeOptions(dataLakesstate->options);
 		pfree(dataLakesstate);
 	}
@@ -1797,15 +2068,16 @@ dataLakeAnalyzeBeginScan(Relation relation)
 	latestFragmentData = list_truncate(latestFragmentData, len - segmentcount);
 
 	fragmentData = datalakeDeserializeExternalFragmentList(relation,
-												   NIL,
-												   state->options,
-												   latestFragmentData);
+															NIL,
+															state->options,
+															latestFragmentData);
 
 	state->options->readFdw = true;
-	state->provider = initProvider(state->options->format, state->options->readFdw, false);
+	state->provider = initProvider(state->options->format, DL_OP_READ, false);
 	state->rel = relation;
 	state->fragments = fragmentData;
 	state->selected_segments = selected_segments;
+	state->scan_tupdesc = CreateTupleDescCopy(tupdesc);
 
 	for (i = 1; i <= tupdesc->natts; i++)
 	{
@@ -2918,19 +3190,28 @@ dataLakeAnalyzeForeignTable(Relation relation,
 {
 	int64_t totalSize = 0;
 	dataLakeOptions *options;
+	IcebergTableStatistics *statistics = NULL;
 
 	/* Return the row-analysis function pointer */
 	*func = dataLakeAcquireSampleRowsFunc;
 	int segmentcount = DATALAKE_SEGMENT_COUNT;
+	options = datalakeGetOptions(RelationGetRelid(relation));
 
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		options = datalakeGetOptions(RelationGetRelid(relation));
 		latestFragmentData = datalakeGetExternalFragmentList(relation, NULL, options, &totalSize);
 		/* master does not process any fragments */
 		List *random_segments = datalakeSelectRandomSegments(segmentcount, external_table_limit_segment_num);
 		/* put the random segments into the list */
 		latestFragmentData = list_concat(latestFragmentData, random_segments);
+		if (options->format == DL_ICEBERG_TABLE)
+		{
+			statistics = datalakeGetTableStatistics(RelationGetRelid(relation), options);
+			totalSize = statistics->bytesInDataFile;
+		}
+		if (statistics) {
+			pfree(statistics);
+		}
 	}
 
 	/*

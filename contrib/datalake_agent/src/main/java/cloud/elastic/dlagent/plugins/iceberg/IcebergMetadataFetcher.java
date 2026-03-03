@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package cloud.elastic.dlagent.plugins.iceberg;
 
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
@@ -17,18 +36,24 @@ import cloud.elastic.dlagent.api.model.Metadata;
 import cloud.elastic.dlagent.api.model.Fragment;
 import cloud.elastic.dlagent.api.model.FragmentDescription;
 import cloud.elastic.dlagent.api.utilities.ColumnDescriptor;
+import cloud.elastic.dlagent.api.utilities.GpdbFragmentMetadata;
 import cloud.elastic.dlagent.api.utilities.SpringContext;
 import cloud.elastic.dlagent.api.utilities.Utilities;
 import cloud.elastic.dlagent.plugins.hudi.utilities.FilePathUtils;
 import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
+import cloud.elastic.dlagent.service.rest.FileListRequest;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
 import com.google.common.collect.Lists;
@@ -36,9 +61,11 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 
 import java.io.IOException;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -158,6 +185,95 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         }
 
         return metadata;
+    }
+
+    @Override
+    public Boolean batchAppend() throws Exception {
+        Table table = null;
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        try {
+            table = catalog.loadTable(context.getDataSource());
+        } catch (NoSuchTableException e) {
+            Map<String, String> properties = new HashMap<String, String>();
+            properties.put(TableProperties.FORMAT_VERSION, "2");
+            properties.put(TableProperties.UPDATE_MODE, "merge-on-read");
+            properties.put(TableProperties.DELETE_MODE, "merge-on-read");
+            properties.put(TableProperties.MERGE_MODE, "merge-on-read");
+
+            table = catalog.createTable(TableIdentifier.parse(context.getDataSource()),
+                                        icebergUtilities.formSchemaFromTupleDes(context),
+                                        null,
+                                        null,
+                                        properties);
+        }
+        AppendFiles batchAppend = table.newAppend();
+
+        // Use file list from JSON POST request body
+        for (FileListRequest.FileEntry fileEntry : context.getFileList()) {
+            DataFile dataFile = icebergUtilities.transFileFromFileEntry(fileEntry);
+            batchAppend.appendFile(dataFile);
+        }
+
+        batchAppend.commit();
+        return true;
+    }
+
+    @Override
+    public Metadata getOrCreateSchema() throws Exception {
+        Metadata.Item tblDesc = Utilities.extractTableFromName(context.getDataSource());
+        Metadata metadata = new Metadata(tblDesc);
+        Table table = null;
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        try {
+            table = catalog.loadTable(context.getDataSource());
+        } catch (NoSuchTableException e) {
+            table = catalog.createTable(TableIdentifier.parse(context.getDataSource()),
+                                        icebergUtilities.formSchemaFromTupleDes(context),
+                                        null,
+                                        null,
+                                        java.util.Collections.singletonMap(TableProperties.FORMAT_VERSION, "2"));
+        }
+        try {
+            for (Types.NestedField icebergCol : table.schema().columns()) {
+                metadata.addField(icebergUtilities.mapIcebergType(icebergCol));
+            }
+            metadata.setLocation(table.location());
+        } catch (UnsupportedTypeException e) {
+            String errorMsg = "Failed to retrieve metadata for table " + metadata.getItem() + ". " +
+                    e.getMessage();
+            throw new UnsupportedTypeException(errorMsg);
+        }
+        return metadata;
+    }
+
+    @Override
+    public Boolean rowUpdate() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        RowDelta rowDelta = table.newRowDelta();
+
+        // Use file list from JSON POST request body
+        for (FileListRequest.FileEntry fileEntry : context.getFileList()) {
+            String content = fileEntry.getContent();
+            if ("POSITION_DELETE".equals(content)) {
+                DeleteFile deleteFile = icebergUtilities.transPosDeleteFromFileEntry(fileEntry);
+                rowDelta.addDeletes(deleteFile);
+            } else {
+                // Default to DATA_FILE
+                DataFile dataFile = icebergUtilities.transFileFromFileEntry(fileEntry);
+                rowDelta.addRows(dataFile);
+            }
+        }
+
+        rowDelta.commit();
+        return true;
+    }
+
+    @Override
+    public Map<String, String> getCurrentSnapshotSummary() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        return table.currentSnapshot().summary();
     }
 
     public Schema expectedSchema(Table table) {

@@ -24,6 +24,7 @@
 #include "utils/timestamp.h"
 #include "utils/builtins.h"
 #include "cdb/cdbvars.h"
+#include "src/datalake_type.h"
 
 /* helper function declarations */
 static void add_tuple_desc_httpheader(CHURL_HEADERS headers, Relation rel);

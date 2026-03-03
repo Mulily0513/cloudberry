@@ -31,6 +31,7 @@ createIcebergTaskReader(void *args)
 	IcebergTaskReader *reader = palloc0(sizeof(IcebergTaskReader));
 	reader->fileScanTask = info->fileScanTask;
 	reader->taskId = info->taskId;
+	reader->fileId = info->fileId;
 
 	reOrganizeDeleteFiles(info->fileScanTask->deletes, &posDeletes, &eqDeletes);
 
@@ -46,10 +47,10 @@ createIcebergTaskReader(void *args)
 		projectRequiredColumns(info->datafileDesc, info->attrUsed, eqDeletes);
 
 	filter = (Reader *) datalakeCreateFileReader(info->mcxt, info->datafileDesc, info->attrUsed, true,
-										 info->fileScanTask->dataFile, info->gopherFilesystem,
-										 info->fileScanTask->start,
-										 info->fileScanTask->start + info->fileScanTask->length,
-										 info->buffer);
+												info->fileScanTask->dataFile, info->gopherFilesystem,
+												info->fileScanTask->start,
+												info->fileScanTask->start + info->fileScanTask->length,
+												info->buffer);
 
 	list_free(info->fileScanTask->deletes);
 
@@ -69,11 +70,20 @@ bool
 icebergTaskReaderNext(Reader *reader, DatalakeInternalRecord *record)
 {
 	IcebergTaskReader *icebergReader = (IcebergTaskReader *) reader;
+	bool result;
 
 	if (icebergReader == NULL)
 		return false;
 
-	return icebergReader->dataReader->Next(icebergReader->dataReader, record);
+	result = icebergReader->dataReader->Next(icebergReader->dataReader, record);
+
+	/* Fill fileId for TID (Tuple ID) if read successfully */
+	if (result)
+	{
+		record->fileId = icebergReader->fileId;
+	}
+
+	return result;
 }
 
 void
@@ -84,9 +94,15 @@ icebergTaskReaderClose(Reader *reader)
 	if (icebergReader == NULL)
 		return;
 
-	icebergReader->dataReader->Close(icebergReader->dataReader);
+	if (icebergReader->dataReader)
+	{
+		icebergReader->dataReader->Close(icebergReader->dataReader);
+	}
+	if (icebergReader->fileScanTask)
+	{
+		pfree(icebergReader->fileScanTask);
+	}
 	elog(DEBUG1, "close iceberg reader task [%d]", icebergReader->taskId);
-	pfree(icebergReader->fileScanTask);
 	pfree(icebergReader);
 }
 

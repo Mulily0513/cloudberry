@@ -53,7 +53,7 @@ void readLogical::initParameter(void *sstate)
 	defMap = (int *)palloc0(ncolumns * sizeof(int));
 	defExprs = (ExprState **)palloc0(ncolumns * sizeof(ExprState *));
 
-	includes_columns = (bool*)palloc0(sizeof(bool) * ncolumns);
+	includes_columns = (bool*)palloc0(sizeof(bool) * (ncolumns));
 	for (int i = 0; i < ncolumns; i++)
 	{
 		includes_columns[i] = options.includes_columns[i];

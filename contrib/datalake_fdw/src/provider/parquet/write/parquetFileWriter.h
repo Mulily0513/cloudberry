@@ -93,6 +93,8 @@ public:
 
     void init(void *sstate, writeOption option);
 
+    void init(TupleDesc tupdesc, std::shared_ptr<parquet::schema::GroupNode> schema, writeOption option);
+
     void destroy();
 
     bool isOpen();
@@ -130,13 +132,10 @@ private:
     writeOption option;
     parquet::ByteArray* byteArray;
     parquet::FixedLenByteArray* fixByteArray;
-    uint8_t* decimalOutBuf;
-    int64_t decimalOutBufOffset;
     parquet::Int96* int96Array;
     int16_t* definition_level;
 
     bool openState;
-    int64_t currentWriteBytes;
 };
 
 #endif

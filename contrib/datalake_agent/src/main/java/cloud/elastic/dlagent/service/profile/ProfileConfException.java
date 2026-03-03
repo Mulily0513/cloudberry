@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.service.profile;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.service.profile;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.service.profile;
 
 /**
  * Thrown when there is a configuration problem with dlagent profiles definitions.

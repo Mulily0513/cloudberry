@@ -19,11 +19,13 @@ struct ProviderInternalWrapper;
 
 typedef struct ProviderInternalWrapper *providerWrapper;
 
-providerWrapper initProvider(DLTblFmt type, bool readFdw, bool vectorization);
+providerWrapper initProvider(DLTblFmt type, DLCmdType cmd, bool vectorization);
 
 void createHandler(providerWrapper provider, void* sstate);
 
 int64_t readFromProvider(providerWrapper provider, void *values, void *nulls);
+
+int64_t readFromProviderWithTid(providerWrapper provider, void *values, void *nulls, void *tid);
 
 void setPartitionValue(providerWrapper provider, void* values, void* nulls);
 

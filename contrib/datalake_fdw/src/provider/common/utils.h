@@ -25,6 +25,7 @@ typedef struct DatalakeReaderInitInfo
 	FileScanTask   *fileScanTask;
 	ExternalTableMetadata *tableOptions;
 	void		   *buffer;
+	uint32			fileId;			/* File ID for current task (Iceberg only) */
 } DatalakeReaderInitInfo;
 
 typedef struct DatalakeInternalRecord
@@ -32,6 +33,7 @@ typedef struct DatalakeInternalRecord
 	Datum    *values;
 	bool     *nulls;
 	int64     position;
+	uint32    fileId;      /* For Iceberg TID encoding */
 } DatalakeInternalRecord;
 
 typedef struct InternalRecordWrapper {
@@ -103,6 +105,7 @@ typedef struct DatalakeRowReader
 	MemoryContext			taskMcxt;
 	MemoryContext			curMcxt;
 	void 					*buffer;
+	bool					fileIndexMapInitialized;	/* Track if Iceberg file index map has been initialized */
 } DatalakeRowReader;
 
 typedef struct DatalakeRemoteFileHandle

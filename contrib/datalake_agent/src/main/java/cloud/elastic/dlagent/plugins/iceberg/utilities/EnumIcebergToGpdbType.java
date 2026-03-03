@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 package cloud.elastic.dlagent.plugins.iceberg.utilities;
 
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
@@ -48,6 +49,7 @@ public enum EnumIcebergToGpdbType {
     TimestampType("timestamp", EnumGpdbType.TimestampType),
     TimestamptzType("timestamptz", EnumGpdbType.TimestamptzType),
     DateType("date", EnumGpdbType.DateType),
+    FixedType("fixed", EnumGpdbType.BpcharType, "[(,)]"),
     DecimalType("decimal", EnumGpdbType.NumericType, "[(,)]"),
     ArrayType("list", EnumGpdbType.TextType, "[<,>]", true),
     MapType("map", EnumGpdbType.TextType, "[<,>]", true),
@@ -129,7 +131,6 @@ public enum EnumIcebergToGpdbType {
                 + icebergType + " to GPDB's type");
     }
 
-
     /**
      * @param dataType Gpdb data type
      * @return compatible Iceberg type to given Gpdb type, if there are more than one compatible types, it returns one with bigger size
@@ -171,6 +172,7 @@ public enum EnumIcebergToGpdbType {
             case BINARY:
             case TIME:
             case DATE:
+            case FIXED:
                 return icebergType.typeId().name();
             case TIMESTAMP:
                 Types.TimestampType timestamp = (Types.TimestampType) icebergType;

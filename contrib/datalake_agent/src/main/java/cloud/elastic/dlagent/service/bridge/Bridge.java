@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.service.bridge;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -20,9 +18,10 @@ package cloud.elastic.dlagent.service.bridge;
  */
 
 
-import cloud.elastic.dlagent.api.io.Writable;
 
-import java.io.DataInputStream;
+package cloud.elastic.dlagent.service.bridge;
+
+import cloud.elastic.dlagent.api.io.Writable;
 
 /**
  * Bridge interface - defines the interface of the Bridge classes. Any Bridge
@@ -42,6 +41,10 @@ public interface Bridge {
     Writable getFragments(String pattern) throws Exception;
     Writable getPartitions(String pattern) throws Exception;
     Writable getSchema(String pattern) throws Exception;
+    Writable batchAppend() throws Exception;
+    Writable getOrCreateSchema() throws Exception;
+    Writable rowUpdate() throws Exception;
+    Writable getCurrentSnapshotSummary() throws Exception;
 
     void close() throws Exception;
 }

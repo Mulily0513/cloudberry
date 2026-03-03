@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.model;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,10 +17,10 @@ package cloud.elastic.dlagent.api.model;
  * under the License.
  */
 
-import jdk.jfr.events.ExceptionThrownEvent;
+package cloud.elastic.dlagent.api.model;
 
 import java.util.List;
-
+import java.util.Map;
 
 /**
  * Interface that defines getting metadata.
@@ -31,6 +29,10 @@ public interface MetadataFetcher extends Plugin {
     FragmentDescription getFragments(String pattern) throws Exception;
     List<Partition> getPartitions(String pattern) throws Exception;
     Metadata getSchema(String pattern) throws Exception;
+    Boolean batchAppend() throws Exception;
+    Metadata getOrCreateSchema() throws Exception;
+    Boolean rowUpdate() throws Exception;
+    Map<String, String> getCurrentSnapshotSummary() throws Exception;
 
     boolean open() throws Exception;
 

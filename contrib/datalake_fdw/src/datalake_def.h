@@ -138,6 +138,7 @@
 #define DATALAKE_OPTION_QUERY_TYPE "query_type"
 #define DATALAKE_OPTION_METADATA_TABLE_ENABLE "metadata_table_enable"
 
+
 #define FORMAT_IS_CSV(format) (format == DL_CSV_TABLE)
 
 #define FORMAT_IS_TEXT(format) (format == DL_TEXT_TABLE)
@@ -158,12 +159,20 @@
 
 #define PROTOCOL_IS_S3(protocol) (protocol == DL_OSS_PROTOCOL_S3)
 
+#define PROTOCOL_IS_OSS(protocol) (protocol == DL_OSS_PROTOCOL_ALI || \
+	protocol == DL_OSS_PROTOCOL_COS || \
+	protocol == DL_OSS_PROTOCOL_QINGSTORE || \
+	protocol == DL_OSS_PROTOCOL_S3B || \
+	protocol == DL_OSS_PROTOCOL_HUAWEI || \
+	protocol == DL_OSS_PROTOCOL_KS3 || \
+	protocol == DL_OSS_PROTOCOL_S3)
+
 #define PARQUET_SUPPORT_COMPRESS(compress) (compress == UNCOMPRESS || \
 	compress == SNAPPY || compress == GZIP || \
 	compress == ZSTD || compress == LZ4)
 
 #define TEXT_SUPPORT_COMPRESS(compress) (compress == UNCOMPRESS || \
-	compress == ZIP || compress == GZIP)\
+	compress == ZIP || compress == GZIP)
 
 #define AVRO_SUPPORT_COMPRESS(compress) (compress == UNCOMPRESS || \
 	compress == SNAPPY)
@@ -332,6 +341,13 @@ typedef struct dataLakeCustomState
 	DatalakeExternalInsertDesc insert_state;
 } dataLakeCustomState;
 
+typedef struct dataLakeModifyState
+{
+	TupleTableSlot	*us_slot;
+	providerWrapper	us_provider;
+	AttrNumber		us_ctid_no;
+} dataLakeModifyState;
+
 /*
  * Execution state of a foreign scan using datalake_fdw.
  */
@@ -350,8 +366,29 @@ typedef struct dataLakeFdwScanState
 	List					*selected_segments;
 	dataLakeCustomState 	customState;
 	gopher_context_handle_t *gopher_handle_t;
+	TupleDesc				scan_tupdesc;
+	CmdType					cmd;
+	dataLakeModifyState		*modify_state;
 } dataLakeFdwScanState;
 
+/* iceberg update */
+#define DATALAKE_ICEBERG_JUNK_FILE_OFFSET (0)
+#define DATALAKE_ICEBERG_JUNK_POS_OFFSET (1)
+#define DATALAKE_ICEBERG_JUNK_NUM (2)
+#define DATALAKE_ICEBERG_SYSATT_NUM (2)
+typedef struct IcebergJunkInfo
+{
+	AttrNumber	attno;
+	char		*name;
+	Oid			type;
+} IcebergJunkInfo;
+
+extern IcebergJunkInfo datalake_iceberg_junk_info[DATALAKE_ICEBERG_JUNK_NUM];
+
+typedef struct IcebergFileIndexMap IcebergFileIndexMap;  /* Forward declaration for Iceberg file index */
+
+/* Global file index map for Iceberg update/delete operations */
+extern IcebergFileIndexMap *datalake_iceberg_file_index_map;
 
 typedef struct datalakeFragmentData
 {
@@ -359,5 +396,11 @@ typedef struct datalakeFragmentData
 	int64_t length;
 	bool directory;
 }datalakeFragmentData;
+
+typedef struct IcebergTableStatistics
+{
+	int64		recordCount;
+	int64		bytesInDataFile;
+} IcebergTableStatistics;
 
 #endif							/* DATALAKE_DEF_H */

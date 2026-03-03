@@ -13,6 +13,7 @@ extern "C"
 #include "nodes/pg_list.h"
 #include "utils/builtins.h"
 #include "utils.h"
+#include "src/datalake_def.h"
 }
 
 ParquetReader::ParquetReader(MemoryContext rowContext, char *filePath, gopherFS gopherFilesystem, dataBufferArray *buffer)
@@ -56,7 +57,6 @@ ParquetReader::createMapping(List *columnDesc, bool *attrUsed)
 	{
 		DatalakeFieldDescription *entry = (DatalakeFieldDescription *) lfirst(lc);
 		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN};
-
 		typeMap_.push_back(typInfo);
 
 		if (!attrUsed[i])
@@ -227,6 +227,29 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 		{
 			((parquet::TypedScanner<parquet::DoubleType> *)scanner.get())->NextValue(&d.doubleValue, &isNull);
 			return Float8GetDatum(d.doubleValue);
+		}
+		case BPCHAROID:
+		{
+			parquet::FixedLenByteArray value;
+			((parquet::TypedScanner<parquet::FLBAType> *)scanner.get())->NextValue(&value, &isNull);
+			if (isNull)
+				PG_RETURN_DATUM(0);
+			int typeLen = metadata->schema()->Column(typInfo.columnIndex_)->type_length();
+			if (!buffer_)
+			{
+				bytea *result = (bytea *) gpdbPalloc(typeLen + VARHDRSZ);
+				SET_VARSIZE(result, typeLen + VARHDRSZ);
+				memcpy(VARDATA(result), value.ptr, typeLen);
+				return PointerGetDatum(result);
+			}
+			if (typeLen + VARHDRSZ > static_cast<uint32>(buffer_->getDataBuffer(typInfo.columnIndex_)->length))
+			{
+				buffer_->resizeDataBuffer(typInfo.columnIndex_, typeLen + VARHDRSZ);
+			}
+			dataBuff *colBuffer = buffer_->getDataBuffer(typInfo.columnIndex_);
+			SET_VARSIZE(colBuffer->buffer, typeLen + VARHDRSZ);
+			memcpy(VARDATA(colBuffer->buffer), value.ptr, typeLen);
+			return PointerGetDatum(colBuffer->buffer);
 		}
 		case BYTEAOID:
 		case TEXTOID:

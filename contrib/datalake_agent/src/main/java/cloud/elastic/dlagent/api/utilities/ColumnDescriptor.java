@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.utilities;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,8 @@ package cloud.elastic.dlagent.api.utilities;
  * under the License.
  */
 
+
+package cloud.elastic.dlagent.api.utilities;
 
 import org.apache.commons.lang.ArrayUtils;
 import cloud.elastic.dlagent.api.io.DataType;

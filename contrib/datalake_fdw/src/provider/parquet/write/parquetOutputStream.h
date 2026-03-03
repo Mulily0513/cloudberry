@@ -37,11 +37,16 @@ public:
         return 0;
     }
 
+    int64_t getBytesWritten() {
+        return bytes_written;
+    }
+
 private:
     ossFileStream stream_;
     std::string filePath_;
     int64_t pos_;
     bool closed_;
+    int64_t bytes_written;
 };
 
 #endif

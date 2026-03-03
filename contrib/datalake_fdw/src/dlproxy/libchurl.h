@@ -129,6 +129,22 @@ size_t		datalake_churl_write(CHURL_HANDLE handle, const char *buf, size_t bufsiz
 size_t		datalake_churl_read(CHURL_HANDLE handle, char *buf, size_t max_size);
 
 /*
+ * Finish upload and read response data
+ *
+ * Finish the HTTP POST upload and read the response data.
+ * Can be called multiple times to read large responses in chunks.
+ *
+ * Parameters:
+ *     handle - churl context handle
+ *     buf - buffer to store read data
+ *     max_size - maximum number of bytes to read
+ *
+ * Returns:
+ *     Number of bytes read, or 0 if no more data available
+ */
+size_t		datalake_churl_finish_upload_and_read(CHURL_HANDLE handle, char *buf, size_t max_size);
+
+/*
  * Check connectivity by reading some bytes and checking response
  */
 void		datalake_churl_read_check_connectivity(CHURL_HANDLE handle);

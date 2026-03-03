@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.filter;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,9 @@ package cloud.elastic.dlagent.api.filter;
  * under the License.
  */
 
+
+
+package cloud.elastic.dlagent.api.filter;
 
 import cloud.elastic.dlagent.api.io.DataType;
 

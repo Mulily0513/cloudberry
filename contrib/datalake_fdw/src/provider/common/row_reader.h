@@ -7,6 +7,7 @@
 
 DatalakeRowReader *datalakeCreateRowReader(MemoryContext mcxt,
 						   TupleDesc tupleDesc,
+						   int nTblColumn,
 						   bool *attrUsed,
 						   gopherFS gopherFilesystem,
 						   List *combinedScanTasks,

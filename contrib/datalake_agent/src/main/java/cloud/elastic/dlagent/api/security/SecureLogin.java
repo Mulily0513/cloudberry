@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.security;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.api.security;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.api.security;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -74,7 +75,6 @@ public class SecureLogin {
     public SecureLogin(DlUserGroupInformation dlagentUGI) {
         this.dlagentUGI = dlagentUGI;
     }
-
 
     /**
      * Returns UserGroupInformation for the login user for server specified by the configuration. Tries to re-use

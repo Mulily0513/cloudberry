@@ -1,6 +1,5 @@
 #include "fileSystem.h"
 #include <iostream>
-#include "src/provider/providerWrapper.h"
 
 extern "C" {
 #include "postgres.h"
@@ -11,6 +10,7 @@ extern "C" {
 #include "access/xact.h"
 #include "cdb/cdbvars.h"
 
+#include "src/provider/providerWrapper.h"
 }
 
 #define GOPHER_BLOCK_SIZE (1024 * 1024 * gopher_local_blocksize_mb)

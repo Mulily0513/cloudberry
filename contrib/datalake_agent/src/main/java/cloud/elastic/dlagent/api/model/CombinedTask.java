@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.model;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.api.model;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.api.model;
 
 import lombok.Getter;
 import lombok.Setter;

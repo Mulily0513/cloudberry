@@ -36,7 +36,6 @@ bool parquetFileWriter::createParquetWriter(ossFileStream ossFile, const std::st
     dataBuffer.resize(1024*1024);
     rg_writer = file_writer->AppendBufferedRowGroup();
     openState = true;
-    currentWriteBytes = 0;
     return true;
 }
 
@@ -46,7 +45,6 @@ void parquetFileWriter::createColumnBatch()
     fixByteArray = (parquet::FixedLenByteArray*)palloc(sizeof(parquet::FixedLenByteArray) * BATCH_WRITE_SIZE);
     definition_level = (int16_t*)palloc(sizeof(int16_t) * BATCH_WRITE_SIZE);
     int96Array = (parquet::Int96*)palloc(sizeof(parquet::Int96) * BATCH_WRITE_SIZE);
-    decimalOutBuf = (uint8_t*)palloc(DECIMAL_FIXBUFFER_SIZE * BATCH_WRITE_SIZE);
 
     for (int i = 0; i < ncolumns; i++)
     {
@@ -128,6 +126,7 @@ void parquetFileWriter::createColumnBatch()
             case VARCHAROID:
             case BYTEAOID:
             case TEXTOID:
+            case CSTRINGOID:
             case INTERVALOID:
             case TIMEOID: {
                 StringVectorBatch *val = (StringVectorBatch*)palloc(sizeof(StringVectorBatch));
@@ -158,39 +157,39 @@ std::shared_ptr<parquet::schema::GroupNode> parquetFileWriter::setupSchema()
         {
             case BOOLOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BOOLEAN));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BOOLEAN, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case INT2OID:
             case INT4OID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT32));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT32, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case INT8OID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT64));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT64, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case FLOAT4OID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::FLOAT));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::FLOAT, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case FLOAT8OID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::DOUBLE));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::DOUBLE, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case DATEOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT32, ::parquet::ConvertedType::DATE));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::LogicalType::Date(), ::parquet::Type::INT32, -1, i + 1));
                 break;
             }
             case TIMESTAMPOID:
             case TIMESTAMPTZOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT96));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT96, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case NUMERICOID: {
@@ -208,42 +207,42 @@ std::shared_ptr<parquet::schema::GroupNode> parquetFileWriter::setupSchema()
                     scale = (tupdesc->attrs[i].atttypmod - VARHDRSZ) & 0xffff;
                 }
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(), ::parquet::Repetition::OPTIONAL,
-                    ::parquet::Type::FIXED_LEN_BYTE_ARRAY, ::parquet::ConvertedType::DECIMAL, ::parquet_arrow::DecimalType::DecimalSize(precision), precision, scale));
+                    ::parquet::Type::FIXED_LEN_BYTE_ARRAY, ::parquet::ConvertedType::DECIMAL, ::parquet_arrow::DecimalType::DecimalSize(precision), precision, scale, i + 1));
                 break;
             }
             case CHAROID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case BPCHAROID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::FIXED_LEN_BYTE_ARRAY, ::parquet::ConvertedType::NONE, tupdesc->attrs[i].atttypmod - VARHDRSZ, -1, -1, i + 1));
                 break;
             }
             case VARCHAROID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::UTF8, -1, -1, -1, i + 1));
                 break;
             }
             case BYTEAOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case TEXTOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::UTF8, -1, -1, -1, i + 1));
                 break;
             }
             case INTERVALOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             case TIMEOID: {
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY));
+                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::BYTE_ARRAY, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
                 break;
             }
             default:
@@ -293,6 +292,7 @@ void parquetFileWriter::writeProperties()
     }
 
     builder.compression(codec_type);
+    builder.enable_statistics();
     builder.created_by("Hashdata");
     builder.data_pagesize(1024*1024);
     builder.enable_dictionary();
@@ -309,9 +309,7 @@ void parquetFileWriter::resetParquetWriter()
     }
     rg_writer->Close();
     file_writer->Close();
-    auto s = out_file->Close();
-    file_writer.reset();
-    out_file.reset();
+    out_file->Close();
     dataBufferOffset = 0;
     openState = false;
 }
@@ -411,6 +409,20 @@ void parquetFileWriter::init(void *sstate, writeOption option)
     writeProperties();
 }
 
+void parquetFileWriter::init(TupleDesc tupdesc, std::shared_ptr<parquet::schema::GroupNode> schema, writeOption option)
+{
+    if (tupdesc == NULL) {
+        elog(ERROR, "Parquet get Relation failed\n");
+    }
+    estimated_bytes = 0;
+    ncolumns = tupdesc->natts;
+    this->tupdesc = tupdesc;
+    this->option = option;
+    createColumnBatch();
+    this->schema = schema;
+    writeProperties();
+}
+
 void parquetFileWriter::destroy()
 {
     schema.reset();
@@ -435,11 +447,6 @@ void parquetFileWriter::destroy()
         pfree(int96Array);
         int96Array = NULL;
     }
-    if (decimalOutBuf != NULL)
-    {
-        pfree(decimalOutBuf);
-        decimalOutBuf = NULL;
-    }
 }
 
 bool parquetFileWriter::isOpen()
@@ -449,7 +456,7 @@ bool parquetFileWriter::isOpen()
 
 int64_t parquetFileWriter::getWrittenBytes()
 {
-    return currentWriteBytes;
+    return out_file->getBytesWritten();
 }
 
 void parquetFileWriter::writeToField(int index, const void* data)
@@ -596,6 +603,33 @@ void parquetFileWriter::writeToField(int index, const void* data)
             }
             case CHAROID:
             case BPCHAROID:
+            {
+                StringVectorBatch* val = reinterpret_cast<StringVectorBatch*>(batchField[i]);
+                if (!isNULL)
+                {
+                    char *data = DatumGetCString(DirectFunctionCall1(bpcharout, tts_values));
+                    int64_t textlen = static_cast<int64_t> (strlen(data));
+                    int64_t datalen = (tupdesc->attrs[i].atttypid == CHAROID) ? 1 : (tupdesc->attrs[i].atttypmod - VARHDRSZ);
+                    resizeDataBuff(index, dataBuffer, datalen, dataBufferOffset);
+                    memset(dataBuffer.data() + dataBufferOffset, ' ', datalen);
+                    memcpy(dataBuffer.data() + dataBufferOffset, data, textlen);
+                    val->buffer[index] = dataBuffer.data() + dataBufferOffset;
+                    val->length[index] = datalen;
+                    val->notNull[index] = true;
+                    val->num = index;
+                    dataBufferOffset += datalen;
+                    if (data != NULL)
+                    {
+                        pfree(data);
+                    }
+                    estimated_bytes += datalen;
+                }
+                else
+                {
+                    val->notNull[index] = false;
+                }
+                break;
+            }
             case VARCHAROID:
             case BYTEAOID:
             case TEXTOID: {
@@ -616,6 +650,28 @@ void parquetFileWriter::writeToField(int index, const void* data)
                     {
                         pfree(data);
                     }
+                    estimated_bytes += datalen;
+                }
+                else
+                {
+                    val->notNull[index] = false;
+                }
+                break;
+            }
+            case CSTRINGOID: {
+                StringVectorBatch* val = reinterpret_cast<StringVectorBatch*>(batchField[i]);
+                if (!isNULL)
+                {
+                    const char *data = DatumGetCString(tts_values);
+                    int64_t datalen = static_cast<int64_t> (strlen(data));
+                    resizeDataBuff(index, dataBuffer, datalen, dataBufferOffset);
+                    memcpy(dataBuffer.data() + dataBufferOffset, data, datalen);
+
+                    val->buffer[index] = dataBuffer.data() + dataBufferOffset;
+                    val->length[index] = datalen;
+                    val->notNull[index] = true;
+                    val->num = index;
+                    dataBufferOffset += datalen;
                     estimated_bytes += datalen;
                 }
                 else
@@ -693,7 +749,6 @@ void parquetFileWriter::writeToBatch(int rows)
     if (rg_writer && rg_writer->num_rows() >= props->max_row_group_length())
     {
         rg_writer->Close();
-        currentWriteBytes = out_file->Tell().MoveValueUnsafe();
         rg_writer = file_writer->AppendBufferedRowGroup();
     }
     for (int i = 0; i < ncolumns; i++)
@@ -856,19 +911,13 @@ void parquetFileWriter::writeToBatch(int rows)
                 StringVectorBatch* val = reinterpret_cast<StringVectorBatch*>(batchField[i]);
                 parquet::FixedLenByteArrayWriter* writer = static_cast<parquet::FixedLenByteArrayWriter*>(rg_writer->column(i));
                 std::vector<uint8_t> valid_bits(parquet_arrow::bit_util::BytesForBits(BATCH_WRITE_SIZE), 255);
-                memset(decimalOutBuf, 0, DECIMAL_FIXBUFFER_SIZE * BATCH_WRITE_SIZE);
-                decimalOutBufOffset = 0;
                 for (int row = 0; row < rows; row++)
                 {
                     bool notNull = val->notNull[row];
                     if (notNull)
                     {
-                        int64_t datalen = val->length[row];
-                        uint8_t* out_buf = decimalOutBuf + decimalOutBufOffset;
-                        memcpy(out_buf, val->buffer[row], datalen);
-                        fixByteArray[row].ptr = reinterpret_cast<const uint8_t*>(out_buf);
+                        fixByteArray[row].ptr = reinterpret_cast<const uint8_t*>(val->buffer[row]);
                         definition_level[row] = 1;
-                        decimalOutBufOffset += datalen;
                     }
                     else
                     {
@@ -880,9 +929,30 @@ void parquetFileWriter::writeToBatch(int rows)
                 break;
             }
             case CHAROID:
-            case BPCHAROID:
+            case BPCHAROID: {
+                StringVectorBatch* val = reinterpret_cast<StringVectorBatch*>(batchField[i]);
+                parquet::FixedLenByteArrayWriter* writer = static_cast<parquet::FixedLenByteArrayWriter*>(rg_writer->column(i));
+                std::vector<uint8_t> valid_bits(parquet_arrow::bit_util::BytesForBits(BATCH_WRITE_SIZE), 255);
+                for (int row = 0; row < rows; row++)
+                {
+                    bool notNull = val->notNull[row];
+                    if (notNull)
+                    {
+                        fixByteArray[row].ptr = reinterpret_cast<const uint8_t*>(val->buffer[row]);
+                        definition_level[row] = 1;
+                    }
+                    else
+                    {
+                        definition_level[row] = 0;
+                        parquet_arrow::bit_util::ClearBit(valid_bits.data(), row);
+                    }
+                }
+                writer->WriteBatchSpaced(rows, definition_level, nullptr, valid_bits.data(), 0, fixByteArray);
+                break;
+            }
             case VARCHAROID:
             case BYTEAOID:
+            case CSTRINGOID:
             case TEXTOID: {
                 StringVectorBatch* val = reinterpret_cast<StringVectorBatch*>(batchField[i]);
                 parquet::ByteArrayWriter* writer = static_cast<parquet::ByteArrayWriter*>(rg_writer->column(i));

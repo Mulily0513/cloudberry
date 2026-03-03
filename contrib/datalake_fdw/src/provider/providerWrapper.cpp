@@ -14,8 +14,8 @@ bool enable_set_hdfs_user = true;
 
 struct ProviderInternalWrapper {
 public:
-	ProviderInternalWrapper(DLTblFmt type, bool readFdw, bool vectorization) {
-		context = getProvider(type, readFdw, vectorization);
+	ProviderInternalWrapper(DLTblFmt type, DLCmdType cmd, bool vectorization) {
+		context = getProvider(type, cmd, vectorization);
 	}
 
 	~ProviderInternalWrapper() {
@@ -34,11 +34,11 @@ private:
 extern "C" {
 #endif
 
-providerWrapper initProvider(DLTblFmt type, bool readFdw, bool vectorization) {
+providerWrapper initProvider(DLTblFmt type, DLCmdType cmd, bool vectorization) {
 	ProviderInternalWrapper *prov;
 	try
 	{
-		prov = new ProviderInternalWrapper(type, readFdw, vectorization);
+		prov = new ProviderInternalWrapper(type, cmd, vectorization);
 	}
 	catch (std::exception &e)
 	{
@@ -81,6 +81,23 @@ int64_t readFromProvider(providerWrapper provider, void *values, void *nulls) {
 	catch (...)
 	{
 		elog(ERROR, "Datalake foreign table read from oss failed.");
+	}
+	return res;
+}
+
+int64_t readFromProviderWithTid(providerWrapper provider, void *values, void *nulls, void *tid) {
+	int64_t res = 0;
+	try
+	{
+		res = provider->getContext()->read(values, nulls, tid);
+	}
+	catch (std::exception &e)
+	{
+		elog(ERROR, "Datalake foreign table read from oss with tid failed, failed msg : %s", e.what());
+	}
+	catch (...)
+	{
+		elog(ERROR, "Datalake foreign table read from oss with tid failed.");
 	}
 	return res;
 }

@@ -1,8 +1,11 @@
 #include "datalake_fragment.h"
+#include "datalake_option.h"
+#include "dlproxy/protocol.h"
 #include "common/fileSystemWrapper.h"
 #include "common/partition_selector.h"
 #include "dlproxy/datalake.h"
 #include <curl/curl.h>
+#include <uuid/uuid.h>
 
 
 static List* SerializeFragmentList(gopherFileInfo* lists, int count, int64_t *totalSize);
@@ -53,6 +56,66 @@ datalakeGetFragmentList(dataLakeOptions *options, int64_t *totalSize)
 	datalakeFreeGopherConfig(conf);
 
 	return fragment;
+}
+
+void datalakeCommitExternalWrite(Relation relation, dataLakeFdwScanState *sstate, List *file_list)
+{
+	List *locations = convert_iceberg_hudi_options(sstate->options);
+	if (sstate->cmd == CMD_UPDATE || sstate->cmd == CMD_DELETE)
+	{
+		internal_commit_external_update(RelationGetRelid(relation), file_list, locations);
+		return;
+	}
+	commit_external_write(RelationGetRelid(relation), file_list, locations);
+}
+
+char *datalakeGetExternalWriteLocation(Oid relid)
+{
+	dataLakeOptions *opts = datalakeGetOptions(relid);
+	StringInfoData filePrefix;
+	initStringInfo(&filePrefix);
+
+	if (opts->format == DL_ICEBERG_TABLE)
+	{
+		if (pg_strcasecmp(opts->catalog_type, "hive") == 0)
+		{
+			List *locations = convert_iceberg_hudi_options(opts);
+			FDW_TableMeta *tableMeta = get_external_schema_or_create(relid, "iceberg", locations);
+			char *real_path = strstr(tableMeta->location, "://") + 3;
+			real_path = strchr(real_path, '/');
+			appendStringInfo(&filePrefix, "%s/data/", real_path);
+			freeFDWTableMeta(tableMeta);
+		}
+		else
+		{
+			if (opts->prefix)
+				appendStringInfoString(&filePrefix, opts->prefix);
+			if (filePrefix.len == 0 || filePrefix.data[filePrefix.len - 1] != '/')
+				appendStringInfoString(&filePrefix, "/");
+			ListCell *lc;
+			char *table_identifier = opts->table_identifier;
+			List *iden_list = datalakeSplitString2(table_identifier, '.', '/');
+			foreach(lc, iden_list)
+			{
+				appendStringInfo(&filePrefix, "%s/", (char *)lfirst(lc));
+			}
+			appendStringInfoString(&filePrefix, "data/");
+		}
+	}
+	else
+	{
+		if (opts->prefix)
+			appendStringInfoString(&filePrefix, opts->prefix);
+		if (filePrefix.len == 0 || filePrefix.data[filePrefix.len - 1] != '/')
+			appendStringInfoString(&filePrefix, "/");
+	}
+	return filePrefix.data;
+}
+
+IcebergTableStatistics *datalakeGetTableStatistics(Oid relid, dataLakeOptions *options)
+{
+	List *locations = convert_iceberg_hudi_options(options);
+	return iceberg_get_current_snapshot_statistics(relid, locations);
 }
 
 bool
@@ -146,13 +209,10 @@ datalakeGetNextPartitionFragmentList(dataLakeOptions *options, int64_t *totalSiz
 
 	StringInfoData prefix;
 	initStringInfo(&prefix);
-	appendStringInfoString(&prefix, options->prefix);
-
-	int len = strlen(prefix.data) - 1;
-	if (prefix.data[len] != '/')
-	{
+	if (options->prefix)
+		appendStringInfoString(&prefix, options->prefix);
+	if (prefix.len == 0 || prefix.data[prefix.len - 1] != '/')
 		appendStringInfoString(&prefix, "/");
-	}
 
 	forboth(lckey, partitionKeys, lcvalue, partitionValues)
 	{

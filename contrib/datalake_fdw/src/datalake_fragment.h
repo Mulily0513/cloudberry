@@ -12,6 +12,12 @@ List *datalakeGetNextPartitionFragmentList(dataLakeOptions *options, int64_t *to
 
 List *datalakeGetFragmentList(dataLakeOptions *options, int64_t *totalSize);
 
+void datalakeCommitExternalWrite(Relation relation, dataLakeFdwScanState *sstate, List *file_list);
+
+char *datalakeGetExternalWriteLocation(Oid relid);
+
+IcebergTableStatistics *datalakeGetTableStatistics(Oid relid, dataLakeOptions *options);
+
 void datalakeFreeFragmentLists(List *fragments);
 
 #endif

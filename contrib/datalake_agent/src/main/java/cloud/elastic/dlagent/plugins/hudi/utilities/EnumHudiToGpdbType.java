@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 package cloud.elastic.dlagent.plugins.hudi.utilities;
 
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
@@ -128,7 +129,6 @@ public enum EnumHudiToGpdbType {
         throw new UnsupportedTypeException("Unable to map Hudi's type: "
                 + hudiType + " to GPDB's type");
     }
-
 
     /**
      * @param dataType Gpdb data type

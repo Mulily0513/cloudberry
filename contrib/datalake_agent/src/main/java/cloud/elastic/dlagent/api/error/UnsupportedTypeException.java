@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.api.error;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -19,6 +17,8 @@ package cloud.elastic.dlagent.api.error;
  * under the License.
  */
 
+
+package cloud.elastic.dlagent.api.error;
 
 /**
  * Thrown when the resolver tries to serialize/deserialize an unsupported type.

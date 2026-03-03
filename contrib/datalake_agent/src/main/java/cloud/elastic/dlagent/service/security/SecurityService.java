@@ -1,5 +1,3 @@
-package cloud.elastic.dlagent.service.security;
-
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package cloud.elastic.dlagent.service.security;
  * specific language governing permissions and limitations
  * under the License.
  */
+
+
+package cloud.elastic.dlagent.service.security;
 
 import cloud.elastic.dlagent.api.model.RequestContext;
 

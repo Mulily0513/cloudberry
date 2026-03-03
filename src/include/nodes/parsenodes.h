@@ -4508,6 +4508,7 @@ typedef struct FileFragment
 	FileFormat   format;
 	int64        recordCount;
 	List        *eqColumnNames;
+	int64		 fileSize;
 } FileFragment;
 
 typedef struct FileScanTask
@@ -4518,6 +4519,7 @@ typedef struct FileScanTask
 	FileFragment *dataFile;
 	List         *deletes;
 	char		 *instantTime;
+	uint32        fileId;         /* Iceberg file ID for duplicate elimination */
 } FileScanTask;
 
 typedef struct ExternalTableMetadata
@@ -4535,5 +4537,6 @@ typedef struct ExternalTableMetadata
 	bool		hiveStylePartitioningEnabled;
 	bool		isMorTable;
 } ExternalTableMetadata;
+
 
 #endif							/* PARSENODES_H */

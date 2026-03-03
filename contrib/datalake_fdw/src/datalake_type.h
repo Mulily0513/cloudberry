@@ -14,6 +14,13 @@ typedef enum DLTableFormatEnum
 	DL_ICEBERG_TABLE
 } DLTblFmt;
 
+typedef enum DLCmdType
+{
+	DL_OP_READ = 0,
+	DL_OP_WRITE,
+	DL_OP_DELETE
+} DLCmdType;
+
 typedef enum DLProtocolEnum
 {
 	DL_INVALID_PROTOCOL = -1,
@@ -45,5 +52,16 @@ typedef enum CompressType
 	/* archive support more compress type. */
     ARCHIVE_SUPPORT_COMPRESS_FORMAT
 } CompressType;
+
+typedef enum DLFileFormatEnum
+{
+	DL_INVALID_FILE_FORMAT = -1,
+	DL_TEXT_FILE,
+	DL_CSV_FILE,
+	DL_CUSTOM_FILE,
+	DL_ORC_FILE,
+	DL_PARQUET_FILE,
+	DL_AVRO_FILE
+} DLFileFmt;
 
 #endif

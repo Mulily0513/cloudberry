@@ -716,7 +716,7 @@ void parserUri(dataLakeOptions *opt)
 		char* delimit = pstrdup("/");
 		char* bucket = strstr(uri, delimit);
 		int len = bucket - uri;
-		if (len <= 0)
+		if (bucket == NULL || len <= 0)
 		{
 			ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),

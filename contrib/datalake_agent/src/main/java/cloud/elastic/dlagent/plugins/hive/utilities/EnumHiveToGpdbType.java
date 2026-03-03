@@ -17,6 +17,7 @@
  * under the License.
  */
 
+
 package cloud.elastic.dlagent.plugins.hive.utilities;
 
 import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
@@ -128,7 +129,6 @@ public enum EnumHiveToGpdbType {
         throw new UnsupportedTypeException("Unable to map Hive's type: "
                 + hiveType + " to GPDB's type");
     }
-
 
     /**
      * @param dataType Gpdb data type

@@ -1,9 +1,14 @@
 // #include "postgres.h"
 #include "common.h"
-#include "gopher/gopher.h"
 #include "base_reader.h"
+
+extern "C"
+{
+#include "src/datalake_def.h"
 #include "access/tupdesc.h"
 #include "utils.h"
+#include "gopher/gopher.h"
+}
 
 BaseFileReader::BaseFileReader(MemoryContext rowContext)
 	: curGroup_(-1), curRow_(0), numRows_(0), rowContext_(rowContext)
@@ -12,8 +17,7 @@ BaseFileReader::BaseFileReader(MemoryContext rowContext)
 BaseFileReader::~BaseFileReader()
 {}
 
-void
-BaseFileReader::populateRecord(DatalakeInternalRecord *record)
+void BaseFileReader::populateRecord(DatalakeInternalRecord *record)
 {
 	bool   isNull;
 	size_t size = typeMap_.size();
@@ -23,7 +27,7 @@ BaseFileReader::populateRecord(DatalakeInternalRecord *record)
 	for (size_t attr = 0; attr < size; attr++)
 	{
 		TypeInfo &typInfo = typeMap_[attr];
-		if (typInfo.columnIndex_ < 0)
+		if (typInfo.columnIndex_ < 0 || typInfo.fileTypeId_ == InvalidOid)
 		{
 			record->nulls[attr] = true;
 			continue;
