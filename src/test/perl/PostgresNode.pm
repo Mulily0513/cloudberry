@@ -632,7 +632,7 @@ sub adjust_conf
 
     my $conffile = $self->data_dir . '/' . $filename;
 
-    my $contents = PostgreSQL::Test::Utils::slurp_file($conffile);
+    my $contents = TestLib::slurp_file($conffile);
     my @lines    = split(/\n/, $contents);
     my @result;
     my $eq = $skip_equals ? '' : '= ';
