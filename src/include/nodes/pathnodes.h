@@ -507,6 +507,8 @@ struct PlannerInfo
 	bool		is_from_orca; /* true if this PlannerInfo was created from Orca*/
 
 	bool		ec_merging_done_skip;	/* set true if we don't want to check */
+
+	Query	   *aqumv_raw_parse;	/* Raw parse tree for AQUMV join exact-match */
 };
 
 /*
