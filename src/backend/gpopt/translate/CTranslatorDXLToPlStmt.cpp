@@ -63,6 +63,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalParallelAppend.h"
 #include "naucrates/dxl/operators/CDXLPhysicalAssert.h"
 #include "naucrates/dxl/operators/CDXLPhysicalBitmapTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelBitmapTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTAS.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTEConsumer.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTEProducer.h"
@@ -556,6 +557,7 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 			break;
 		}
 		case EdxlopPhysicalBitmapTableScan:
+		case EdxlopPhysicalParallelBitmapTableScan:
 		case EdxlopPhysicalDynamicBitmapTableScan:
 		{
 			plan = TranslateDXLBitmapTblScan(dxlnode, output_context,
@@ -7906,6 +7908,31 @@ CTranslatorDXLToPlStmt::TranslateDXLCtasStorageOptions(
 	return options;
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		BitmapSubplanMarkShared
+//
+//	@doc:
+//		Recursively set isshared on bitmap sub-plan nodes so the TID bitmap
+//		is allocated in shared memory (DSA) for parallel bitmap heap scans.
+//		Mirrors bitmap_subplan_mark_shared() in createplan.c.
+//
+//---------------------------------------------------------------------------
+static void
+BitmapSubplanMarkShared(Plan *plan)
+{
+	if (IsA(plan, BitmapAnd))
+		BitmapSubplanMarkShared((Plan *) linitial(((BitmapAnd *) plan)->bitmapplans));
+	else if (IsA(plan, BitmapOr))
+	{
+		((BitmapOr *) plan)->isshared = true;
+		BitmapSubplanMarkShared((Plan *) linitial(((BitmapOr *) plan)->bitmapplans));
+	}
+	else if (IsA(plan, BitmapIndexScan))
+		((BitmapIndexScan *) plan)->isshared = true;
+	else
+		elog(ERROR, "unrecognized node type: %d", nodeTag(plan));
+}
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -7921,6 +7948,8 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
 	BOOL is_dynamic = false;
+	BOOL is_parallel = false;
+	ULONG ulParallelWorkers = 0;
 	const CDXLTableDescr *table_descr = nullptr;
 
 	CDXLOperator *dxl_operator = bitmapscan_dxlnode->GetOperator();
@@ -7928,6 +7957,14 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	{
 		table_descr =
 			CDXLPhysicalBitmapTableScan::Cast(dxl_operator)->GetDXLTableDescr();
+	}
+	else if (EdxlopPhysicalParallelBitmapTableScan == dxl_operator->GetDXLOperator())
+	{
+		CDXLPhysicalParallelBitmapTableScan *parallel_op =
+			CDXLPhysicalParallelBitmapTableScan::Cast(dxl_operator);
+		table_descr = parallel_op->GetDXLTableDescr();
+		ulParallelWorkers = parallel_op->UlParallelWorkers();
+		is_parallel = true;
 	}
 	else
 	{
@@ -8020,6 +8057,21 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 		bitmap_access_path_dxlnode, output_context, md_rel, table_descr,
 		&base_table_context, ctxt_translation_prev_siblings, bitmap_tbl_scan);
 	SetParamIds(plan);
+
+	if (is_parallel)
+	{
+		plan->parallel_aware = true;
+		plan->parallel_safe = true;
+		plan->parallel = (int) ulParallelWorkers;
+		// Divide plan_rows by workers to reflect per-worker output
+		if (ulParallelWorkers > 1)
+		{
+			plan->plan_rows = plan->plan_rows / ulParallelWorkers;
+		}
+		// Mark bitmap sub-plans as shared so the bitmap is created in
+		// shared memory (DSA), which is required for parallel execution.
+		BitmapSubplanMarkShared(bitmap_tbl_scan->scan.plan.lefttree);
+	}
 
 	if (is_dynamic)
 	{
@@ -8433,6 +8485,12 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 		CDXLPhysicalParallelWindow *parallel_window_dxlop =
 			CDXLPhysicalParallelWindow::Cast(dxlop);
 		return parallel_window_dxlop->ParallelWorkers();
+	}
+	else if (EdxlopPhysicalParallelBitmapTableScan == dxlop->GetDXLOperator())
+	{
+		CDXLPhysicalParallelBitmapTableScan *parallel_bitmap_dxlop =
+			CDXLPhysicalParallelBitmapTableScan::Cast(dxlop);
+		return parallel_bitmap_dxlop->UlParallelWorkers();
 	}
 	else if (EdxlopPhysicalTableScan == dxlop->GetDXLOperator() ||
 			 EdxlopPhysicalDynamicTableScan == dxlop->GetDXLOperator() ||

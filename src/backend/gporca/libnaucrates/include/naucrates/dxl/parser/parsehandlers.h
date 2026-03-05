@@ -102,6 +102,7 @@
 #include "naucrates/dxl/parser/CParseHandlerOptimizerConfig.h"
 #include "naucrates/dxl/parser/CParseHandlerPartitionSelector.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalBitmapTableScan.h"
+#include "naucrates/dxl/parser/CParseHandlerPhysicalParallelBitmapTableScan.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalCTAS.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalCTEConsumer.h"
 #include "naucrates/dxl/parser/CParseHandlerPhysicalCTEProducer.h"

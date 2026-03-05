@@ -55,6 +55,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalParallelAppend.o \
               CDXLPhysicalAssert.o \
               CDXLPhysicalBitmapTableScan.o \
+              CDXLPhysicalParallelBitmapTableScan.o \
               CDXLPhysicalBroadcastMotion.o \
               CDXLPhysicalBroadcastWorkersMotion.o \
               CDXLPhysicalCTAS.o \

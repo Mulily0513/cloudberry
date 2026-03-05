@@ -53,6 +53,7 @@ OBJS        = CDecorrelator.o \
               CXformGet2TableScan.o \
               CXformGet2ParallelTableScan.o \
               CXformImplementAssert.o \
+              CXformBitmapTableGet2ParallelBitmapTableScan.o \
               CXformImplementBitmapTableGet.o \
               CXformImplementCTEConsumer.o \
               CXformImplementCTEProducer.o \

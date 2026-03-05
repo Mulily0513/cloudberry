@@ -443,6 +443,8 @@ CConfigParamMapping::PackConfigParamInBitset(
 		CBitSet *bitmap_index_bitset = CXform::PbsBitmapIndexXforms(mp);
 		traceflag_bitset->Union(bitmap_index_bitset);
 		bitmap_index_bitset->Release();
+		traceflag_bitset->ExchangeSet(GPOPT_DISABLE_XFORM_TF(
+			CXform::ExfBitmapTableGet2ParallelBitmapTableScan));
 	}
 
 	// disable dynamic bitmap scan if the corresponding GUC is turned off

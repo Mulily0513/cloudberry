@@ -83,6 +83,7 @@ OBJS        = CExpression.o \
               CPhysicalAgg.o \
               CPhysicalAssert.o \
               CPhysicalBitmapTableScan.o \
+              CPhysicalParallelBitmapTableScan.o \
               CPhysicalCTEConsumer.o \
               CPhysicalCTEProducer.o \
               CPhysicalComputeScalar.o \

@@ -100,6 +100,7 @@ OBJS        = CParseHandlerAgg.o \
               CParseHandlerPartitionSelector.o \
               CParseHandlerPhysicalAbstractBitmapScan.o \
               CParseHandlerPhysicalBitmapTableScan.o \
+              CParseHandlerPhysicalParallelBitmapTableScan.o \
               CParseHandlerPhysicalCTAS.o \
               CParseHandlerPhysicalCTEConsumer.o \
               CParseHandlerPhysicalCTEProducer.o \

@@ -94,6 +94,8 @@ CParseHandlerFactory::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalAggregate, &CreateAggParseHandler},
 		{EdxltokenPhysicalTableScan, &CreateTableScanParseHandler},
 		{EdxltokenPhysicalBitmapTableScan, &CreateBitmapTableScanParseHandler},
+		{EdxltokenPhysicalParallelBitmapTableScan,
+		 &CreateParallelBitmapTableScanParseHandler},
 		{EdxltokenPhysicalDynamicBitmapTableScan,
 		 &CreateDynBitmapTableScanParseHandler},
 		{EdxltokenPhysicalForeignScan, &CreateForeignScanParseHandler},
@@ -744,6 +746,16 @@ CParseHandlerFactory::CreateBitmapTableScanParseHandler(
 	CParseHandlerBase *parse_handler_root)
 {
 	return GPOS_NEW(mp) CParseHandlerPhysicalBitmapTableScan(
+		mp, parse_handler_mgr, parse_handler_root);
+}
+
+// creates a parse handler for parsing a parallel bitmap table scan
+CParseHandlerBase *
+CParseHandlerFactory::CreateParallelBitmapTableScanParseHandler(
+	CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+	CParseHandlerBase *parse_handler_root)
+{
+	return GPOS_NEW(mp) CParseHandlerPhysicalParallelBitmapTableScan(
 		mp, parse_handler_mgr, parse_handler_root);
 }
 

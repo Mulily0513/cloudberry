@@ -34,6 +34,7 @@
 #include "gpopt/operators/CPhysicalIndexScan.h"
 #include "gpopt/operators/CPhysicalParallelIndexScan.h"
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
+#include "gpopt/operators/CPhysicalParallelBitmapTableScan.h"
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
 #include "gpopt/operators/CPhysicalParallelHashJoin.h"
 #include "gpopt/operators/CPhysicalMotion.h"
@@ -467,9 +468,16 @@ CCostModelGPDB::CostChildren(CMemoryPool *mp, CExpressionHandle &exprhdl,
 				// so the output cost should also be divided by worker count
 				if (CUtils::FPhysicalParallelScan(scanOp))
 				{
-					CPhysicalParallelTableScan *popParallelScan =
-						CPhysicalParallelTableScan::PopConvert(scanOp);
-					ULONG ulWorkers = popParallelScan->UlParallelWorkers();
+					ULONG ulWorkers = 0;
+					if (COperator::EopPhysicalParallelTableScan == scanOp->Eopid())
+					{
+						ulWorkers = CPhysicalParallelTableScan::PopConvert(scanOp)->UlParallelWorkers();
+					}
+					else if (COperator::EopPhysicalParallelBitmapTableScan == scanOp->Eopid())
+					{
+						ulWorkers = CPhysicalParallelBitmapTableScan::PopConvert(scanOp)->UlParallelWorkers();
+					}
+					GPOS_ASSERT(ulWorkers > 0);
 
 					if (ulWorkers > 1)
 					{
@@ -2835,6 +2843,7 @@ CCostModelGPDB::CostBitmapTableScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
 	GPOS_ASSERT(nullptr != pci);
 	GPOS_ASSERT(
 		COperator::EopPhysicalBitmapTableScan == exprhdl.Pop()->Eopid() ||
+		COperator::EopPhysicalParallelBitmapTableScan == exprhdl.Pop()->Eopid() ||
 		COperator::EopPhysicalDynamicBitmapTableScan == exprhdl.Pop()->Eopid());
 
 	CCost result(0.0);
@@ -3079,6 +3088,50 @@ CCostModelGPDB::CostBitmapLargeNDV(const CCostModelGPDB *pcmgpdb,
 	return CCost(pci->NumRebinds() *
 				 (dBitmapIO * dSize + dBitmapPageCost * dNDV));
 }
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CCostModelGPDB::CostParallelBitmapTableScan
+//
+//	@doc:
+//		Cost of parallel bitmap table scan
+//
+//---------------------------------------------------------------------------
+CCost
+CCostModelGPDB::CostParallelBitmapTableScan(CMemoryPool *mp,
+											CExpressionHandle &exprhdl,
+											const CCostModelGPDB *pcmgpdb,
+											const SCostingInfo *pci)
+{
+	GPOS_ASSERT(nullptr != pcmgpdb);
+	GPOS_ASSERT(nullptr != pci);
+	GPOS_ASSERT(COperator::EopPhysicalParallelBitmapTableScan == exprhdl.Pop()->Eopid());
+
+	CPhysicalParallelBitmapTableScan *pop =
+		CPhysicalParallelBitmapTableScan::PopConvert(exprhdl.Pop());
+	ULONG ulWorkers = pop->UlParallelWorkers();
+
+	// If only 1 worker, use regular bitmap scan cost
+	if (ulWorkers <= 1)
+	{
+		return CostBitmapTableScan(mp, exprhdl, pcmgpdb, pci);
+	}
+
+	// Get base bitmap scan cost
+	CCost baseCost = CostBitmapTableScan(mp, exprhdl, pcmgpdb, pci);
+
+	// Calculate parallel efficiency
+	CDouble dParallelEfficiency = CalculateParallelEfficiency(ulWorkers);
+
+	// Parallel bitmap scan cost = base cost / (workers * efficiency)
+	CDouble dParallelCost = CDouble(baseCost.Get()) / (ulWorkers * dParallelEfficiency);
+
+	// Add worker startup cost
+	CDouble dWorkerStartupCost = GetWorkerStartupCost(pcmgpdb, ulWorkers);
+
+	return CCost(dParallelCost + dWorkerStartupCost);
+}
+
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -3427,6 +3480,11 @@ CCostModelGPDB::Cost(
 		case COperator::EopPhysicalDynamicBitmapTableScan:
 		{
 			return CostBitmapTableScan(m_mp, exprhdl, this, pci);
+		}
+
+		case COperator::EopPhysicalParallelBitmapTableScan:
+		{
+			return CostParallelBitmapTableScan(m_mp, exprhdl, this, pci);
 		}
 
 		case COperator::EopPhysicalSequenceProject:

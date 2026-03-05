@@ -255,6 +255,7 @@ CLogicalBitmapTableGet::PxfsCandidates(CMemoryPool *mp) const
 {
 	CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 	(void) xform_set->ExchangeSet(CXform::ExfImplementBitmapTableGet);
+	(void) xform_set->ExchangeSet(CXform::ExfBitmapTableGet2ParallelBitmapTableScan);
 
 	return xform_set;
 }

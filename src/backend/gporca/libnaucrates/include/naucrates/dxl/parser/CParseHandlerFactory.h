@@ -291,6 +291,11 @@ private:
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
 		CParseHandlerBase *parse_handler_root);
 
+	// construct a parallel bitmap table scan parse handler
+	static CParseHandlerBase *CreateParallelBitmapTableScanParseHandler(
+		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
+		CParseHandlerBase *parse_handler_root);
+
 	// construct a dynamic bitmap table scan parse handler
 	static CParseHandlerBase *CreateDynBitmapTableScanParseHandler(
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,

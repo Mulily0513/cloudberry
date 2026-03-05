@@ -271,6 +271,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformSelect2BitmapBoolOp(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSelect2DynamicBitmapBoolOp(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementBitmapTableGet(m_mp));
+	Add(GPOS_NEW(m_mp) CXformBitmapTableGet2ParallelBitmapTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementDynamicBitmapTableGet(m_mp));
 	SkipUnused(1);
 	Add(GPOS_NEW(m_mp) CXformLeftOuter2InnerUnionAllLeftAntiSemiJoin(m_mp));

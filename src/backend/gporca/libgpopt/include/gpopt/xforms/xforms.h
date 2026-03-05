@@ -58,6 +58,7 @@
 #include "gpopt/xforms/CXformGet2TableScan.h"
 #include "gpopt/xforms/CXformGet2ParallelTableScan.h"
 #include "gpopt/xforms/CXformImplementAssert.h"
+#include "gpopt/xforms/CXformBitmapTableGet2ParallelBitmapTableScan.h"
 #include "gpopt/xforms/CXformImplementBitmapTableGet.h"
 #include "gpopt/xforms/CXformImplementCTEConsumer.h"
 #include "gpopt/xforms/CXformImplementCTEProducer.h"

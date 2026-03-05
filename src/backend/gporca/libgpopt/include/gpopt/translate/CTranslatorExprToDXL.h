@@ -173,6 +173,20 @@ private:
 								   CExpression *pexprScalar,
 								   CDXLPhysicalProperties *dxl_properties);
 
+	// translate a parallel bitmap table scan expression to DXL
+	CDXLNode *PdxlnParallelBitmapTableScan(CExpression *pexprBitmapTableScan,
+										   CColRefArray *colref_array,
+										   CDistributionSpecArray *pdrgpdsBaseTables,
+										   ULONG *pulNonGatherMotions, BOOL *pfDML);
+
+	// translate a parallel bitmap table scan expression to DXL
+	CDXLNode *PdxlnParallelBitmapTableScan(CExpression *pexprBitmapTableScan,
+										   CColRefSet *pcrsOutput,
+										   CColRefArray *colref_array,
+										   CDistributionSpecArray *pdrgpdsBaseTables,
+										   CExpression *pexprScalar,
+										   CDXLPhysicalProperties *dxl_properties);
+
 	// create a DXL result node from an optimizer filter node
 	CDXLNode *PdxlnResultFromFilter(CExpression *pexprFilter,
 									CColRefArray *colref_array,

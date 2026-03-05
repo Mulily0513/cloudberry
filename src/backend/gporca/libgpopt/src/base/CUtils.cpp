@@ -50,6 +50,7 @@
 #include "gpopt/operators/CPhysicalNLJoin.h"
 #include "gpopt/operators/CPhysicalParallelHashJoin.h"
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
+#include "gpopt/operators/CPhysicalParallelBitmapTableScan.h"
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarArray.h"
@@ -1218,7 +1219,8 @@ CUtils::FPhysicalParallelScan(COperator *pop)
 {
 	GPOS_ASSERT(nullptr != pop);
 
-	return (COperator::EopPhysicalParallelTableScan == pop->Eopid());
+	return (COperator::EopPhysicalParallelTableScan == pop->Eopid() ||
+			COperator::EopPhysicalParallelBitmapTableScan == pop->Eopid());
 }
 
 // check if a given operator is a physical agg
@@ -1290,6 +1292,13 @@ CUtils::UlExtractWorkersFromGroupInternal(
 		{
 			CPhysicalParallelTableScan *popScan =
 				CPhysicalParallelTableScan::PopConvert(popChild);
+			return popScan->UlParallelWorkers();
+		}
+
+		if (COperator::EopPhysicalParallelBitmapTableScan == popChild->Eopid())
+		{
+			CPhysicalParallelBitmapTableScan *popScan =
+				CPhysicalParallelBitmapTableScan::PopConvert(popChild);
 			return popScan->UlParallelWorkers();
 		}
 

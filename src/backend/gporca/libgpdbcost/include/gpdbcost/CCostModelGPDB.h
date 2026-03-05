@@ -117,6 +117,12 @@ private:
 									 const CCostModelGPDB *pcmgpdb,
 									 const SCostingInfo *pci);
 
+	// cost of parallel bitmap table scan
+	static CCost CostParallelBitmapTableScan(CMemoryPool *mp,
+											 CExpressionHandle &exprhdl,
+											 const CCostModelGPDB *pcmgpdb,
+											 const SCostingInfo *pci);
+
 	// cost of sequence project
 	static CCost CostSequenceProject(CMemoryPool *mp,
 									 CExpressionHandle &exprhdl,

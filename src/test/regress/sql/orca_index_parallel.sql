@@ -207,6 +207,135 @@ reset optimizer_enable_indexonlyscan;
 reset enable_bitmapscan;
 reset enable_seqscan;
 reset enable_indexscan;
+
+-- parallel bitmap heap scan test
+create table pbms1(a int, b int, c text) with (parallel_workers=2) distributed by (a);
+create table pbms2(d int, e int, f text) with (parallel_workers=2) distributed by (d);
+create table pbms3(g int, h int, i text) with (parallel_workers=2) distributed by (g);
+
+create index pbms1_a_idx on pbms1(a);
+create index pbms1_b_idx on pbms1(b);
+create index pbms2_d_idx on pbms2(d);
+create index pbms2_e_idx on pbms2(e);
+create index pbms3_g_idx on pbms3(g);
+create index pbms3_h_idx on pbms3(h);
+
+insert into pbms1 select i, i % 500, 'val_'||i from generate_series(1, 10000) i;
+insert into pbms2 select i, i % 500, 'val_'||i from generate_series(1, 200000) i;
+insert into pbms3 select i, i % 500, 'val_'||i from generate_series(1, 300) i;
+
+analyze pbms1;
+analyze pbms2;
+analyze pbms3;
+
+set optimizer_enable_bitmapscan to on;
+set optimizer_enable_tablescan to off;
+set optimizer_enable_indexscan to off;
+set enable_bitmapscan to on;
+set enable_seqscan to off;
+set enable_indexscan to off;
+
+-- parallel bitmap heap scan (simple, OR predicate on dist key)
+explain (verbose, costs off) select * from pbms1 where a = 100 or a = 200;
+select count(*) from pbms1 where a = 100 or a = 200;
+
+-- parallel bitmap heap scan (simple, OR predicate on non-dist key)
+explain (verbose, costs off) select * from pbms1 where b = 10 or b = 20;
+select count(*) from pbms1 where b = 10 or b = 20;
+
+-- parallel bitmap heap scan (multiple OR conditions)
+explain (verbose, costs off) select * from pbms1 where b = 1 or b = 2 or b = 3;
+select count(*) from pbms1 where b = 1 or b = 2 or b = 3;
+
+-- parallel bitmap heap scan (IN list)
+explain (verbose, costs off) select * from pbms2 where e in (10, 20, 30, 40, 50);
+select count(*) from pbms2 where e in (10, 20, 30, 40, 50);
+
+-- parallel bitmap heap scan (no redistribute motion, join on dist key)
+explain (verbose, costs off) select * from pbms1 left join pbms2 on pbms1.a = pbms2.d where pbms1.a = 100 or pbms1.a = 200;
+select count(*) from pbms1 left join pbms2 on pbms1.a = pbms2.d where pbms1.a = 100 or pbms1.a = 200;
+
+-- parallel bitmap heap scan (redistribute motion, join on non-dist key)
+explain (verbose, costs off) select * from pbms1 left join pbms2 on pbms1.b = pbms2.d where pbms1.b = 10 or pbms1.b = 20;
+select count(*) from pbms1 left join pbms2 on pbms1.b = pbms2.d where pbms1.b = 10 or pbms1.b = 20;
+
+-- parallel bitmap heap scan (broadcast motion, join with small table)
+explain (verbose, costs off) select * from pbms1 join pbms3 on pbms1.a = pbms3.h where pbms1.b = 10 or pbms1.b = 20;
+select count(*) from pbms1 join pbms3 on pbms1.a = pbms3.h where pbms1.b = 10 or pbms1.b = 20;
+
+-- parallel bitmap heap scan (with limit)
+explain (verbose, costs off) select * from pbms1 where b = 10 or b = 20 limit 10;
+select count(*) from (select * from pbms1 where b = 10 or b = 20 limit 10) s;
+
+-- parallel bitmap heap scan (with order and limit)
+explain (verbose, costs off) select * from pbms1 where b = 10 or b = 20 order by a limit 10;
+select * from pbms1 where b = 10 or b = 20 order by a limit 10;
+
+-- Subquery with LIMIT and ORDER BY should NOT use parallel scan
+explain (verbose, costs off) select * from pbms1 where a in (select d from pbms2 order by d limit 10);
+select * from (select * from pbms1 where a in (select d from pbms2 order by d limit 10)) s order by a;
+
+-- left join
+explain (verbose, costs off) select * from pbms1 left join pbms2 on pbms1.a = pbms2.d where pbms1.b = 10 or pbms1.b = 20;
+select count(*) from pbms1 left join pbms2 on pbms1.a = pbms2.d where pbms1.b = 10 or pbms1.b = 20;
+
+-- right join
+explain (verbose, costs off) select * from pbms1 right join pbms2 on pbms1.a = pbms2.d where pbms2.e = 10 or pbms2.e = 20;
+select count(*) from pbms1 right join pbms2 on pbms1.a = pbms2.d where pbms2.e = 10 or pbms2.e = 20;
+
+-- anti semi join with parallel bitmap heap scan
+explain (verbose, costs off) select * from pbms1 where a not in (select d from pbms2 where d < 1000) and (b = 10 or b = 20);
+select count(*) from pbms1 where a not in (select d from pbms2 where d < 1000) and (b = 10 or b = 20);
+
+-- parallel bitmap heap scan with hash aggregation
+explain (verbose, costs off) select b, count(*) from pbms1 where b = 10 or b = 20 group by b;
+select b, count(*) from pbms1 where b = 10 or b = 20 group by b;
+
+-- Nested subquery with LIMIT - inner limit should prevent parallel bitmap scan
+explain (costs off)
+select * from pbms1 where a in (
+    select d from pbms2 where d in (
+        select a from pbms1 limit 5
+    )
+) and (b = 10 or b = 20);
+
+-- BitmapAnd: conditions on different indexes
+explain (verbose, costs off) select * from pbms2 where d < 1000 and e < 50;
+select count(*) from pbms2 where d < 1000 and e < 50;
+
+-- Parallel bitmap scan execution correctness (isshared fix)
+-- Verifies that BitmapOr/BitmapAnd/BitmapIndexScan nodes have isshared=true
+-- so the TID bitmap is allocated in DSA shared memory for parallel workers.
+-- Without the fix, these queries hit: FailedAssertion("tbm->dsa != NULL")
+-- BitmapOr: two OR conditions on the same index
+select * from pbms1 where a = 100 or a = 200;
+-- BitmapOr: three OR conditions (nested BitmapOr tree)
+select * from pbms1 where b = 1 or b = 2 or b = 3 order by a;
+-- parallel bitmap scan with join (exercises isshared across motion nodes)
+select count(*) from pbms1 join pbms2 on pbms1.a = pbms2.d where pbms1.b = 10 or pbms1.b = 20;
+
+-- Verify result correctness: parallel vs non-parallel should match
+set enable_parallel = off;
+select count(*), sum(a), sum(b) from pbms1 where b = 10 or b = 20;
+set enable_parallel = on;
+select count(*), sum(a), sum(b) from pbms1 where b = 10 or b = 20;
+
+-- GUC to control plan
+set optimizer_enable_bitmapscan = off;
+explain (verbose, costs off) select * from pbms1 where b = 10 or b = 20;
+reset optimizer_enable_bitmapscan;
+reset optimizer_enable_tablescan;
+reset optimizer_enable_indexscan;
+reset enable_bitmapscan;
+reset enable_seqscan;
+reset enable_indexscan;
+
+-- semi join with parallel bitmap heap scan
+-- Drop pbms2_d_idx so ORCA prefers Hash Semi Join over correlated NL + Index probe
+drop index pbms2_d_idx;
+explain (verbose, costs off) select * from pbms1 where exists (select 1 from pbms2 where pbms2.d = pbms1.a) and (b = 10 or b = 20);
+select count(*) from pbms1 where exists (select 1 from pbms2 where pbms2.d = pbms1.a) and (b = 10 or b = 20);
+
 reset enable_parallel;
 reset max_parallel_workers_per_gather;
 reset parallel_setup_cost;

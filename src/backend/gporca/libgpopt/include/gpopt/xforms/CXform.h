@@ -193,6 +193,7 @@ public:
 		ExfSelect2BitmapBoolOp,
 		ExfSelect2DynamicBitmapBoolOp,
 		ExfImplementBitmapTableGet,
+		ExfBitmapTableGet2ParallelBitmapTableScan,
 		ExfImplementDynamicBitmapTableGet,
 		ExfInnerJoin2PartialDynamicIndexGetApply____removed,
 		ExfLeftOuter2InnerUnionAllLeftAntiSemiJoin,

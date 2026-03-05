@@ -34,6 +34,7 @@
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
 #include "gpopt/operators/CPhysicalAssert.h"
 #include "gpopt/operators/CPhysicalBitmapTableScan.h"
+#include "gpopt/operators/CPhysicalParallelBitmapTableScan.h"
 #include "gpopt/operators/CPhysicalCTEConsumer.h"
 #include "gpopt/operators/CPhysicalCTEProducer.h"
 #include "gpopt/operators/CPhysicalConstTableGet.h"
@@ -115,6 +116,7 @@
 #include "naucrates/dxl/operators/CDXLPhysicalParallelAppend.h"
 #include "naucrates/dxl/operators/CDXLPhysicalAssert.h"
 #include "naucrates/dxl/operators/CDXLPhysicalBitmapTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelBitmapTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalBroadcastMotion.h"
 #include "naucrates/dxl/operators/CDXLPhysicalBroadcastWorkersMotion.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTAS.h"
@@ -411,6 +413,11 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 			break;
 		case COperator::EopPhysicalBitmapTableScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnBitmapTableScan(
+				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+				pfDML);
+			break;
+		case COperator::EopPhysicalParallelBitmapTableScan:
+			dxlnode = CTranslatorExprToDXL::PdxlnParallelBitmapTableScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
@@ -1231,7 +1238,8 @@ CTranslatorExprToDXL::AddBitmapFilterColumns(
 {
 	GPOS_ASSERT(nullptr != pop);
 	GPOS_ASSERT(COperator::EopPhysicalDynamicBitmapTableScan == pop->Eopid() ||
-				COperator::EopPhysicalBitmapTableScan == pop->Eopid());
+				COperator::EopPhysicalBitmapTableScan == pop->Eopid() ||
+				COperator::EopPhysicalParallelBitmapTableScan == pop->Eopid());
 	GPOS_ASSERT(nullptr != pcrsReqdOutput);
 
 	// compute what additional columns are required in the output of the (Dynamic) Bitmap Table Scan
@@ -1298,6 +1306,113 @@ CTranslatorExprToDXL::PdxlnBitmapTableScan(
 
 	// set properties
 	// construct plan costs, if there are not passed as a parameter
+	if (nullptr == dxl_properties)
+	{
+		dxl_properties = GetProperties(pexprBitmapTableScan);
+	}
+	pdxlnBitmapTableScan->SetProperties(dxl_properties);
+
+	// build projection list
+	if (nullptr == pcrsOutput)
+	{
+		pcrsOutput = pexprBitmapTableScan->Prpp()->PcrsRequired();
+	}
+
+	// translate scalar predicate into DXL filter only if it is not redundant
+	CExpression *pexprRecheckCond = (*pexprBitmapTableScan)[0];
+	CDXLNode *pdxlnCond = nullptr;
+	if (nullptr != pexprScalar && !CUtils::FScalarConstTrue(pexprScalar) &&
+		!pexprScalar->Matches(pexprRecheckCond))
+	{
+		pdxlnCond = PdxlnScalar(pexprScalar);
+	}
+
+	CDXLNode *filter_dxlnode = PdxlnFilter(pdxlnCond);
+
+	CDXLNode *pdxlnRecheckCond = PdxlnScalar(pexprRecheckCond);
+	CDXLNode *pdxlnRecheckCondFilter = GPOS_NEW(m_mp)
+		CDXLNode(m_mp, GPOS_NEW(m_mp) CDXLScalarRecheckCondFilter(m_mp),
+				 pdxlnRecheckCond);
+
+	AddBitmapFilterColumns(m_mp, pop, pexprRecheckCond, pexprScalar,
+						   pcrsOutput);
+
+	CDXLNode *proj_list_dxlnode = PdxlnProjList(pcrsOutput, colref_array);
+
+	// translate bitmap access path
+	CDXLNode *pdxlnBitmapIndexPath = PdxlnScalar((*pexprBitmapTableScan)[1]);
+
+	pdxlnBitmapTableScan->AddChild(proj_list_dxlnode);
+	pdxlnBitmapTableScan->AddChild(filter_dxlnode);
+	pdxlnBitmapTableScan->AddChild(pdxlnRecheckCondFilter);
+	pdxlnBitmapTableScan->AddChild(pdxlnBitmapIndexPath);
+#ifdef GPOS_DEBUG
+	pdxlnBitmapTableScan->GetOperator()->AssertValid(
+		pdxlnBitmapTableScan, false /*validate_children*/);
+#endif
+
+	CDistributionSpec *pds = pexprBitmapTableScan->GetDrvdPropPlan()->Pds();
+	pds->AddRef();
+	pdrgpdsBaseTables->Append(pds);
+
+	return pdxlnBitmapTableScan;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorExprToDXL::PdxlnParallelBitmapTableScan
+//
+//	@doc:
+//		Create a DXL physical parallel bitmap table scan from an optimizer
+//		physical parallel bitmap table scan operator.
+//
+//---------------------------------------------------------------------------
+CDXLNode *
+CTranslatorExprToDXL::PdxlnParallelBitmapTableScan(
+	CExpression *pexprBitmapTableScan, CColRefArray *colref_array,
+	CDistributionSpecArray *pdrgpdsBaseTables,
+	ULONG *,  // pulNonGatherMotions,
+	BOOL *	  // pfDML
+)
+{
+	return PdxlnParallelBitmapTableScan(pexprBitmapTableScan,
+										nullptr,  // pcrsOutput
+										colref_array, pdrgpdsBaseTables,
+										nullptr,  // pexprScalar
+										nullptr	  // dxl_properties
+	);
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorExprToDXL::PdxlnParallelBitmapTableScan
+//
+//	@doc:
+//		Create a DXL physical parallel bitmap table scan node
+//
+//---------------------------------------------------------------------------
+CDXLNode *
+CTranslatorExprToDXL::PdxlnParallelBitmapTableScan(
+	CExpression *pexprBitmapTableScan, CColRefSet *pcrsOutput,
+	CColRefArray *colref_array, CDistributionSpecArray *pdrgpdsBaseTables,
+	CExpression *pexprScalar, CDXLPhysicalProperties *dxl_properties)
+{
+	GPOS_ASSERT(nullptr != pexprBitmapTableScan);
+	CPhysicalParallelBitmapTableScan *pop =
+		CPhysicalParallelBitmapTableScan::PopConvert(pexprBitmapTableScan->Pop());
+
+	COptCtxt::PoctxtFromTLS()->AddDirectDispatchableFilterCandidate(
+		pexprBitmapTableScan);
+
+	// translate table descriptor
+	CDXLTableDescr *table_descr = MakeDXLTableDescr(
+		pop->Ptabdesc(), pop->PdrgpcrOutput(), pexprBitmapTableScan->Prpp());
+
+	CDXLPhysicalParallelBitmapTableScan *dxl_op =
+		GPOS_NEW(m_mp) CDXLPhysicalParallelBitmapTableScan(m_mp, table_descr, pop->UlParallelWorkers());
+	CDXLNode *pdxlnBitmapTableScan = GPOS_NEW(m_mp) CDXLNode(m_mp, dxl_op);
+
+	// set properties
 	if (nullptr == dxl_properties)
 	{
 		dxl_properties = GetProperties(pexprBitmapTableScan);

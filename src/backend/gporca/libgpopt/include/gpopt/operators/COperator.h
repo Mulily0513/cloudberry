@@ -196,6 +196,7 @@ public:
 		EopPhysicalIndexOnlyScan,
 		EopPhysicalParallelIndexOnlyScan,
 		EopPhysicalBitmapTableScan,
+		EopPhysicalParallelBitmapTableScan,
 		EopPhysicalFilter,
 		EopPhysicalInnerNLJoin,
 		EopPhysicalInnerIndexNLJoin,

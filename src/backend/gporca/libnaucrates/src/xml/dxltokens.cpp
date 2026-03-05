@@ -114,6 +114,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalTableScan, GPOS_WSZ_LIT("TableScan")},
 		{EdxltokenPhysicalParallelTableScan, GPOS_WSZ_LIT("ParallelTableScan")},
 		{EdxltokenPhysicalBitmapTableScan, GPOS_WSZ_LIT("BitmapTableScan")},
+		{EdxltokenPhysicalParallelBitmapTableScan, GPOS_WSZ_LIT("ParallelBitmapTableScan")},
 		{EdxltokenPhysicalDynamicBitmapTableScan,
 		 GPOS_WSZ_LIT("DynamicBitmapTableScan")},
 		{EdxltokenPhysicalForeignScan, GPOS_WSZ_LIT("ForeignScan")},
