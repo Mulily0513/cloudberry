@@ -97,6 +97,7 @@ public:
 		CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 
 		(void) xform_set->ExchangeSet(CXform::ExfIndexOnlyGet2IndexOnlyScan);
+		(void) xform_set->ExchangeSet(CXform::ExfIndexOnlyGet2ParallelIndexOnlyScan);
 
 		return xform_set;
 	}

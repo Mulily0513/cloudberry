@@ -27,6 +27,11 @@
 #include "gpopt/xforms/CXformUtils.h"
 #include "naucrates/md/CMDIndexGPDB.h"
 
+namespace gpdb
+{
+	bool IsParallelModeOK(void);
+}
+
 using namespace gpopt;
 
 
@@ -55,6 +60,11 @@ CXformIndexOnlyGet2IndexOnlyScan::Exfp(CExpressionHandle &exprhdl) const
 	if (exprhdl.DeriveHasSubquery(0))
 	{
 		return CXform::ExfpNone;
+	}
+
+	if (gpdb::IsParallelModeOK())
+	{
+		return CXform::ExfpLow;
 	}
 
 	return CXform::ExfpHigh;

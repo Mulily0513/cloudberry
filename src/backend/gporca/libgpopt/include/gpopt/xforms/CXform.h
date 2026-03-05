@@ -227,6 +227,7 @@ public:
 		ExfLeftOuterJoinWithInnerSelect2DynamicBitmapIndexGetApply____removed,
 		ExfLeftOuterJoinWithInnerSelect2DynamicIndexGetApply____removed,
 		ExfIndexOnlyGet2IndexOnlyScan,
+		ExfIndexOnlyGet2ParallelIndexOnlyScan,
 		ExfJoin2BitmapIndexGetApply,
 		ExfJoin2IndexGetApply,
 		ExfMultiExternalGet2MultiExternalScan____removed,

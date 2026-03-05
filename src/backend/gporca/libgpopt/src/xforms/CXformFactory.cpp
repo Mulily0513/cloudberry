@@ -293,6 +293,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformImplementFullOuterMergeJoin(m_mp));
 	SkipUnused(4);
 	Add(GPOS_NEW(m_mp) CXformIndexOnlyGet2IndexOnlyScan(m_mp));
+	Add(GPOS_NEW(m_mp) CXformIndexOnlyGet2ParallelIndexOnlyScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformJoin2BitmapIndexGetApply(m_mp));
 	Add(GPOS_NEW(m_mp) CXformJoin2IndexGetApply(m_mp));
 	SkipUnused(2);

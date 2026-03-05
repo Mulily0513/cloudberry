@@ -11,8 +11,8 @@ set parallel_setup_cost=0;
 set max_parallel_workers_per_gather=4;
 set enable_parallel = on;
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -28,13 +28,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (17 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -50,13 +50,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (17 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -76,13 +76,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
                      Hash Module: 3
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (21 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -102,7 +102,7 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
                      Hash Module: 3
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (21 rows)
 
@@ -110,8 +110,8 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
 alter table t2 set (parallel_workers=2);
 set max_parallel_workers_per_gather=2;
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -123,13 +123,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (13 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -145,13 +145,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (17 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -167,13 +167,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
                      Hash Module: 3
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (17 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -193,14 +193,14 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
                      Hash Module: 3
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (21 rows)
 
 -- Left Join
 explain (verbose, costs off) select * from t1 left join t2  on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Left Join
@@ -212,14 +212,14 @@ explain (verbose, costs off) select * from t1 left join t2  on t1.a = t2.c;
                Output: t2.c, t2.d
                ->  Parallel Seq Scan on orca_parallel.t2
                      Output: t2.c, t2.d
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (13 rows)
 
 -- Right Join
 explain (verbose, costs off) select * from t1 right join t2 on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Left Join
@@ -231,14 +231,14 @@ explain (verbose, costs off) select * from t1 right join t2 on t1.a = t2.c;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (13 rows)
 
 -- Full Join
 explain (verbose, costs off) select * from t1 full join t2  on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Hash Full Join
@@ -250,14 +250,14 @@ explain (verbose, costs off) select * from t1 full join t2  on t1.a = t2.c;
                Output: t1.a, t1.b
                ->  Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (13 rows)
 
 -- Semi Join
 explain (verbose, costs off) select *  from t1 where exists (select 1 from t2 where t2.c = t1.a);
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b
    ->  Parallel Hash Semi Join
@@ -270,7 +270,7 @@ explain (verbose, costs off) select *  from t1 where exists (select 1 from t2 wh
                Output: (1), t2.c
                ->  Parallel Seq Scan on orca_parallel.t2
                      Output: 1, t2.c
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (14 rows)
 
@@ -301,8 +301,8 @@ insert into t2 select i, i+2 from generate_series(1, 30000)i;
 analyze t1;
 analyze t2;
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -314,13 +314,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.c;
                Output: t1.a, t1.b
                ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (13 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -334,13 +334,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.a = t2.d;
                      Output: t1.a, t1.b
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (15 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -356,13 +356,13 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.c;
                      Hash Module: 3
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (17 rows)
 
 explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
    ->  Parallel Hash Join
@@ -376,7 +376,7 @@ explain (verbose, costs off) select * from t1  join t2  on t1.b = t2.d;
                      Output: t1.a, t1.b
                      ->  Parallel Seq Scan on orca_parallel.t1
                            Output: t1.a, t1.b
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
  Optimizer: GPORCA
 (15 rows)
 
@@ -581,477 +581,15 @@ select * from t1 where a in (
  Optimizer: GPORCA
 (26 rows)
 
--- parallel index scan test
-create table pidx1(a int, b int) with (parallel_workers=2) distributed by (a);
-create table pidx2(c int, d int) with (parallel_workers=2) distributed by (c);
-create table pidx3(e int, f int) with (parallel_workers=2) distributed by (e);
-create index pidx1_a_idx on pidx1(a);
-create index pidx1_b_idx on pidx1(b);
-create index pidx2_c_idx on pidx2(c);
-create index pidx2_d_idx on pidx2(d);
-create index pidx3_e_idx on pidx3(e);
-create index pidx3_f_idx on pidx3(f);
-insert into pidx1 select i, i from generate_series(1, 10000) i;
-insert into pidx2 select i, i from generate_series(1, 200000) i;
-insert into pidx3 select i, i from generate_series(1, 300) i;
-analyze pidx1;
-analyze pidx2;
-analyze pidx3;
--- parallel index scan(simple)
-explain (verbose, costs off) select * from pidx1 where a < 1000;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: a, b
-   ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-         Output: a, b
-         Index Cond: (pidx1.a < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(7 rows)
-
-select count(*) from pidx1 where a < 1000;
- count 
--------
-   999
-(1 row)
-
-explain (verbose, costs off) select * from pidx1 where b < 1000;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: a, b
-   ->  Parallel Index Scan using pidx1_b_idx on orca_parallel.pidx1
-         Output: a, b
-         Index Cond: (pidx1.b < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(7 rows)
-
-select count(*) from pidx1 where b < 1000;
- count 
--------
-   999
-(1 row)
-
--- parallel index scan(no redistribute motion)
-explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-   ->  Parallel Hash Left Join
-         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-               Index Cond: (pidx1.a < 1000)
-         ->  Parallel Hash
-               Output: pidx2.c, pidx2.d
-               ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                     Output: pidx2.c, pidx2.d
-                     Index Cond: (pidx2.c < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(15 rows)
-
-select count(*) from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
- count 
--------
-   999
-(1 row)
-
--- parallel index scan(redistribute motion)
-explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.b = pidx2.c where pidx1.b < 1000;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-   ->  Parallel Hash Left Join
-         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-         Hash Cond: (pidx1.b = pidx2.c)
-         ->  Redistribute Motion 6:6  (slice2; segments: 6)
-               Output: pidx1.a, pidx1.b
-               Hash Key: pidx1.b
-               Hash Module: 3
-               ->  Parallel Index Scan using pidx1_b_idx on orca_parallel.pidx1
-                     Output: pidx1.a, pidx1.b
-                     Index Cond: (pidx1.b < 1000)
-         ->  Parallel Hash
-               Output: pidx2.c, pidx2.d
-               ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                     Output: pidx2.c, pidx2.d
-                     Index Cond: (pidx2.c < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(19 rows)
-
-select count(*) from pidx1 left join pidx2 on pidx1.b = pidx2.c where pidx1.b < 1000;
- count 
--------
-   999
-(1 row)
-
--- parallel index scan(broadcast motion)
-explain (verbose, costs off) select * from pidx1 join pidx3 on pidx1.a = pidx3.f where pidx1.a < 5000;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b, pidx3.e, pidx3.f
-   ->  Parallel Hash Join
-         Output: pidx1.a, pidx1.b, pidx3.e, pidx3.f
-         Hash Cond: (pidx1.a = pidx3.f)
-         ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-               Index Cond: (pidx1.a < 5000)
-         ->  Parallel Hash
-               Output: pidx3.e, pidx3.f
-               ->  Redistribute Motion 6:6  (slice2; segments: 6)
-                     Output: pidx3.e, pidx3.f
-                     Hash Key: pidx3.f
-                     Hash Module: 3
-                     ->  Parallel Index Scan using pidx3_f_idx on orca_parallel.pidx3
-                           Output: pidx3.e, pidx3.f
-                           Index Cond: (pidx3.f < 5000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(19 rows)
-
-select count(*) from pidx1 join pidx3 on pidx1.a = pidx3.f where pidx1.a < 5000;
- count 
--------
-   300
-(1 row)
-
--- parallel index scan(with limit)
-explain (verbose, costs off) select * from pidx1 where a < 1000 limit 10;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Limit
-   Output: a, b
-   ->  Gather Motion 6:1  (slice1; segments: 6)
-         Output: a, b
-         ->  Limit
-               Output: a, b
-               ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-                     Output: a, b
-                     Index Cond: (pidx1.a < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(11 rows)
-
-select count(*) from pidx1 where a < 1000 limit 10;
- count 
--------
-   999
-(1 row)
-
--- parallel index scan(with order and limit)
-explain (verbose, costs off) select * from pidx1 where a < 100000 order by a limit 10;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Limit
-   Output: a, b
-   ->  Gather Motion 6:1  (slice1; segments: 6)
-         Output: a, b
-         Merge Key: a
-         ->  Limit
-               Output: a, b
-               ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-                     Output: a, b
-                     Index Cond: (pidx1.a < 100000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(12 rows)
-
-select * from pidx1 where a < 100000 order by a limit 10;
- a  | b  
-----+----
-  1 |  1
-  2 |  2
-  3 |  3
-  4 |  4
-  5 |  5
-  6 |  6
-  7 |  7
-  8 |  8
-  9 |  9
- 10 | 10
-(10 rows)
-
--- parallel index scan inside IN subquery
-set enable_hashagg = off;
-explain (verbose, costs off) select * from pidx1 where a in (select c from pidx2 where c < 500);
-                                   QUERY PLAN                                   
--------------------------------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b
-   ->  Parallel Hash Semi Join
-         Output: pidx1.a, pidx1.b
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Parallel Seq Scan on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-         ->  Parallel Hash
-               Output: pidx2.c
-               ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                     Output: pidx2.c
-                     Index Cond: (pidx2.c < 500)
- Settings: enable_hashagg = 'off', enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(14 rows)
-
-select count(*) from pidx1 where a in (select c from pidx2 where c < 500);
- count 
--------
-   499
-(1 row)
-
-reset enable_hashagg;
--- Subquery with LIMIT and ORDER BY should NOT use parallel scan
-explain (verbose, costs off) select * from pidx1 where a in (select c from pidx2 order by c limit 10);
-                                          QUERY PLAN                                           
------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   Output: pidx1.a, pidx1.b
-   ->  Nested Loop
-         Output: pidx1.a, pidx1.b
-         Join Filter: true
-         ->  Redistribute Motion 1:3  (slice2)
-               Output: pidx2.c
-               Hash Key: pidx2.c
-               ->  GroupAggregate
-                     Output: pidx2.c
-                     Group Key: pidx2.c
-                     ->  Limit
-                           Output: pidx2.c
-                           ->  Gather Motion 3:1  (slice3; segments: 3)
-                                 Output: pidx2.c
-                                 Merge Key: pidx2.c
-                                 ->  Limit
-                                       Output: pidx2.c
-                                       ->  Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                                             Output: pidx2.c
-         ->  Index Scan using pidx1_a_idx on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-               Index Cond: (pidx1.a = pidx2.c)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(25 rows)
-
-select * from pidx1 where a in (select c from pidx2 order by c limit 10) order by a;
- a  | b  
-----+----
-  1 |  1
-  2 |  2
-  3 |  3
-  4 |  4
-  5 |  5
-  6 |  6
-  7 |  7
-  8 |  8
-  9 |  9
- 10 | 10
-(10 rows)
-
--- left join
-explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-   ->  Parallel Hash Left Join
-         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-               Index Cond: (pidx1.a < 1000)
-         ->  Parallel Hash
-               Output: pidx2.c, pidx2.d
-               ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                     Output: pidx2.c, pidx2.d
-                     Index Cond: (pidx2.c < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(15 rows)
-
-select count(*) from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
- count 
--------
-   999
-(1 row)
-
--- right join
-explain (verbose, costs off) select * from pidx1 right join pidx2 on pidx1.a = pidx2.c where pidx2.c < 1000;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-   ->  Parallel Hash Left Join
-         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
-         Hash Cond: (pidx2.c = pidx1.a)
-         ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-               Output: pidx2.c, pidx2.d
-               Index Cond: (pidx2.c < 1000)
-         ->  Parallel Hash
-               Output: pidx1.a, pidx1.b
-               ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-                     Output: pidx1.a, pidx1.b
-                     Index Cond: (pidx1.a < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(15 rows)
-
-select count(*) from pidx1 right join pidx2 on pidx1.a = pidx2.c where pidx2.c < 1000;
- count 
--------
-   999
-(1 row)
-
--- semi join with parallel index scan
-explain (verbose, costs off) select * from pidx1 where exists (select 1 from pidx2 where pidx2.c = pidx1.a);
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b
-   ->  Parallel Hash Semi Join
-         Output: pidx1.a, pidx1.b
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-               Index Cond: (pidx1.a IS NOT NULL)
-         ->  Parallel Hash
-               Output: (1), pidx2.c
-               ->  Parallel Seq Scan on orca_parallel.pidx2
-                     Output: 1, pidx2.c
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(14 rows)
-
-select count(*) from pidx1 where exists (select 1 from pidx2 where pidx2.c = pidx1.a);
- count 
--------
- 10000
-(1 row)
-
--- anti semi join with parallel index scan
-explain (verbose, costs off) select * from pidx1 where a not in (select c from pidx2 where c < 1000);
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: pidx1.a, pidx1.b
-   ->  Parallel Hash Left Anti Semi (Not-In) Join
-         Output: pidx1.a, pidx1.b
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Parallel Seq Scan on orca_parallel.pidx1
-               Output: pidx1.a, pidx1.b
-         ->  Parallel Hash
-               Output: pidx2.c
-               ->  Broadcast Workers Motion 6:6  (slice2; segments: 6)
-                     Output: pidx2.c
-                     ->  Parallel Index Scan using pidx2_c_idx on orca_parallel.pidx2
-                           Output: pidx2.c
-                           Index Cond: (pidx2.c < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(16 rows)
-
-select count(*) from pidx1 where a not in (select c from pidx2 where c < 1000);
- count 
--------
-  9001
-(1 row)
-
--- parallel index scan with hash aggregation
-explain (verbose, costs off) select a, count(*) from pidx1 where a < 1000 group by a;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: a, (count(*))
-   ->  HashAggregate
-         Output: a, count(*)
-         Group Key: pidx1.a
-         ->  Redistribute Motion 6:6  (slice2; segments: 6)
-               Output: a
-               Hash Key: a
-               Hash Module: 3
-               ->  Parallel Index Scan using pidx1_a_idx on orca_parallel.pidx1
-                     Output: a
-                     Index Cond: (pidx1.a < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(14 rows)
-
-select count(*) from (select a, count(*) from pidx1 where a < 1000 group by a) s;
- count 
--------
-   999
-(1 row)
-
--- Nested subquery with LIMIT - inner limit should prevent parallel index scan
-explain (costs off)
-select * from pidx1 where a in (
-    select c from pidx2 where c in (
-        select a from pidx1 limit 5
-    )
-);
-                                                    QUERY PLAN                                                    
-------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Semi Join
-         Hash Cond: (pidx1.a = pidx2.c)
-         ->  Seq Scan on pidx1
-         ->  Hash
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Hash Key: pidx2.c
-                     ->  Nested Loop
-                           Join Filter: true
-                           ->  GroupAggregate
-                                 Group Key: pidx1_1.a
-                                 ->  Sort
-                                       Sort Key: pidx1_1.a
-                                       ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                             Hash Key: pidx1_1.a
-                                             ->  GroupAggregate
-                                                   Group Key: pidx1_1.a
-                                                   ->  Sort
-                                                         Sort Key: pidx1_1.a
-                                                         ->  Redistribute Motion 1:3  (slice4)
-                                                               ->  Limit
-                                                                     ->  Gather Motion 3:1  (slice5; segments: 3)
-                                                                           ->  Limit
-                                                                                 ->  Seq Scan on pidx1 pidx1_1
-                           ->  Index Scan using pidx2_c_idx on pidx2
-                                 Index Cond: (c = pidx1_1.a)
- Optimizer: GPORCA
-(27 rows)
-
--- GUC to control plan
-set optimizer_enable_indexscan to off;
-explain (verbose, costs off) select * from pidx1 where a < 1000;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Gather Motion 6:1  (slice1; segments: 6)
-   Output: a, b
-   ->  Parallel Seq Scan on orca_parallel.pidx1
-         Output: a, b
-         Filter: (pidx1.a < 1000)
- Settings: enable_parallel = 'on', optimizer = 'on', parallel_setup_cost = '0'
- Optimizer: GPORCA
-(7 rows)
-
-reset optimizer_enable_indexscan;
 reset enable_parallel;
 reset max_parallel_workers_per_gather;
 reset parallel_setup_cost;
 reset statement_mem;
 -- start_ignore
 drop schema orca_parallel cascade;
-NOTICE:  drop cascades to 7 other objects
+NOTICE:  drop cascades to 4 other objects
 DETAIL:  drop cascades to table t3_null
 drop cascades to table t1
 drop cascades to table t2
 drop cascades to table t0
-drop cascades to table pidx1
-drop cascades to table pidx2
-drop cascades to table pidx3
 -- end_ignore

@@ -132,6 +132,7 @@ enum Edxlopid
 	EdxlopPhysicalIndexScan,
 	EdxlopPhysicalParallelIndexScan,
 	EdxlopPhysicalIndexOnlyScan,
+	EdxlopPhysicalParallelIndexOnlyScan,
 	EdxlopScalarBitmapIndexProbe,
 	EdxlopPhysicalConstTable,
 	EdxlopPhysicalNLJoin,

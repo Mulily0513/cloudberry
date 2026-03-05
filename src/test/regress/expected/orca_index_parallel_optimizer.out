@@ -1,0 +1,954 @@
+-- Tests for ORCA Parallel Index Scan and Parallel Index Only Scan
+create schema orca_index_parallel;
+set search_path=orca_index_parallel, public;
+set statement_mem = '256MB';
+set parallel_setup_cost=0;
+set max_parallel_workers_per_gather=4;
+set enable_parallel = on;
+-- parallel index scan test
+create table pidx1(a int, b int) with (parallel_workers=2) distributed by (a);
+create table pidx2(c int, d int) with (parallel_workers=2) distributed by (c);
+create table pidx3(e int, f int) with (parallel_workers=2) distributed by (e);
+create index pidx1_a_idx on pidx1(a);
+create index pidx1_b_idx on pidx1(b);
+create index pidx2_c_idx on pidx2(c);
+create index pidx2_d_idx on pidx2(d);
+create index pidx3_e_idx on pidx3(e);
+create index pidx3_f_idx on pidx3(f);
+insert into pidx1 select i, i from generate_series(1, 10000) i;
+insert into pidx2 select i, i from generate_series(1, 200000) i;
+insert into pidx3 select i, i from generate_series(1, 300) i;
+analyze pidx1;
+analyze pidx2;
+analyze pidx3;
+-- parallel index scan(simple)
+explain (verbose, costs off) select * from pidx1 where a < 1000;
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b
+   ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+         Output: a, b
+         Index Cond: (pidx1.a < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from pidx1 where a < 1000;
+ count 
+-------
+   999
+(1 row)
+
+explain (verbose, costs off) select * from pidx1 where b < 1000;
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b
+   ->  Parallel Index Scan using pidx1_b_idx on orca_index_parallel.pidx1
+         Output: a, b
+         Index Cond: (pidx1.b < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from pidx1 where b < 1000;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index scan(no redistribute motion)
+explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+   ->  Parallel Hash Left Join
+         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+               Index Cond: (pidx1.a < 1000)
+         ->  Parallel Hash
+               Output: pidx2.c, pidx2.d
+               ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                     Output: pidx2.c, pidx2.d
+                     Index Cond: (pidx2.c < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index scan(redistribute motion)
+explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.b = pidx2.c where pidx1.b < 1000;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+   ->  Parallel Hash Left Join
+         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+         Hash Cond: (pidx1.b = pidx2.c)
+         ->  Redistribute Motion 6:6  (slice2; segments: 6)
+               Output: pidx1.a, pidx1.b
+               Hash Key: pidx1.b
+               Hash Module: 3
+               ->  Parallel Index Scan using pidx1_b_idx on orca_index_parallel.pidx1
+                     Output: pidx1.a, pidx1.b
+                     Index Cond: (pidx1.b < 1000)
+         ->  Parallel Hash
+               Output: pidx2.c, pidx2.d
+               ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                     Output: pidx2.c, pidx2.d
+                     Index Cond: (pidx2.c < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(19 rows)
+
+select count(*) from pidx1 left join pidx2 on pidx1.b = pidx2.c where pidx1.b < 1000;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index scan(broadcast motion)
+explain (verbose, costs off) select * from pidx1 join pidx3 on pidx1.a = pidx3.f where pidx1.a < 5000;
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b, pidx3.e, pidx3.f
+   ->  Parallel Hash Join
+         Output: pidx1.a, pidx1.b, pidx3.e, pidx3.f
+         Hash Cond: (pidx1.a = pidx3.f)
+         ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+               Index Cond: (pidx1.a < 5000)
+         ->  Parallel Hash
+               Output: pidx3.e, pidx3.f
+               ->  Redistribute Motion 6:6  (slice2; segments: 6)
+                     Output: pidx3.e, pidx3.f
+                     Hash Key: pidx3.f
+                     Hash Module: 3
+                     ->  Parallel Index Scan using pidx3_f_idx on orca_index_parallel.pidx3
+                           Output: pidx3.e, pidx3.f
+                           Index Cond: (pidx3.f < 5000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(19 rows)
+
+select count(*) from pidx1 join pidx3 on pidx1.a = pidx3.f where pidx1.a < 5000;
+ count 
+-------
+   300
+(1 row)
+
+-- parallel index scan(with limit)
+explain (verbose, costs off) select * from pidx1 where a < 1000 limit 10;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Limit
+   Output: a, b
+   ->  Gather Motion 6:1  (slice1; segments: 6)
+         Output: a, b
+         ->  Limit
+               Output: a, b
+               ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+                     Output: a, b
+                     Index Cond: (pidx1.a < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(11 rows)
+
+select count(*) from pidx1 where a < 1000 limit 10;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index scan(with order and limit)
+explain (verbose, costs off) select * from pidx1 where a < 100000 order by a limit 10;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Limit
+   Output: a, b
+   ->  Gather Motion 6:1  (slice1; segments: 6)
+         Output: a, b
+         Merge Key: a
+         ->  Limit
+               Output: a, b
+               ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+                     Output: a, b
+                     Index Cond: (pidx1.a < 100000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(12 rows)
+
+select * from pidx1 where a < 100000 order by a limit 10;
+ a  | b  
+----+----
+  1 |  1
+  2 |  2
+  3 |  3
+  4 |  4
+  5 |  5
+  6 |  6
+  7 |  7
+  8 |  8
+  9 |  9
+ 10 | 10
+(10 rows)
+
+-- parallel index scan inside IN subquery
+set enable_hashagg = off;
+explain (verbose, costs off) select * from pidx1 where a in (select c from pidx2 where c < 500);
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b
+   ->  Parallel Hash Semi Join
+         Output: pidx1.a, pidx1.b
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Parallel Seq Scan on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+         ->  Parallel Hash
+               Output: pidx2.c
+               ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                     Output: pidx2.c
+                     Index Cond: (pidx2.c < 500)
+ Settings: enable_hashagg = 'off', enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from pidx1 where a in (select c from pidx2 where c < 500);
+ count 
+-------
+   499
+(1 row)
+
+reset enable_hashagg;
+-- Subquery with LIMIT and ORDER BY should NOT use parallel scan
+explain (verbose, costs off) select * from pidx1 where a in (select c from pidx2 order by c limit 10);
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: pidx1.a, pidx1.b
+   ->  Nested Loop
+         Output: pidx1.a, pidx1.b
+         Join Filter: true
+         ->  Redistribute Motion 1:3  (slice2)
+               Output: pidx2.c
+               Hash Key: pidx2.c
+               ->  GroupAggregate
+                     Output: pidx2.c
+                     Group Key: pidx2.c
+                     ->  Limit
+                           Output: pidx2.c
+                           ->  Gather Motion 3:1  (slice3; segments: 3)
+                                 Output: pidx2.c
+                                 Merge Key: pidx2.c
+                                 ->  Limit
+                                       Output: pidx2.c
+                                       ->  Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                                             Output: pidx2.c
+         ->  Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+               Index Cond: (pidx1.a = pidx2.c)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(25 rows)
+
+select * from pidx1 where a in (select c from pidx2 order by c limit 10) order by a;
+ a  | b  
+----+----
+  1 |  1
+  2 |  2
+  3 |  3
+  4 |  4
+  5 |  5
+  6 |  6
+  7 |  7
+  8 |  8
+  9 |  9
+ 10 | 10
+(10 rows)
+
+-- left join
+explain (verbose, costs off) select * from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+   ->  Parallel Hash Left Join
+         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+               Index Cond: (pidx1.a < 1000)
+         ->  Parallel Hash
+               Output: pidx2.c, pidx2.d
+               ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                     Output: pidx2.c, pidx2.d
+                     Index Cond: (pidx2.c < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from pidx1 left join pidx2 on pidx1.a = pidx2.c where pidx1.a < 1000;
+ count 
+-------
+   999
+(1 row)
+
+-- right join
+explain (verbose, costs off) select * from pidx1 right join pidx2 on pidx1.a = pidx2.c where pidx2.c < 1000;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+   ->  Parallel Hash Left Join
+         Output: pidx1.a, pidx1.b, pidx2.c, pidx2.d
+         Hash Cond: (pidx2.c = pidx1.a)
+         ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+               Output: pidx2.c, pidx2.d
+               Index Cond: (pidx2.c < 1000)
+         ->  Parallel Hash
+               Output: pidx1.a, pidx1.b
+               ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+                     Output: pidx1.a, pidx1.b
+                     Index Cond: (pidx1.a < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from pidx1 right join pidx2 on pidx1.a = pidx2.c where pidx2.c < 1000;
+ count 
+-------
+   999
+(1 row)
+
+-- semi join with parallel index scan
+explain (verbose, costs off) select * from pidx1 where exists (select 1 from pidx2 where pidx2.c = pidx1.a);
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b
+   ->  Parallel Hash Semi Join
+         Output: pidx1.a, pidx1.b
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+               Index Cond: (pidx1.a IS NOT NULL)
+         ->  Parallel Hash
+               Output: (1), pidx2.c
+               ->  Parallel Seq Scan on orca_index_parallel.pidx2
+                     Output: 1, pidx2.c
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from pidx1 where exists (select 1 from pidx2 where pidx2.c = pidx1.a);
+ count 
+-------
+ 10000
+(1 row)
+
+-- anti semi join with parallel index scan
+explain (verbose, costs off) select * from pidx1 where a not in (select c from pidx2 where c < 1000);
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pidx1.a, pidx1.b
+   ->  Parallel Hash Left Anti Semi (Not-In) Join
+         Output: pidx1.a, pidx1.b
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Parallel Seq Scan on orca_index_parallel.pidx1
+               Output: pidx1.a, pidx1.b
+         ->  Parallel Hash
+               Output: pidx2.c
+               ->  Broadcast Workers Motion 6:6  (slice2; segments: 6)
+                     Output: pidx2.c
+                     ->  Parallel Index Scan using pidx2_c_idx on orca_index_parallel.pidx2
+                           Output: pidx2.c
+                           Index Cond: (pidx2.c < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(16 rows)
+
+select count(*) from pidx1 where a not in (select c from pidx2 where c < 1000);
+ count 
+-------
+  9001
+(1 row)
+
+-- parallel index scan with hash aggregation
+explain (verbose, costs off) select a, count(*) from pidx1 where a < 1000 group by a;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Gather Motion 12:1  (slice1; segments: 12)
+   Output: a, (count(*))
+   ->  HashAggregate
+         Output: a, count(*)
+         Group Key: pidx1.a
+         ->  Redistribute Motion 6:12  (slice2; segments: 6)
+               Output: a
+               Hash Key: a
+               Hash Module: 3
+               ->  Parallel Index Scan using pidx1_a_idx on orca_index_parallel.pidx1
+                     Output: a
+                     Index Cond: (pidx1.a < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from (select a, count(*) from pidx1 where a < 1000 group by a) s;
+ count 
+-------
+   999
+(1 row)
+
+-- Nested subquery with LIMIT - inner limit should prevent parallel index scan
+explain (costs off)
+select * from pidx1 where a in (
+    select c from pidx2 where c in (
+        select a from pidx1 limit 5
+    )
+);
+                                                    QUERY PLAN                                                    
+------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (pidx1.a = pidx2.c)
+         ->  Seq Scan on pidx1
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: pidx2.c
+                     ->  Nested Loop
+                           Join Filter: true
+                           ->  GroupAggregate
+                                 Group Key: pidx1_1.a
+                                 ->  Sort
+                                       Sort Key: pidx1_1.a
+                                       ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                             Hash Key: pidx1_1.a
+                                             ->  GroupAggregate
+                                                   Group Key: pidx1_1.a
+                                                   ->  Sort
+                                                         Sort Key: pidx1_1.a
+                                                         ->  Redistribute Motion 1:3  (slice4)
+                                                               ->  Limit
+                                                                     ->  Gather Motion 3:1  (slice5; segments: 3)
+                                                                           ->  Limit
+                                                                                 ->  Seq Scan on pidx1 pidx1_1
+                           ->  Index Scan using pidx2_c_idx on pidx2
+                                 Index Cond: (c = pidx1_1.a)
+ Optimizer: GPORCA
+(27 rows)
+
+-- GUC to control plan
+set optimizer_enable_indexscan to off;
+explain (verbose, costs off) select * from pidx1 where a < 1000;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b
+   ->  Parallel Seq Scan on orca_index_parallel.pidx1
+         Output: a, b
+         Filter: (pidx1.a < 1000)
+ Settings: enable_parallel = 'on', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+reset optimizer_enable_indexscan;
+-- parallel index only scan test
+-- (modeled after parallel index scan tests from debug_parallel_index_scan branch)
+-- Tables have an extra text column c/f/i so that "select *" cannot use index only scan.
+create table pios1(a int, b int, c text) with (parallel_workers=2) distributed by (a);
+create table pios2(d int, e int, f text) with (parallel_workers=2) distributed by (d);
+create table pios3(g int, h int, i text) with (parallel_workers=2) distributed by (g);
+create index pios1_ab_idx on pios1(a, b);
+create index pios1_b_idx on pios1(b);
+create index pios2_de_idx on pios2(d, e);
+create index pios2_e_idx on pios2(e);
+create index pios3_gh_idx on pios3(g, h);
+create index pios3_h_idx on pios3(h);
+insert into pios1 select i, i, 'text_'||i from generate_series(1, 10000) i;
+insert into pios2 select i, i, 'text_'||i from generate_series(1, 200000) i;
+insert into pios3 select i, i, 'text_'||i from generate_series(1, 300) i;
+analyze pios1;
+analyze pios2;
+analyze pios3;
+-- VACUUM is needed to populate the visibility map (relallvisible).
+-- Without it, index-only scan cost equals index scan cost (dPartialVisFrac=1),
+-- causing the optimizer to prefer parallel index scan over parallel index only scan.
+vacuum pios1;
+vacuum pios2;
+vacuum pios3;
+set enable_bitmapscan = off;
+set enable_seqscan = off;
+set enable_indexscan = on;
+-- parallel index only scan (simple, on dist key)
+explain (verbose, costs off) select a, b from pios1 where a < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b
+   ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+         Output: a, b
+         Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from (select a, b from pios1 where a < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index only scan (simple, on non-dist key)
+explain (verbose, costs off) select b from pios1 where b < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: b
+   ->  Parallel Index Only Scan using pios1_b_idx on orca_index_parallel.pios1
+         Output: b
+         Index Cond: (pios1.b < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+select count(*) from (select b from pios1 where b < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- should NOT use index only scan (column c not in index)
+explain (verbose, costs off) select a, b, c from pios1 where a < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b, c
+   ->  Parallel Index Scan using pios1_ab_idx on orca_index_parallel.pios1
+         Output: a, b, c
+         Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+-- parallel index only scan (no redistribute motion, join on dist key)
+explain (verbose, costs off) select pios1.a, pios1.b from pios1 left join pios2 on pios1.a = pios2.d where pios1.a < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Left Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.a = pios2.d)
+         ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+               Index Cond: (pios1.a < 1000)
+         ->  Parallel Hash
+               Output: pios2.d
+               ->  Parallel Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+                     Output: pios2.d
+                     Index Cond: (pios2.d < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from (select pios1.a, pios1.b from pios1 left join pios2 on pios1.a = pios2.d where pios1.a < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index only scan (redistribute motion, join on non-dist key)
+explain (verbose, costs off) select pios1.a, pios1.b from pios1 left join pios2 on pios1.b = pios2.d where pios1.b < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Left Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.b = pios2.d)
+         ->  Redistribute Motion 6:6  (slice2; segments: 6)
+               Output: pios1.a, pios1.b
+               Hash Key: pios1.b
+               Hash Module: 3
+               ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+                     Output: pios1.a, pios1.b
+                     Index Cond: (pios1.b < 1000)
+         ->  Parallel Hash
+               Output: pios2.d
+               ->  Parallel Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+                     Output: pios2.d
+                     Index Cond: (pios2.d < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(19 rows)
+
+select count(*) from (select pios1.a, pios1.b from pios1 left join pios2 on pios1.b = pios2.d where pios1.b < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- parallel index only scan (broadcast motion, join with small table)
+explain (verbose, costs off) select pios1.a, pios1.b from pios1 join pios3 on pios1.a = pios3.h where pios1.a < 5000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.a = pios3.h)
+         ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+               Index Cond: (pios1.a < 5000)
+         ->  Parallel Hash
+               Output: pios3.h
+               ->  Redistribute Motion 6:6  (slice2; segments: 6)
+                     Output: pios3.h
+                     Hash Key: pios3.h
+                     Hash Module: 3
+                     ->  Parallel Index Only Scan using pios3_h_idx on orca_index_parallel.pios3
+                           Output: pios3.h
+                           Index Cond: (pios3.h < 5000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(19 rows)
+
+select count(*) from (select pios1.a, pios1.b from pios1 join pios3 on pios1.a = pios3.h where pios1.a < 5000) s;
+ count 
+-------
+   300
+(1 row)
+
+-- parallel index only scan (with limit)
+explain (verbose, costs off) select a, b from pios1 where a < 1000 limit 10;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: a, b
+   ->  Gather Motion 6:1  (slice1; segments: 6)
+         Output: a, b
+         ->  Limit
+               Output: a, b
+               ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+                     Output: a, b
+                     Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(11 rows)
+
+select count(*) from (select a, b from pios1 where a < 1000 limit 10) s;
+ count 
+-------
+    10
+(1 row)
+
+-- parallel index only scan (with order and limit)
+explain (verbose, costs off) select a, b from pios1 where a < 100000 order by a limit 10;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: a, b
+   ->  Gather Motion 6:1  (slice1; segments: 6)
+         Output: a, b
+         Merge Key: a
+         ->  Limit
+               Output: a, b
+               ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+                     Output: a, b
+                     Index Cond: (pios1.a < 100000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(12 rows)
+
+select a, b from pios1 where a < 100000 order by a limit 10;
+ a  | b  
+----+----
+  1 |  1
+  2 |  2
+  3 |  3
+  4 |  4
+  5 |  5
+  6 |  6
+  7 |  7
+  8 |  8
+  9 |  9
+ 10 | 10
+(10 rows)
+
+-- Subquery with LIMIT and ORDER BY should NOT use parallel scan
+explain (verbose, costs off) select a, b from pios1 where a in (select d from pios2 order by d limit 10);
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: pios1.a, pios1.b
+   ->  Nested Loop
+         Output: pios1.a, pios1.b
+         Join Filter: true
+         ->  Redistribute Motion 1:3  (slice2)
+               Output: pios2.d
+               Hash Key: pios2.d
+               ->  GroupAggregate
+                     Output: pios2.d
+                     Group Key: pios2.d
+                     ->  Limit
+                           Output: pios2.d
+                           ->  Gather Motion 3:1  (slice3; segments: 3)
+                                 Output: pios2.d
+                                 Merge Key: pios2.d
+                                 ->  Limit
+                                       Output: pios2.d
+                                       ->  Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+                                             Output: pios2.d
+         ->  Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+               Index Cond: (pios1.a = pios2.d)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(25 rows)
+
+select * from (select a, b from pios1 where a in (select d from pios2 order by d limit 10)) s order by a;
+ a  | b  
+----+----
+  1 |  1
+  2 |  2
+  3 |  3
+  4 |  4
+  5 |  5
+  6 |  6
+  7 |  7
+  8 |  8
+  9 |  9
+ 10 | 10
+(10 rows)
+
+-- left join
+explain (verbose, costs off) select pios1.a, pios1.b from pios1 left join pios2 on pios1.a = pios2.d where pios1.a < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Left Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.a = pios2.d)
+         ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+               Index Cond: (pios1.a < 1000)
+         ->  Parallel Hash
+               Output: pios2.d
+               ->  Parallel Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+                     Output: pios2.d
+                     Index Cond: (pios2.d < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from (select pios1.a, pios1.b from pios1 left join pios2 on pios1.a = pios2.d where pios1.a < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- right join
+explain (verbose, costs off) select pios2.d, pios2.e from pios1 right join pios2 on pios1.a = pios2.d where pios2.d < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios2.d, pios2.e
+   ->  Parallel Hash Left Join
+         Output: pios2.d, pios2.e
+         Hash Cond: (pios2.d = pios1.a)
+         ->  Parallel Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+               Output: pios2.d, pios2.e
+               Index Cond: (pios2.d < 1000)
+         ->  Parallel Hash
+               Output: pios1.a
+               ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+                     Output: pios1.a
+                     Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(15 rows)
+
+select count(*) from (select pios2.d, pios2.e from pios1 right join pios2 on pios1.a = pios2.d where pios2.d < 1000) s;
+ count 
+-------
+   999
+(1 row)
+
+-- semi join with parallel index only scan
+explain (verbose, costs off) select a, b from pios1 where exists (select 1 from pios2 where pios2.d = pios1.a);
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Semi Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.a = pios2.d)
+         ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+               Index Cond: (pios1.a IS NOT NULL)
+         ->  Parallel Hash
+               Output: (1), pios2.d
+               ->  Parallel Seq Scan on orca_index_parallel.pios2
+                     Output: 1, pios2.d
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from (select a, b from pios1 where exists (select 1 from pios2 where pios2.d = pios1.a)) s;
+ count 
+-------
+ 10000
+(1 row)
+
+-- anti semi join with parallel index only scan
+explain (verbose, costs off) select a, b from pios1 where a not in (select d from pios2 where d < 1000);
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: pios1.a, pios1.b
+   ->  Parallel Hash Left Anti Semi (Not-In) Join
+         Output: pios1.a, pios1.b
+         Hash Cond: (pios1.a = pios2.d)
+         ->  Parallel Seq Scan on orca_index_parallel.pios1
+               Output: pios1.a, pios1.b
+         ->  Parallel Hash
+               Output: pios2.d
+               ->  Broadcast Workers Motion 6:6  (slice2; segments: 6)
+                     Output: pios2.d
+                     ->  Parallel Index Only Scan using pios2_de_idx on orca_index_parallel.pios2
+                           Output: pios2.d
+                           Index Cond: (pios2.d < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(16 rows)
+
+select count(*) from (select a, b from pios1 where a not in (select d from pios2 where d < 1000)) s;
+ count 
+-------
+  9001
+(1 row)
+
+-- parallel index only scan with hash aggregation
+explain (verbose, costs off) select a, count(*) from pios1 where a < 1000 group by a;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 12:1  (slice1; segments: 12)
+   Output: a, (count(*))
+   ->  HashAggregate
+         Output: a, count(*)
+         Group Key: pios1.a
+         ->  Redistribute Motion 6:12  (slice2; segments: 6)
+               Output: a
+               Hash Key: a
+               Hash Module: 3
+               ->  Parallel Index Only Scan using pios1_ab_idx on orca_index_parallel.pios1
+                     Output: a
+                     Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(14 rows)
+
+select count(*) from (select a, count(*) from pios1 where a < 1000 group by a) s;
+ count 
+-------
+   999
+(1 row)
+
+-- Nested subquery with LIMIT - inner limit should prevent parallel index only scan
+explain (costs off)
+select a, b from pios1 where a in (
+    select d from pios2 where d in (
+        select a from pios1 limit 5
+    )
+);
+                                                    QUERY PLAN                                                    
+------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (pios1.a = pios2.d)
+         ->  Seq Scan on pios1
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: pios2.d
+                     ->  Nested Loop
+                           Join Filter: true
+                           ->  GroupAggregate
+                                 Group Key: pios1_1.a
+                                 ->  Sort
+                                       Sort Key: pios1_1.a
+                                       ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                             Hash Key: pios1_1.a
+                                             ->  GroupAggregate
+                                                   Group Key: pios1_1.a
+                                                   ->  Sort
+                                                         Sort Key: pios1_1.a
+                                                         ->  Redistribute Motion 1:3  (slice4)
+                                                               ->  Limit
+                                                                     ->  Gather Motion 3:1  (slice5; segments: 3)
+                                                                           ->  Limit
+                                                                                 ->  Seq Scan on pios1 pios1_1
+                           ->  Index Only Scan using pios2_de_idx on pios2
+                                 Index Cond: (d = pios1_1.a)
+ Optimizer: GPORCA
+(27 rows)
+
+-- Verify result correctness: parallel vs non-parallel should match
+set enable_parallel = off;
+select count(*), sum(a), sum(b) from pios1 where a < 100;
+ count | sum  | sum  
+-------+------+------
+    99 | 4950 | 4950
+(1 row)
+
+set enable_parallel = on;
+select count(*), sum(a), sum(b) from pios1 where a < 100;
+ count | sum  | sum  
+-------+------+------
+    99 | 4950 | 4950
+(1 row)
+
+-- GUC to control plan
+set optimizer_enable_indexonlyscan = off;
+explain (verbose, costs off) select a, b from pios1 where a < 1000;
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 6:1  (slice1; segments: 6)
+   Output: a, b
+   ->  Parallel Index Scan using pios1_ab_idx on orca_index_parallel.pios1
+         Output: a, b
+         Index Cond: (pios1.a < 1000)
+ Settings: enable_bitmapscan = 'off', enable_indexscan = 'on', enable_parallel = 'on', enable_seqscan = 'off', parallel_setup_cost = '0'
+ Optimizer: GPORCA
+(7 rows)
+
+reset optimizer_enable_indexonlyscan;
+reset enable_bitmapscan;
+reset enable_seqscan;
+reset enable_indexscan;
+reset enable_parallel;
+reset max_parallel_workers_per_gather;
+reset parallel_setup_cost;
+reset statement_mem;
+-- start_ignore
+drop schema orca_index_parallel cascade;
+NOTICE:  drop cascades to 6 other objects
+DETAIL:  drop cascades to table pidx1
+drop cascades to table pidx2
+drop cascades to table pidx3
+drop cascades to table pios1
+drop cascades to table pios2
+drop cascades to table pios3
+-- end_ignore

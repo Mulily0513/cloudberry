@@ -120,6 +120,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalIndexScan, GPOS_WSZ_LIT("IndexScan")},
 		{EdxltokenPhysicalParallelIndexScan, GPOS_WSZ_LIT("ParallelIndexScan")},
 		{EdxltokenPhysicalIndexOnlyScan, GPOS_WSZ_LIT("IndexOnlyScan")},
+		{EdxltokenPhysicalParallelIndexOnlyScan, GPOS_WSZ_LIT("ParallelIndexOnlyScan")},
 		{EdxltokenScalarBitmapIndexProbe, GPOS_WSZ_LIT("BitmapIndexProbe")},
 		{EdxltokenPhysicalHashJoin, GPOS_WSZ_LIT("HashJoin")},
 		{EdxltokenPhysicalParallelHashJoin, GPOS_WSZ_LIT("ParallelHashJoin")},

@@ -76,6 +76,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalParallelHashJoin.h"
 #include "naucrates/dxl/operators/CDXLPhysicalIndexOnlyScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalParallelIndexScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelIndexOnlyScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalLimit.h"
 #include "naucrates/dxl/operators/CDXLPhysicalMaterialize.h"
 #include "naucrates/dxl/operators/CDXLPhysicalMergeJoin.h"
@@ -378,6 +379,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 		{
 			plan = TranslateDXLIndexOnlyScan(dxlnode, output_context,
 											 ctxt_translation_prev_siblings);
+			break;
+		}
+		case EdxlopPhysicalParallelIndexOnlyScan:
+		{
+			plan = TranslateDXLParallelIndexOnlyScan(dxlnode, output_context,
+													 ctxt_translation_prev_siblings);
 			break;
 		}
 		case EdxlopPhysicalHashJoin:
@@ -1295,6 +1302,81 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexOnlyScan(
 	}
 
 	index_scan->indexqual = index_cond;
+	SetParamIds(plan);
+
+	return (Plan *) index_scan;
+}
+
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLParallelIndexOnlyScan(
+	const CDXLNode *index_scan_dxlnode, CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	CDXLPhysicalParallelIndexOnlyScan *physical_idx_scan_dxlop =
+		CDXLPhysicalParallelIndexOnlyScan::Cast(
+			index_scan_dxlnode->GetOperator());
+	const CDXLTableDescr *table_desc =
+		physical_idx_scan_dxlop->GetDXLTableDescr();
+
+	CDXLTranslateContextBaseTable base_table_context(m_mp);
+
+	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(
+		physical_idx_scan_dxlop->GetDXLTableDescr()->MDId());
+
+	Index index = ProcessDXLTblDescr(table_desc, &base_table_context);
+
+	IndexOnlyScan *index_scan = MakeNode(IndexOnlyScan);
+	index_scan->scan.scanrelid = index;
+
+	CMDIdGPDB *mdid_index = CMDIdGPDB::CastMdid(
+		physical_idx_scan_dxlop->GetDXLIndexDescr()->MDId());
+	const IMDIndex *md_index = m_md_accessor->RetrieveIndex(mdid_index);
+	Oid index_oid = mdid_index->Oid();
+
+	GPOS_ASSERT(InvalidOid != index_oid);
+	index_scan->indexid = index_oid;
+
+	CDXLTranslateContextBaseTable index_context(m_mp);
+
+	index_scan->indextlist = TranslateDXLIndexTList(md_rel, md_index, index,
+													table_desc, &index_context);
+
+	Plan *plan = &(index_scan->scan.plan);
+	TranslatePlan(plan, index_scan_dxlnode, output_context,
+				  m_dxl_to_plstmt_context, &index_context,
+				  ctxt_translation_prev_siblings);
+
+	index_scan->indexorderdir = CTranslatorUtils::GetScanDirection(
+		physical_idx_scan_dxlop->GetIndexScanDir());
+
+	List *index_cond = NIL;
+	List *index_orig_cond = NIL;
+
+	if (!IsIndexForOrderBy(&base_table_context, ctxt_translation_prev_siblings,
+						   output_context,
+						   (*index_scan_dxlnode)[EdxlisIndexCondition]))
+	{
+		TranslateIndexConditions(
+			(*index_scan_dxlnode)[EdxlisIndexCondition],
+			physical_idx_scan_dxlop->GetDXLTableDescr(),
+			false,	// is_bitmap_index_probe
+			md_index, md_rel, output_context, &base_table_context,
+			ctxt_translation_prev_siblings, &index_cond, &index_orig_cond);
+	}
+
+	index_scan->indexqual = index_cond;
+
+	// Set parallel properties
+	ULONG parallel_workers = physical_idx_scan_dxlop->UlParallelWorkers();
+	plan->parallel_aware = true;
+	plan->parallel_safe = true;
+	plan->parallel = (int) parallel_workers;
+	// Adjust row count to per-worker statistics
+	if (parallel_workers > 1)
+	{
+		plan->plan_rows = ceil(plan->plan_rows / parallel_workers);
+	}
+
 	SetParamIds(plan);
 
 	return (Plan *) index_scan;
@@ -8267,6 +8349,12 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 		CDXLPhysicalParallelIndexScan *parallel_idx_scan_dxlop =
 			CDXLPhysicalParallelIndexScan::Cast(dxlop);
 		return parallel_idx_scan_dxlop->UlParallelWorkers();
+	}
+	else if (EdxlopPhysicalParallelIndexOnlyScan == dxlop->GetDXLOperator())
+	{
+		CDXLPhysicalParallelIndexOnlyScan *parallel_ios_dxlop =
+			CDXLPhysicalParallelIndexOnlyScan::Cast(dxlop);
+		return parallel_ios_dxlop->UlParallelWorkers();
 	}
 	else if (EdxlopPhysicalTableScan == dxlop->GetDXLOperator() ||
 			 EdxlopPhysicalDynamicTableScan == dxlop->GetDXLOperator() ||

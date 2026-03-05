@@ -103,6 +103,7 @@ enum Edxltoken
 	EdxltokenPhysicalIndexScan,
 	EdxltokenPhysicalParallelIndexScan,
 	EdxltokenPhysicalIndexOnlyScan,
+	EdxltokenPhysicalParallelIndexOnlyScan,
 	EdxltokenPhysicalHashJoin,
 	EdxltokenPhysicalParallelHashJoin,
 	EdxltokenPhysicalNLJoin,

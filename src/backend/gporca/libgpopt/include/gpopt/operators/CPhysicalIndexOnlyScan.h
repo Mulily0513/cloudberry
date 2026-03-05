@@ -151,7 +151,8 @@ public:
 	PopConvert(COperator *pop)
 	{
 		GPOS_ASSERT(nullptr != pop);
-		GPOS_ASSERT(EopPhysicalIndexOnlyScan == pop->Eopid());
+		GPOS_ASSERT(EopPhysicalIndexOnlyScan == pop->Eopid() ||
+					EopPhysicalParallelIndexOnlyScan == pop->Eopid());
 
 		return dynamic_cast<CPhysicalIndexOnlyScan *>(pop);
 	}

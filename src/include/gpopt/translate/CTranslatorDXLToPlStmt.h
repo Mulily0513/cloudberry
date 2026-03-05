@@ -253,6 +253,14 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate DXL parallel index only scan node into a IndexOnlyScan node
+	Plan *TranslateDXLParallelIndexOnlyScan(
+		const CDXLNode *index_scan_dxlnode,
+		CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
 	// translate DXL hash join into a HashJoin node
 	Plan *TranslateDXLHashJoin(
 		const CDXLNode *hj_dxlnode,
