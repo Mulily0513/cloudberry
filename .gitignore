@@ -82,3 +82,5 @@ gpcontrib/orafce/sqlparse.c
 gpcontrib/orafce/sqlparse.h
 gpcontrib/orafce/sqlscan.c
 BUILD_NUMBER
+.claude/settings.local.json
+/review/
