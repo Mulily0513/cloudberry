@@ -192,7 +192,9 @@ test_database:
     set -euxo pipefail
 
     export ENV=devel
-    export MAKE_TEST_COMMAND="-s -k PGOPTIONS='-c optimizer=off' installcheck" 
+    export MAKE_TEST_COMMAND="-s -k PGOPTIONS='-c optimizer=off' installcheck"
+    # Inject time_series into umbrella's test targets (auto-preload handled by Makefile)
+    sed -i 's|contrib/uuid-ossp"|contrib/uuid-ossp contrib/time_series"|' scripts/functions/unit-test-function.sh
     make test-database
   rules:
     - !reference [ .common-rules ]

@@ -1086,6 +1086,9 @@
 #undef EXPIRATION_DAY
 #undef EXPIRATION_DATE_STR
 
+/* Define to 1 to build with time_series extension. (--enable-time-series) */
+#undef USE_TIME_SERIES
+
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 

@@ -1,0 +1,6 @@
+# time_series extension
+comment = 'time series functions (time_bucket, gapfill) for CloudberryDB'
+default_version = '1.0'
+module_pathname = '$libdir/time_series'
+schema = 'time_series'
+relocatable = false

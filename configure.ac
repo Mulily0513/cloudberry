@@ -1093,6 +1093,16 @@ AC_MSG_RESULT([checking whether to build with perfmon support ... $enable_perfmo
 AC_SUBST(enable_perfmon)
 
 #
+# time_series support
+#
+PGAC_ARG_BOOL(enable, time-series, yes,
+              [enable time_series extension],
+              [AC_DEFINE(USE_TIME_SERIES, 1,
+                         [Define to 1 to support time_series])])
+AC_MSG_RESULT([checking whether to build with time_series support ... $enable_time_series])
+AC_SUBST(enable_time_series)
+
+#
 # Include directories
 #
 ac_save_IFS=$IFS

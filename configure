@@ -752,6 +752,7 @@ with_icu
 enable_thread_safety
 with_thirdparty
 INCLUDES
+enable_time_series
 enable_perfmon
 enable_gophermeta
 enable_dfs_tablespace
@@ -926,6 +927,7 @@ enable_datalake
 enable_dfs_tablespace
 enable_gophermeta
 enable_perfmon
+enable_time_series
 enable_thread_safety
 with_icu
 with_tcl
@@ -1667,6 +1669,7 @@ Optional Features:
   --enable-dfs-tablespace enable preload dfs-tablespace
   --enable-gophermeta     enable preload gophermeta
   --enable-perfmon        enable perfmon support
+  --enable-time-series    enable time_series extension
   --disable-thread-safety disable thread-safety in client libraries
   --enable-openssl-redirect
                           enable redirect openssl interface to internal
@@ -11075,6 +11078,40 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: checking whether to build with perfmon support ... $enable_perfmon" >&5
 $as_echo "checking whether to build with perfmon support ... $enable_perfmon" >&6; }
+
+
+#
+# time_series support
+#
+
+
+# Check whether --enable-time-series was given.
+if test "${enable_time_series+set}" = set; then :
+  enableval=$enable_time_series;
+  case $enableval in
+    yes)
+
+$as_echo "#define USE_TIME_SERIES 1" >>confdefs.h
+
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --enable-time-series option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  enable_time_series=yes
+
+$as_echo "#define USE_TIME_SERIES 1" >>confdefs.h
+
+fi
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: checking whether to build with time_series support ... $enable_time_series" >&5
+$as_echo "checking whether to build with time_series support ... $enable_time_series" >&6; }
 
 
 #

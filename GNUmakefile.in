@@ -171,6 +171,9 @@ ICW_TARGETS += gpcontrib gpMgmt/bin
 ifeq ($(enable_perfmon), yes)
 ICW_TARGETS += contrib/perfmon
 endif
+ifeq ($(enable_time_series), yes)
+ICW_TARGETS += contrib/time_series
+endif
 
 $(call recurse,installcheck-world,src/test src/pl src/interfaces/ecpg $(ICW_TARGETS) src/bin,installcheck)
 $(call recurse,install-tests,src/test/regress,install-tests)

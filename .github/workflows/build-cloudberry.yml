@@ -268,7 +268,8 @@ jobs:
                                "contrib/tablefunc:installcheck",
                                "contrib/passwordcheck:installcheck",
                                "contrib/pg_buffercache:installcheck",
-                               "contrib/sslinfo:installcheck"]
+                               "contrib/sslinfo:installcheck",
+                               "contrib/time_series:installcheck-ci"]
               },
               {"test":"ic-gpcontrib",
                "make_configs":["gpcontrib/orafce:installcheck",

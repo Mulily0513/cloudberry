@@ -161,6 +161,7 @@ execute_cmd ./configure --prefix=${BUILD_DESTINATION} \
             --enable-pax \
             --disable-pxf \
             --enable-tap-tests \
+            --enable-time-series \
             ${CONFIGURE_DEBUG_OPTS} \
             --with-gssapi \
             --with-ldap \

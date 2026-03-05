@@ -66,7 +66,6 @@ SUBDIRS += \
 		extprotocol \
 		indexscan  \
 		file_content
-		
 
 ifeq ($(with_ssl),openssl)
 SUBDIRS += sslinfo
@@ -119,7 +118,7 @@ endif
 ifeq ($(enable_gophermeta),yes)
 SUBDIRS += pg_gophermeta
 else
-ALWAYS_SUBDIRS += pg_gophermeta 
+ALWAYS_SUBDIRS += pg_gophermeta
 endif
 
 ifeq ($(enable_dfs_tablespace),yes)
@@ -150,6 +149,12 @@ ifeq ($(enable_vbf),yes)
 SUBDIRS += vbf
 else
 ALWAYS_SUBDIRS += vbf
+endif
+
+ifeq ($(enable_time_series),yes)
+SUBDIRS += time_series
+else
+ALWAYS_SUBDIRS += time_series
 endif
 
 # Missing:
