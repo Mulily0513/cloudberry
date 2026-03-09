@@ -25,6 +25,7 @@ TARGET_BRANCH=""  # --target value
 STAGED=false      # --staged flag
 DIFF_ONLY=false   # --diff-only flag
 DIFF=""           # computed diff content
+USE_SKILL=false   # true if .claude/skills/code-review exists
 
 # ---------------------------------------------------------------------------
 # CLI parsing
@@ -327,6 +328,45 @@ if threads:
 print("\n\n".join(sections) if sections else "")
 PYEOF
 
+  # Extract unresolved inline discussions with IDs (for auto-resolution)
+  echo "==> Extracting unresolved inline discussions..."
+  python3 - <(echo "$all_discussions") <<'PYEOF' > "${WORK_DIR}/unresolved_discussions.json"
+import json, sys
+
+discussions = json.load(open(sys.argv[1]))
+unresolved = []
+
+for disc in discussions:
+    if disc.get("individual_note", False):
+        continue
+    disc_notes = disc.get("notes", [])
+    if not disc_notes:
+        continue
+    first = disc_notes[0]
+    # Only include resolved == false discussions
+    if first.get("resolved") is not False:
+        continue
+    pos = first.get("position") or {}
+    if not (pos.get("new_path") and pos.get("new_line")):
+        continue
+    replies = []
+    for reply in disc_notes[1:]:
+        replies.append({
+            "author": reply.get("author", {}).get("name", "unknown"),
+            "body": (reply.get("body") or "").strip()
+        })
+    unresolved.append({
+        "discussion_id": disc.get("id"),
+        "file": pos["new_path"],
+        "line": pos["new_line"],
+        "body": (first.get("body") or "").strip(),
+        "author": first.get("author", {}).get("name", "unknown"),
+        "replies": replies
+    })
+
+json.dump(unresolved, sys.stdout, indent=2)
+PYEOF
+
   # Related issue descriptions (from #NNN references in MR description)
   if [[ -n "$mr_desc" ]]; then
     local issue_ids
@@ -381,6 +421,11 @@ CTXEOF
       printf '\n## Existing Review Comments (for deduplication)\n' >> "${WORK_DIR}/review-context.md"
       printf '\n- \`%s/existing_reviews.txt\` — Previous AI review summaries and all existing inline comments on this MR. Do NOT repeat any finding already covered here.\n' "$WORK_DIR" >> "${WORK_DIR}/review-context.md"
     fi
+    if [[ -s "${WORK_DIR}/unresolved_discussions.json" ]] && \
+       python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d else 1)" "${WORK_DIR}/unresolved_discussions.json" 2>/dev/null; then
+      printf '\n## Unresolved Discussions (for auto-resolution)\n' >> "${WORK_DIR}/review-context.md"
+      printf '\n- \`%s/unresolved_discussions.json\` — Previously raised inline discussions that are still unresolved. Each entry has a \`discussion_id\`. Evaluate whether the current diff has fixed the issue described. If it has been fixed, include its \`discussion_id\` in the \`resolved_discussions\` array of your output.\n' "$WORK_DIR" >> "${WORK_DIR}/review-context.md"
+    fi
 
     for issue_file in "${WORK_DIR}"/issue_*.txt; do
       [[ -f "$issue_file" ]] || continue
@@ -391,8 +436,38 @@ CTXEOF
   fi
 
   # --- Build system prompt ---
-  cat > "${WORK_DIR}/system_prompt.txt" <<'SYSTEM_EOF'
+  # Check if a project-specific code-review skill exists; if so, instruct
+  # Claude to invoke it via the Skill tool instead of using generic rules.
+  local skill_file="${PROJECT_ROOT}/.claude/skills/code-review/SKILL.md"
+  if [[ -f "$skill_file" ]]; then
+    USE_SKILL=true
+    echo "==> Found project 'code-review' skill — Claude will invoke it."
+    cat > "${WORK_DIR}/system_prompt.txt" <<'SKILL_EOF'
+You are a code reviewer. Before starting your review, use the /code-review
+skill to load project-specific review instructions, then follow those
+instructions when performing your review.
+SKILL_EOF
+  else
+    cat > "${WORK_DIR}/system_prompt.txt" <<'REVIEW_EOF'
 You are an expert code reviewer.
+
+Focus on:
+- Bugs, logic errors, and potential runtime failures
+- Security vulnerabilities (injection, auth issues, data exposure)
+- Performance problems (N+1 queries, unnecessary allocations, missing indexes)
+- Concurrency issues (race conditions, missing synchronization)
+- Resource leaks (unclosed streams, connections, file handles)
+- API contract violations or backward-incompatible changes
+
+Do NOT comment on:
+- Style preferences, formatting, or naming conventions
+- Missing documentation or comments
+- Minor refactoring suggestions that don't affect correctness
+REVIEW_EOF
+  fi
+
+  # Append common mechanics (context reading, dedup) and output format
+  cat >> "${WORK_DIR}/system_prompt.txt" <<'FORMAT_EOF'
 
 Start by reading review-context.md — it is an index file that lists all the
 files you need to read for this review, including:
@@ -410,18 +485,20 @@ or at a slightly different line in the same file. Only report genuinely NEW
 findings not already raised. If every finding you would report is already
 covered, return an empty summary ("") and an empty comments array.
 
-Focus on:
-- Bugs, logic errors, and potential runtime failures
-- Security vulnerabilities (injection, auth issues, data exposure)
-- Performance problems (N+1 queries, unnecessary allocations, missing indexes)
-- Concurrency issues (race conditions, missing synchronization)
-- Resource leaks (unclosed streams, connections, file handles)
-- API contract violations or backward-incompatible changes
+RESOLUTION: If review-context.md includes an "Unresolved Discussions" section,
+read the JSON file it references. For each unresolved discussion, check whether
+the current diff has fixed the reported issue. If the issue is fixed (the
+problematic code has been corrected or removed), include its discussion_id in
+the "resolved_discussions" array of your output. Only mark a discussion as
+resolved if you are confident the issue has actually been addressed.
 
-Do NOT comment on:
-- Style preferences, formatting, or naming conventions
-- Missing documentation or comments
-- Minor refactoring suggestions that don't affect correctness
+For each issue you find, provide a fix:
+- If the issue can be fixed with a simple code change (one or a few lines), provide
+  the exact replacement code in the "suggestion" field. The suggestion must contain
+  ONLY the replacement source code (no diff markers, no explanations). It replaces
+  the original lines starting at "line" for "suggestion_lines" lines (see below).
+- If the fix is more complex (architectural change, multi-file refactor, etc.),
+  leave "suggestion" as null and describe the recommended fix approach in "body".
 
 Output ONLY valid JSON (no markdown fences, no extra text) in this exact format:
 {
@@ -430,23 +507,38 @@ Output ONLY valid JSON (no markdown fences, no extra text) in this exact format:
     {
       "file": "path/to/file",
       "line": 42,
-      "body": "Description of the issue and suggested fix."
+      "body": "Description of the issue.",
+      "suggestion": "corrected code that replaces the original line(s)",
+      "suggestion_lines": 1
     }
-  ]
+  ],
+  "resolved_discussions": ["discussion_id_1", "discussion_id_2"]
 }
 
 Rules for the comments array:
 - "file" must be the exact path shown in the diff (after b/)
 - "line" must be the source-file line number shown in the LEFT margin of the annotated diff (the number before the tab character on each line). Do NOT count line positions within the diff file itself.
-- "body" should be concise but actionable
+- "body" should be concise but actionable — explain the issue clearly
+- "suggestion" should contain the corrected source code that replaces the original
+  lines, or null if the fix is too complex for a simple replacement. Do NOT include
+  diff markers (+/-), line numbers, or explanatory text in the suggestion — only
+  the raw replacement code.
+- "suggestion_lines" is the number of original lines (starting at "line") that the
+  suggestion replaces. Defaults to 1. For example, if lines 10-12 should be replaced,
+  set "line": 10 and "suggestion_lines": 3.
 - If there are no issues, return an empty comments array
 - Only include substantive issues, not nitpicks
-SYSTEM_EOF
+- "resolved_discussions" is an array of discussion IDs from the unresolved
+  discussions JSON whose issues have been fixed in the current diff. Omit or
+  use an empty array if no previously raised issues have been fixed.
+FORMAT_EOF
 }
 
 # ---------------------------------------------------------------------------
 # Claude invocation
 # ---------------------------------------------------------------------------
+MAX_RETRIES="${MAX_RETRIES:-3}"
+
 call_claude() {
   echo "==> Running Claude Code review (${MODE} mode)..."
   # Read tool is restricted to WORK_DIR/**. All untrusted content is in files,
@@ -457,21 +549,76 @@ call_claude() {
   # Unset CLAUDECODE to allow running inside an existing Claude Code session.
   unset CLAUDECODE 2>/dev/null || true
 
-  if [[ "$MODE" == "dev" ]]; then
-    # Run from WORK_DIR to avoid conflicting with an interactive Claude Code
-    # session that may be open in the project directory.
-    CLAUDE_OUTPUT=$(cd "$WORK_DIR" && claude -p "Read ${WORK_DIR}/review-context.md and review the code." \
-      --output-format json \
-      --allowedTools "Read(/${WORK_DIR}/**)" \
-      --append-system-prompt-file "${WORK_DIR}/system_prompt.txt" \
-      2>"${WORK_DIR}/claude_stderr.log" || true)
-  else
-    CLAUDE_OUTPUT=$(claude -p "Read ${WORK_DIR}/review-context.md and review the code." \
-      --output-format json \
-      --allowedTools "Read(/${WORK_DIR}/**)" \
-      --append-system-prompt-file "${WORK_DIR}/system_prompt.txt" \
-      2>"${WORK_DIR}/claude_stderr.log" || true)
-  fi
+  local attempt=0
+  local delay=5
+
+  while (( attempt < MAX_RETRIES )); do
+    attempt=$((attempt + 1))
+    if (( attempt > 1 )); then
+      echo "==> Retry ${attempt}/${MAX_RETRIES} after ${delay}s..."
+      sleep "$delay"
+      delay=$((delay * 2))
+    fi
+
+    # Build allowed tools list — always allow Read on WORK_DIR; add Skill
+    # tool when a code-review skill is available.
+    local allowed_tools=("Read(/${WORK_DIR}/**)")
+    if [[ "$USE_SKILL" == true ]]; then
+      allowed_tools+=("Skill(code-review)")
+    fi
+    local tools_args=()
+    for tool in "${allowed_tools[@]}"; do
+      tools_args+=(--allowedTools "$tool")
+    done
+
+    if [[ "$MODE" == "dev" ]]; then
+      # Run from WORK_DIR to avoid conflicting with an interactive Claude Code
+      # session that may be open in the project directory.
+      CLAUDE_OUTPUT=$(cd "$WORK_DIR" && claude -p "Read ${WORK_DIR}/review-context.md and review the code." \
+        --output-format json \
+        "${tools_args[@]}" \
+        --append-system-prompt-file "${WORK_DIR}/system_prompt.txt" \
+        2>"${WORK_DIR}/claude_stderr.log" || true)
+    else
+      CLAUDE_OUTPUT=$(claude -p "Read ${WORK_DIR}/review-context.md and review the code." \
+        --output-format json \
+        "${tools_args[@]}" \
+        --append-system-prompt-file "${WORK_DIR}/system_prompt.txt" \
+        2>"${WORK_DIR}/claude_stderr.log" || true)
+    fi
+
+    # Check for empty output
+    if [[ -z "$CLAUDE_OUTPUT" ]]; then
+      echo "WARNING: Claude Code returned empty output (attempt ${attempt}/${MAX_RETRIES})."
+      if [[ -s "${WORK_DIR}/claude_stderr.log" ]]; then
+        echo "  stderr: $(head -5 "${WORK_DIR}/claude_stderr.log")"
+      fi
+      continue
+    fi
+
+    # Check for error response
+    local is_error
+    is_error=$(echo "$CLAUDE_OUTPUT" | jq -r '.is_error // false' 2>/dev/null || echo "false")
+    if [[ "$is_error" == "true" ]]; then
+      local error_msg
+      error_msg=$(echo "$CLAUDE_OUTPUT" | jq -r '.result // "unknown error"' 2>/dev/null)
+      echo "WARNING: Claude Code returned error (attempt ${attempt}/${MAX_RETRIES}): ${error_msg}"
+      continue
+    fi
+
+    # Validate output is parseable JSON
+    if ! echo "$CLAUDE_OUTPUT" | jq . >/dev/null 2>&1; then
+      echo "WARNING: Claude Code returned invalid JSON (attempt ${attempt}/${MAX_RETRIES})."
+      continue
+    fi
+
+    # Success
+    echo "==> Claude Code completed (attempt ${attempt})."
+    return
+  done
+
+  # All retries exhausted — let parse_review_json handle the final error reporting
+  echo "ERROR: Claude Code failed after ${MAX_RETRIES} attempts."
 }
 
 # ---------------------------------------------------------------------------
@@ -549,7 +696,7 @@ parse_review_json() {
 
   if [[ -n "$json_substring" ]] && echo "$json_substring" | jq -e '.summary' >/dev/null 2>&1; then
     REVIEW_JSON="$json_substring"
-    echo "==> Review JSON extracted from result text (prose prefix stripped)."
+    echo "==> Review JSON parsed successfully."
     return
   fi
 
@@ -660,10 +807,12 @@ PYEOF
   local failed=0
 
   for i in $(seq 0 $((num_comments - 1))); do
-    local file line body is_valid
+    local file line body suggestion suggestion_lines is_valid
     file=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].file")
     line=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].line")
     body=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].body")
+    suggestion=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].suggestion // empty")
+    suggestion_lines=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].suggestion_lines // 1")
 
     # Validate that this (file, line) is in the diff, snap to the nearest
     # valid line, and get old_path/old_line for renamed files and context lines.
@@ -691,10 +840,36 @@ else:
     : "${line:=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].line")}"
     old_line=$(echo "$validation_result" | jq -r '.old_line // empty')
 
+    # Build comment body: append GitLab suggestion block if a suggestion exists
+    local full_body="$body"
+    if [[ -n "$suggestion" ]]; then
+      # GitLab suggestion syntax: ```suggestion:-N+M where N = lines above, M = lines below
+      # We want to replace suggestion_lines lines starting at the commented line.
+      # The comment is placed on 'line', so we need to cover (suggestion_lines - 1)
+      # additional lines below it.
+      local lines_below
+      lines_below=$(( suggestion_lines > 1 ? suggestion_lines - 1 : 0 ))
+      full_body="${body}
+
+\`\`\`suggestion:-0+${lines_below}
+${suggestion}
+\`\`\`"
+    fi
+
     if [[ "$is_valid" != "true" ]]; then
       echo "  Inline comment on ${file}:${line} not in diff — appending to summary."
+      # Use $body (not $full_body) — GitLab suggestion blocks don't render
+      # in regular discussion notes, only in inline diff comments.
+      local overflow_body="$body"
+      if [[ -n "$suggestion" ]]; then
+        overflow_body="${body}
+
+\`\`\`
+${suggestion}
+\`\`\`"
+      fi
       overflow_comments="${overflow_comments}
-- **${file}:${line}** — ${body}"
+- **${file}:${line}** — ${overflow_body}"
       continue
     fi
 
@@ -705,7 +880,7 @@ else:
     # ignores — it needs a nested {"position": {"new_line": N}} structure.
     local request_body
     request_body=$(jq -n \
-      --arg body "$body" \
+      --arg body "$full_body" \
       --arg base_sha "$base_sha" \
       --arg head_sha "$head_sha" \
       --arg start_sha "$start_sha" \
@@ -733,8 +908,17 @@ else:
         posted=$((posted + 1))
       } || {
         echo "  WARNING: Failed to post inline comment on ${file}:${line} — appending to summary."
+        # Use $body (not $full_body) — suggestion blocks don't render in notes.
+        local fail_body="$body"
+        if [[ -n "$suggestion" ]]; then
+          fail_body="${body}
+
+\`\`\`
+${suggestion}
+\`\`\`"
+        fi
         overflow_comments="${overflow_comments}
-- **${file}:${line}** — ${body}"
+- **${file}:${line}** — ${fail_body}"
         failed=$((failed + 1))
       }
   done
@@ -752,7 +936,34 @@ ${overflow_comments}"
     }
   fi
 
-  echo "==> Done. Posted ${posted} inline comment(s), ${failed} failed, ${num_comments} total."
+  # --- Auto-resolve fixed discussion threads ---
+  local resolved_ids resolved_count=0 resolve_failed=0
+  resolved_ids=$(echo "$REVIEW_JSON" | jq -r '.resolved_discussions // [] | .[]' 2>/dev/null || true)
+  if [[ -n "$resolved_ids" ]]; then
+    echo "==> Resolving fixed discussion threads..."
+    while IFS= read -r disc_id; do
+      [[ -z "$disc_id" ]] && continue
+      [[ "$disc_id" =~ ^[0-9a-f]+$ ]] || { echo "  WARNING: Skipping invalid discussion ID ${disc_id}"; continue; }
+      # Leave a reply noting the issue has been fixed
+      jq -n --arg body "This issue has been addressed in the latest commit." '{body: $body}' | \
+        glab api --method POST \
+        "projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/discussions/${disc_id}/notes" \
+        -H "Content-Type: application/json" \
+        --input - >/dev/null 2>&1 || true
+      if echo '{"resolved": true}' | glab api --method PUT \
+        "projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/discussions/${disc_id}" \
+        -H "Content-Type: application/json" \
+        --input - >/dev/null 2>&1; then
+        echo "  Resolved discussion ${disc_id}"
+        resolved_count=$((resolved_count + 1))
+      else
+        echo "  WARNING: Failed to resolve discussion ${disc_id}"
+        resolve_failed=$((resolve_failed + 1))
+      fi
+    done <<< "$resolved_ids"
+  fi
+
+  echo "==> Done. Posted ${posted} inline comment(s), ${failed} failed, ${num_comments} total. Resolved ${resolved_count} discussion(s), ${resolve_failed} failed."
 }
 
 # ---------------------------------------------------------------------------
@@ -771,6 +982,9 @@ output_dev() {
   printf '%s\n' "$summary"
   printf '\n'
 
+  # ANSI colors for suggestions
+  local GREEN='\033[0;32m'
+
   if (( num_comments > 0 )); then
     printf '%b──────────────────────────────────────────────────────────%b\n' "$BOLD" "$RESET"
     printf '%b  Inline Comments (%d)%b\n' "$BOLD" "$num_comments" "$RESET"
@@ -778,14 +992,20 @@ output_dev() {
     printf '\n'
 
     for i in $(seq 0 $((num_comments - 1))); do
-      local file line body
+      local file line body suggestion
       file=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].file")
       line=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].line")
       body=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].body")
+      suggestion=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].suggestion // empty")
 
       printf '%b[%d]%b %b%s:%s%b\n' "$BOLD" "$((i + 1))" "$RESET" "$CYAN" "$file" "$line" "$RESET"
       # Indent the body text
       echo "$body" | sed 's/^/    /'
+      # Show suggestion if available
+      if [[ -n "$suggestion" ]]; then
+        printf '\n    %bSuggested fix:%b\n' "$GREEN" "$RESET"
+        echo "$suggestion" | sed 's/^/    | /'
+      fi
       printf '\n'
     done
   fi
@@ -799,11 +1019,15 @@ output_dev() {
     if (( num_comments > 0 )); then
       printf '## Inline Comments (%d)\n\n' "$num_comments"
       for i in $(seq 0 $((num_comments - 1))); do
-        local f l b
+        local f l b s
         f=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].file")
         l=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].line")
         b=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].body")
+        s=$(echo "$REVIEW_JSON" | jq -r ".comments[$i].suggestion // empty")
         printf '### %d. `%s:%s`\n\n%s\n\n' "$((i + 1))" "$f" "$l" "$b"
+        if [[ -n "$s" ]]; then
+          printf '**Suggested fix:**\n\n```\n%s\n```\n\n' "$s"
+        fi
       done
     fi
   } > "${WORK_DIR}/review_result.md"
