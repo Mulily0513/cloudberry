@@ -11,7 +11,7 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 MAX_DIFF_SIZE=102400  # 100 KB
-PROJECT_ROOT=$(git rev-parse --show-toplevel)
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # ANSI colors
 BOLD='\033[1m'
@@ -191,49 +191,29 @@ truncate_diff() {
 ... [diff truncated — showing first ${MAX_DIFF_SIZE} bytes] ..."
   fi
 
-  # Write raw diff (used later for valid_lines extraction).
+  # Write raw diff (used later for valid_lines extraction and Claude review).
   printf '%s' "$DIFF" > "${WORK_DIR}/diff.txt"
+}
 
-  # Write annotated diff for Claude. Each diff line is prefixed with the
-  # actual new-file line number (or blank for metadata/deleted lines) so
-  # Claude reports correct source-file line numbers instead of diff-file
-  # line numbers.
-  python3 - "${WORK_DIR}/diff.txt" <<'PYEOF' > "${WORK_DIR}/diff_annotated.txt"
-import sys, re
+# ---------------------------------------------------------------------------
+# Modified file path extraction
+# ---------------------------------------------------------------------------
+MODIFIED_FILES=()  # paths relative to repo root, populated by collect_modified_paths
 
-for line in open(sys.argv[1]):
-    line = line.rstrip('\n')
-    m = re.match(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)', line)
-    if m:
-        old_n = int(m.group(1))
-        new_n = int(m.group(2))
-        print(line)
-        continue
-    if line.startswith('diff --git ') or line.startswith('index ') or \
-       line.startswith('--- ') or line.startswith('+++ ') or \
-       line.startswith('old mode ') or line.startswith('new mode ') or \
-       line.startswith('similarity ') or line.startswith('rename ') or \
-       line.startswith('new file ') or line.startswith('deleted file '):
-        print(line)
-        continue
-    try:
-        _ = new_n  # will raise if no hunk seen yet
-    except NameError:
-        print(line)
-        continue
-    if line.startswith('+'):
-        print(f"{new_n:>6}\t{line}")
-        new_n += 1
-    elif line.startswith('-'):
-        print(f"      \t{line}")
-        old_n += 1
-    elif line.startswith('\\'):
-        print(f"      \t{line}")
-    else:
-        print(f"{new_n:>6}\t{line}")
-        new_n += 1
-        old_n += 1
-PYEOF
+collect_modified_paths() {
+  # Extract modified file paths from the diff (b/ side). These are listed in
+  # review-context.md so Claude can Read them directly from the project tree.
+  local files
+  files=$(grep -oE '^diff --git a/.+ b/(.+)$' "${WORK_DIR}/diff.txt" \
+    | sed 's|^diff --git a/.* b/||' | sort -u || true)
+
+  [[ -z "$files" ]] && return
+
+  while IFS= read -r filepath; do
+    [[ -z "$filepath" ]] && continue
+    # Only include files that exist on disk (skip deletions)
+    [[ -f "${PROJECT_ROOT}/${filepath}" ]] && MODIFIED_FILES+=("$filepath")
+  done <<< "$files"
 }
 
 # ---------------------------------------------------------------------------
@@ -393,7 +373,8 @@ build_prompt() {
   # Review instructions go into a system prompt file (trusted).
   # All untrusted content (diff, MR context) lives in separate files under
   # WORK_DIR/. A review-context.md describes the file structure so Claude
-  # knows what to read. The Read tool is restricted to WORK_DIR/** only.
+  # knows what to read. The Read tool has access to WORK_DIR/** and
+  # PROJECT_ROOT/** (for reading full source files).
 
   # --- Build review-context.md ---
   cat > "${WORK_DIR}/review-context.md" <<CTXEOF
@@ -401,8 +382,16 @@ build_prompt() {
 
 ## Diff (required)
 
-- \`${WORK_DIR}/diff_annotated.txt\` — The annotated git diff to review. Each changed line is prefixed with its actual source-file line number. Use these prefixed numbers for the "line" field in your review comments.
+- \`${WORK_DIR}/diff.txt\` — The raw git diff to review.
 CTXEOF
+
+  if (( ${#MODIFIED_FILES[@]} > 0 )); then
+    printf '\n## Full Source Files\n\n' >> "${WORK_DIR}/review-context.md"
+    printf 'Full contents of modified files. Read these to determine exact line numbers for review comments.\n\n' >> "${WORK_DIR}/review-context.md"
+    for mf in "${MODIFIED_FILES[@]}"; do
+      printf -- '- \`%s/%s\` — \`%s\`\n' "$PROJECT_ROOT" "$mf" "$mf" >> "${WORK_DIR}/review-context.md"
+    done
+  fi
 
   # Gather MR context into separate files (pipeline mode only)
   if [[ "$MODE" == "pipeline" ]]; then
@@ -443,13 +432,15 @@ CTXEOF
     USE_SKILL=true
     echo "==> Found project 'code-review' skill — Claude will invoke it."
     cat > "${WORK_DIR}/system_prompt.txt" <<'SKILL_EOF'
-You are a code reviewer. Before starting your review, use the /code-review
-skill to load project-specific review instructions, then follow those
-instructions when performing your review.
+You are invoked by the code-review.sh script to perform an automated code
+review. Before starting your review, use the /code-review skill to load
+project-specific review instructions, then follow those instructions when
+performing your review.
 SKILL_EOF
   else
     cat > "${WORK_DIR}/system_prompt.txt" <<'REVIEW_EOF'
-You are an expert code reviewer.
+You are invoked by the code-review.sh script to perform an automated code
+review. You are an expert code reviewer.
 
 Focus on:
 - Bugs, logic errors, and potential runtime failures
@@ -517,7 +508,7 @@ Output ONLY valid JSON (no markdown fences, no extra text) in this exact format:
 
 Rules for the comments array:
 - "file" must be the exact path shown in the diff (after b/)
-- "line" must be the source-file line number shown in the LEFT margin of the annotated diff (the number before the tab character on each line). Do NOT count line positions within the diff file itself.
+- "line" must be the exact source-file line number. Look up the code in the full source files listed in review-context.md to determine the correct line number. Do NOT guess from diff hunk offsets.
 - "body" should be concise but actionable — explain the issue clearly
 - "suggestion" should contain the corrected source code that replaces the original
   lines, or null if the fix is too complex for a simple replacement. Do NOT include
@@ -541,8 +532,8 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 
 call_claude() {
   echo "==> Running Claude Code review (${MODE} mode)..."
-  # Read tool is restricted to WORK_DIR/**. All untrusted content is in files,
-  # not in the prompt. Stderr is captured for debugging.
+  # Read tool has access to WORK_DIR/** (review artifacts) and PROJECT_ROOT/**
+  # (full source files). All untrusted content is in files, not in the prompt.
   # NOTE: The double-slash in "Read(/${WORK_DIR}/**)" is intentional — WORK_DIR
   # is an absolute path starting with /, so the result is "Read(//abs/path/**)"
   # which uses gitignore-style // prefix to denote an absolute path.
@@ -560,9 +551,9 @@ call_claude() {
       delay=$((delay * 2))
     fi
 
-    # Build allowed tools list — always allow Read on WORK_DIR; add Skill
-    # tool when a code-review skill is available.
-    local allowed_tools=("Read(/${WORK_DIR}/**)")
+    # Build allowed tools list — allow Read on WORK_DIR (review artifacts)
+    # and PROJECT_ROOT (full source files); add Skill tool when available.
+    local allowed_tools=("Read(/${WORK_DIR}/**)" "Read(/${PROJECT_ROOT}/**)")
     if [[ "$USE_SKILL" == true ]]; then
       allowed_tools+=("Skill(code-review)")
     fi
@@ -821,8 +812,8 @@ PYEOF
 import json, sys
 valid = json.load(open(sys.argv[3]))
 file, line = sys.argv[1], int(sys.argv[2])
-# Accept the exact line or nearby lines in the same file (within 3 lines)
-matches = [v for v in valid if v['file'] == file and abs(v['line'] - line) <= 3]
+# Accept the exact line or nearby lines in the same file (within 1 line)
+matches = [v for v in valid if v['file'] == file and abs(v['line'] - line) <= 1]
 if matches:
     best = min(matches, key=lambda v: abs(v['line'] - line))
     print(json.dumps({'valid': True, 'old_file': best.get('old_file', file),
@@ -1065,6 +1056,7 @@ main() {
   echo "==> Work directory: ${WORK_DIR}"
 
   truncate_diff
+  collect_modified_paths
   build_prompt
   call_claude
   parse_review_json
