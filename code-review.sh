@@ -114,7 +114,10 @@ detect_mode() {
 # piping), then reads at most MAX_DIFF_SIZE+1 bytes into DIFF.
 run_capped_diff() {
   local tmp
-  tmp=$(mktemp)
+  if ! tmp=$(mktemp); then
+    echo "ERROR: mktemp failed — cannot create temporary file."
+    exit 1
+  fi
   trap "rm -f '$tmp'" RETURN
   if ! git diff "$@" > "$tmp"; then
     echo "ERROR: git diff failed."
@@ -132,7 +135,10 @@ compute_diff_pipeline() {
   done
 
   echo "==> Fetching target branch and computing diff..."
-  git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+  if ! git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"; then
+    echo "ERROR: git fetch failed for branch '${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}'."
+    exit 1
+  fi
   run_capped_diff "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD"
 }
 
@@ -166,11 +172,12 @@ compute_diff_dev() {
 truncate_diff() {
   # Check if head -c in run_capped_diff actually truncated the output.
   # This must happen before binary stripping, which may reduce the size.
-  # NOTE: ${#DIFF} counts characters, head -c counts bytes. For multi-byte
-  # UTF-8 diffs, character count may be less than byte count, potentially
-  # missing the truncation. This is acceptable for typical code diffs.
+  # Use byte count (wc -c) to match head -c's byte-level truncation;
+  # ${#DIFF} counts characters which undercounts for multi-byte UTF-8 diffs.
   local was_capped=false
-  if (( ${#DIFF} > MAX_DIFF_SIZE )); then
+  local byte_count
+  byte_count=$(printf '%s' "$DIFF" | wc -c)
+  if (( byte_count > MAX_DIFF_SIZE )); then
     was_capped=true
   fi
 
@@ -186,7 +193,15 @@ truncate_diff() {
 
   if [[ "$was_capped" == true ]]; then
     echo "WARNING: Diff exceeded ${MAX_DIFF_SIZE} bytes. Truncating."
-    DIFF="${DIFF:0:$MAX_DIFF_SIZE}
+    DIFF="${DIFF:0:$MAX_DIFF_SIZE}"
+    # Remove the last (likely incomplete) line to avoid truncated file paths
+    # or malformed diff hunks that confuse downstream parsing.
+    local removed_tail="${DIFF##*$'\n'}"
+    DIFF="${DIFF%$'\n'*}"
+    if [[ -n "$removed_tail" ]]; then
+      echo "WARNING: Stripped incomplete trailing line: ${removed_tail:0:120}..."
+    fi
+    DIFF="${DIFF}
 
 ... [diff truncated — showing first ${MAX_DIFF_SIZE} bytes] ..."
   fi
@@ -207,12 +222,16 @@ collect_modified_paths() {
   files=$(grep -oE '^diff --git a/.+ b/(.+)$' "${WORK_DIR}/diff.txt" \
     | sed 's|^diff --git a/.* b/||' | sort -u || true)
 
-  [[ -z "$files" ]] && return
+  if [[ -z "$files" ]]; then
+    return
+  fi
 
   while IFS= read -r filepath; do
     [[ -z "$filepath" ]] && continue
     # Only include files that exist on disk (skip deletions)
-    [[ -f "${PROJECT_ROOT}/${filepath}" ]] && MODIFIED_FILES+=("$filepath")
+    if [[ -f "${PROJECT_ROOT}/${filepath}" ]]; then
+      MODIFIED_FILES+=("$filepath")
+    fi
   done <<< "$files"
 }
 
@@ -221,6 +240,14 @@ collect_modified_paths() {
 # ---------------------------------------------------------------------------
 gather_mr_context() {
   # Writes each piece of MR context to its own file in WORK_DIR.
+
+  # Validate glab authentication — GITLAB_TOKEN (or GLAB_TOKEN) must be set for
+  # API calls to work. The step_script in GitLab CI sets GITLAB_TOKEN, but if it
+  # is missing for any reason we skip MR context gathering rather than crashing.
+  if [[ -z "${GITLAB_TOKEN:-}" ]] && [[ -z "${GLAB_TOKEN:-}" ]]; then
+    echo "WARNING: Neither GITLAB_TOKEN nor GLAB_TOKEN is set — skipping MR context gathering."
+    return
+  fi
 
   # MR description
   local mr_json mr_desc=""
@@ -1052,7 +1079,10 @@ main() {
 
   # Set up work directory under project root
   WORK_DIR="${PROJECT_ROOT}/review/$(date +%Y%m%d_%H%M%S)_$$"
-  mkdir -p "$WORK_DIR"
+  if ! mkdir -p "$WORK_DIR"; then
+    echo "ERROR: Failed to create work directory '${WORK_DIR}'."
+    exit 1
+  fi
   echo "==> Work directory: ${WORK_DIR}"
 
   truncate_diff
