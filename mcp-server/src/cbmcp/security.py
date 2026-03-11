@@ -30,7 +30,7 @@ class SQLValidator:
     
     # Allowed SQL operations for safety
     ALLOWED_OPERATIONS: Set[str] = {
-        "SELECT", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "PRAGMA"
+        "SELECT", "WITH", "SHOW", "EXPLAIN"
     }
     
     # Blocked SQL operations
