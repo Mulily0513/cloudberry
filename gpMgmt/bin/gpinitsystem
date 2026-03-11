@@ -1482,14 +1482,43 @@ CREATE_SEGMENT () {
 
 REGISTER_MIRRORS () {
 		LOG_MSG "[INFO]:-Start Function $FUNCNAME"
-		for I in "${QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[@]}"
-		do
+
+		# Register all mirrors in one transaction via pipe to psql stdin,
+		# so that DTX recovery never sees a partial mirror registration state.
+		LOG_MSG "[INFO]:-Registering ${#QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[@]} mirrors in a single transaction"
+		DBID_OUTPUT=`(
+			$ECHO "BEGIN;"
+			for I in "${QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[@]}"
+			do
+				SET_VAR $I
+				GP_HOSTNAME=$GP_HOSTADDRESS
+				$ECHO "SELECT pg_catalog.gp_add_segment_mirror(${GP_CONTENT}::int2, '${GP_HOSTNAME}', '${GP_HOSTADDRESS}', ${GP_PORT}, '${GP_DIR}');"
+			done
+			$ECHO "COMMIT;"
+		) | env PGOPTIONS="-c gp_role=utility" $PSQL -p $COORDINATOR_PORT -d "${DEFAULTDB}" -X -A -t -v ON_ERROR_STOP=1 2>>${LOG_FILE}`
+		RETVAL=$?
+		if [ $RETVAL -ne 0 ]; then
+			LOG_MSG "[FATAL]:-Failed to register mirrors, psql exit code=${RETVAL}"
+			LOG_MSG "[FATAL]:-psql output: ${DBID_OUTPUT}"
+			ERROR_EXIT "[FATAL]:-Failed to register mirrors in single transaction"
+		fi
+
+		# Parse dbids from output (one per line) and rebuild the array
+		I_INDEX=0
+		while IFS= read -r dbid; do
+			[ -z "$dbid" ] && continue
+			[ "$dbid" = "BEGIN" ] && continue
+			[ "$dbid" = "COMMIT" ] && continue
+			I=${QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[$I_INDEX]}
 			SET_VAR $I
 			GP_HOSTNAME=$GP_HOSTADDRESS
-			dbid=`env PGOPTIONS="-c gp_role=utility" $PSQL -p $COORDINATOR_PORT -d "${DEFAULTDB}" -X -A -t -c "select pg_catalog.gp_add_segment_mirror(${GP_CONTENT}::int2, '${GP_HOSTNAME}', '${GP_HOSTADDRESS}', ${GP_PORT}, '${GP_DIR}');" 2>>${LOG_FILE}` >> $LOG_FILE 2>&1
-			ERROR_CHK $? "failed to register mirror for contentid=${GP_CONTENT}" 2
 			MIRRORS_UPDATED_DBID=(${MIRRORS_UPDATED_DBID[@]} ${GP_HOSTNAME}~${GP_HOSTADDRESS}~${GP_PORT}~${GP_DIR}~${dbid}~${GP_CONTENT})
-		done
+			((I_INDEX++))
+		done <<< "$DBID_OUTPUT"
+
+		if [ $I_INDEX -ne ${#QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[@]} ]; then
+			ERROR_EXIT "[FATAL]:-Expected ${#QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID[@]} dbids but got ${I_INDEX}"
+		fi
 
 		QE_MIRROR_ARRAY_SORTED_ON_CONTENT_ID=(${MIRRORS_UPDATED_DBID[@]})
 		LOG_MSG "[INFO]:-End Function $FUNCNAME"
