@@ -114,10 +114,15 @@ PaxIndexScanDesc::~PaxIndexScanDesc() {}
 int PaxIndexScanDesc::FetchTuple(ItemPointer tid, Snapshot snapshot,
                                   TupleTableSlot *slot, bool *call_again,
                                   bool *all_dead) {
+  Snapshot meta_snapshot = snapshot;
   BlockNumber block = pax::GetBlockNumber(*tid);
   int rc;
+
+  if (snapshot && snapshot->snapshot_type == SNAPSHOT_ANY) {
+    meta_snapshot = GetCatalogSnapshot(InvalidOid);
+  }
   if (block != current_block_ || !reader_) {
-    if (!OpenMicroPartition(block, snapshot)) return -1;
+    if (!OpenMicroPartition(block, meta_snapshot)) return -1;
   }
 
   Assert(current_block_ == block && reader_);
@@ -163,7 +168,7 @@ bool PaxIndexScanDesc::OpenMicroPartition(BlockNumber block,
       auto toast_file_name = metadata.GetFileName() + TOAST_FILE_SUFFIX;
       toast_file = fs->Open(toast_file_name, fs::kReadMode);
     }
-    if (!metadata.GetVisibilityBitmapFile().empty()) {
+    if (!gp_select_invisible && !metadata.GetVisibilityBitmapFile().empty()) {
       auto const &visibility_bitmap_file = metadata.GetVisibilityBitmapFile();
       auto file = fs->Open(visibility_bitmap_file, fs::kReadMode);
       auto file_length = file->FileLength();

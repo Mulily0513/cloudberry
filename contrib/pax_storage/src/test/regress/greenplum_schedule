@@ -259,6 +259,10 @@ test: disable_autovacuum
 # should always be below disable_autovacuum, don't change the order.
 test: uao_catalog_tables
 test: uaocs_catalog_tables
+# table_select_invisible must run after disable_autovacuum (it uses VACUUM)
+# and must not run concurrently with other gp_select_invisible tests.
+test: table_select_invisible
+test: uao_dml/table_select_invisible_row uao_dml/table_select_invisible_column
 test: uao_compaction/threshold
 test: uaocs_compaction/threshold
 test: uao_ddl/analyze_ao_table_every_dml_row uao_ddl/analyze_ao_table_every_dml_column

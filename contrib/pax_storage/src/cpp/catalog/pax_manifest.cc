@@ -289,7 +289,7 @@ bool IndexUniqueCheck(Relation rel, ItemPointer tid, Snapshot snapshot,
   mrel = manifest_open(rel);
   tuple = manifest_find(mrel, snapshot, block_id);
   exists = tuple != nullptr;
-  if (exists) {
+  if (exists && !gp_select_invisible) {
     Datum datum;
     bool isnull;
     datum = get_manifesttuple_value(tuple, mrel, PAX_AUX_PTVISIMAPNAME, &isnull);
@@ -297,8 +297,11 @@ bool IndexUniqueCheck(Relation rel, ItemPointer tid, Snapshot snapshot,
       exists = TestVisimap(rel, NameStr(*DatumGetName(datum)),
                            pax::GetTupleOffset(*tid));
     }
-    manifest_free_tuple(tuple);
   }
+
+  if (tuple)
+    manifest_free_tuple(tuple);
+
   manifest_close(mrel);
 
   return exists;
@@ -710,7 +713,7 @@ bool IndexUniqueCheck(Relation rel, ItemPointer tid, Snapshot snapshot,
                                     AccessShareLock, block_id);
   tuple = context.SearchMicroPartitionEntry();
   exists = HeapTupleIsValid(tuple);
-  if (exists) {
+  if (exists && !gp_select_invisible) {
     bool isnull;
     auto desc = RelationGetDescr(context.GetRelation());
     auto visimap = heap_getattr(tuple, ANUM_PG_PAX_BLOCK_TABLES_PTVISIMAPNAME,

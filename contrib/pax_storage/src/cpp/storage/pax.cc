@@ -525,7 +525,7 @@ int TableReader::GetTuple(TupleTableSlot *slot, ScanDirection direction,
   // TODO(jiaqizho): PAX should not do read/pread in table layer
   std::string visibility_bitmap_file =
       current_block_metadata_.GetVisibilityBitmapFile();
-  if (!visibility_bitmap_file.empty()) {
+  if (!gp_select_invisible && !visibility_bitmap_file.empty()) {
     auto file = file_system_->Open(visibility_bitmap_file, fs::kReadMode);
     auto file_length = file->FileLength();
     auto bm = std::make_shared<Bitmap8>(file_length * 8);
@@ -563,7 +563,7 @@ std::unique_ptr<MicroPartitionReader> TableReader::OpenFile2(const MicroPartitio
 
   // load visibility map
   std::string visibility_bitmap_file = meta.GetVisibilityBitmapFile();
-  if (!visibility_bitmap_file.empty()) {
+  if (!gp_select_invisible && !visibility_bitmap_file.empty()) {
     auto file = file_system_->Open(visibility_bitmap_file, fs::kReadMode);
     auto file_length = file->FileLength();
     auto bm = std::make_shared<Bitmap8>(file_length * 8);
@@ -594,57 +594,6 @@ std::unique_ptr<MicroPartitionReader> TableReader::OpenFile2(const MicroPartitio
       file_system_->Open(meta.GetFileName(), fs::kReadMode),
       std::move(toast_file));
 }
-
-#if 0
-void TableReader::OpenFile() {
-  Assert(iterator_->HasNext());
-
-  auto it = iterator_->Next();
-  current_block_metadata_ = it;
-  MicroPartitionReader::ReaderOptions options;
-  std::unique_ptr<File> toast_file;
-  int32 reader_flags = FLAGS_EMPTY;
-
-  micro_partition_id_ = it.GetMicroPartitionId();
-  current_block_number_ = micro_partition_id_;
-
-  options.filter = reader_options_.filter;
-  options.reused_buffer = reader_options_.reused_buffer;
-
-  // load visibility map
-  std::string visibility_bitmap_file = it.GetVisibilityBitmapFile();
-  if (!visibility_bitmap_file.empty()) {
-    auto file = file_system_->Open(visibility_bitmap_file, fs::kReadMode);
-    auto file_length = file->FileLength();
-    auto bm = std::make_shared<Bitmap8>(file_length * 8);
-    file->ReadN(bm->Raw().bitmap, file_length);
-    options.visibility_bitmap = bm;
-    file->Close();
-  }
-
-#ifdef VEC_BUILD
-  options.tuple_desc = reader_options_.tuple_desc;
-  if (reader_options_.is_vec) {
-    Assert(options.tuple_desc);
-    READER_FLAG_SET_VECTOR_PATH(reader_flags);
-  }
-
-  if (reader_options_.vec_build_ctid)
-    READER_FLAG_SET_SCAN_WITH_CTID(reader_flags);
-#endif
-
-  if (it.GetExistToast()) {
-    // must exist the file in disk
-    toast_file =
-        file_system_->Open(it.GetFileName() + TOAST_FILE_SUFFIX, fs::kReadMode);
-  }
-
-  reader_ = MicroPartitionFileFactory::CreateMicroPartitionReader(
-      std::move(options), reader_flags,
-      file_system_->Open(it.GetFileName(), fs::kReadMode),
-      std::move(toast_file));
-}
-#endif
 
 TableDeleter::TableDeleter(
     Relation rel, std::map<int, std::shared_ptr<Bitmap8>> delete_bitmap,
