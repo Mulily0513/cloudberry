@@ -99,6 +99,7 @@ extern void FreeVecExecuteState(VecExecuteState *estate);
 extern ExplainOneQuery_hook_type   vec_explain_prev;
 extern ExecutorStart_hook_type     vec_exec_start_prev;
 extern ExecutorRun_hook_type       vec_exec_run_prev;
+extern ExecutorFinish_hook_type    vec_exec_finish_prev;
 extern ExecutorEnd_hook_type       vec_exec_end_prev;
 
 extern void ExecutorStartWrapper(QueryDesc *queryDesc, int eflags);
@@ -106,6 +107,7 @@ extern void ExecutorRunWrapper(QueryDesc *queryDesc,
 							   ScanDirection direction,
 							   uint64 count,
 							   bool execute_once);
+extern void ExecutorFinishWrapper(QueryDesc *queryDesc);
 extern void ExecutorEndWrapper(QueryDesc *queryDesc);
 extern bool find_extension_context(List *context);
 

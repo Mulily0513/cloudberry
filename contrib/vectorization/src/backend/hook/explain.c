@@ -144,6 +144,7 @@ static void show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 							 List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_windowagg_keys(WindowAggState *waggstate, List *ancestors, ExplainState *es);
+static void show_windowhashagg_keys(WindowHashAggState *waggstate, List *ancestors, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
@@ -1278,7 +1279,12 @@ VecExplainNode(PlanState *planstate, List *ancestors,
 			{
 				pname = sname = "WindowAgg";
 			}
-
+			break;
+		case T_WindowHashAgg:
+			if (vec_type)
+				pname = sname = "Vec WindowHashAgg";
+			else
+				pname = sname = "WindowHashAgg";
 			break;
 		case T_TableFunctionScan:
 			pname = sname = "Table Function Scan";
@@ -2188,6 +2194,9 @@ VecExplainNode(PlanState *planstate, List *ancestors,
 #endif
 		case T_WindowAgg:
 			show_windowagg_keys((WindowAggState *) planstate, ancestors, es);
+			break;
+		case T_WindowHashAgg:
+			show_windowhashagg_keys((WindowHashAggState *) planstate, ancestors, es);
 			break;
 		case T_TableFunctionScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
@@ -4092,7 +4101,29 @@ show_windowagg_keys(WindowAggState *waggstate, List *ancestors, ExplainState *es
 	/* XXX don't show framing for now */
 }
 
+static void
+show_windowhashagg_keys(WindowHashAggState *waggstate, List *ancestors, ExplainState *es)
+{
+	WindowHashAgg *window = (WindowHashAgg *) waggstate->ss.ps.plan;
 
+	/* The key columns refer to the tlist of the child plan */
+	ancestors = lcons(window, ancestors);
+	if ( window->partNumCols > 0 )
+	{
+		show_sort_group_keys((PlanState *) outerPlanState(waggstate), "Partition By",
+							 window->partNumCols, 0, window->partColIdx,
+							 NULL, NULL, NULL,
+							 ancestors, es);
+	}
+
+	show_sort_group_keys((PlanState *) outerPlanState(waggstate), "Order By",
+						 window->ordNumCols, 0, window->ordColIdx,
+						 NULL, NULL, NULL,
+						 ancestors, es);
+	ancestors = list_delete_first(ancestors);
+
+	/* XXX don't show framing for now */
+}
 
 /*
  * Show the sort keys for a IncrementalSort node.

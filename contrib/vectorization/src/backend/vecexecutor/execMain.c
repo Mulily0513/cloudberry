@@ -65,11 +65,11 @@ typedef struct PlanBuildContext
 	/* Aggregate information */
 	List *agginfos;
 	AggStrategy aggstrategy;
-	const gchar **keys; /* column name of group keys, used by windowagg also */
-	int nkey;           /* number of groups, used by windowagg also */
+	const gchar **keys; /* column name of group keys, used by windowagg/windowhashagg also */
+	int nkey;           /* number of groups, used by windowagg/windowhashagg also */
 	bool ishaving;
 
-	/* windowagg fields */
+	/* windowagg/windowhashagg fields */
 	GArrowSortOptions *orderby_sortoption;
 
 	/* schema of plan input batch*/
@@ -166,7 +166,8 @@ static void *get_current_next_batch(PlanState *node);
 static GList* build_sort_keys(PlanState *planstate, GArrowSchema *schema);
 static GArrowProjectNodeOptions* build_project_options(List *targetList, PlanBuildContext *pcontext);
 static GArrowProjectNodeOptions* build_agg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext);
-static GArrowProjectNodeOptions* build_winagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext);
+static GArrowProjectNodeOptions* build_windowagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext);
+static GArrowProjectNodeOptions* build_windowhashagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext);
 static GArrowAggregateNodeOptions* build_aggregatation_options(GList *aggregations, PlanBuildContext *pcontext);
 static GArrowFilterNodeOptions *build_filter_options(List *filterInfo, PlanBuildContext *pcontext);
 static GArrowAssertOpNodeOptions *build_assertop_options(List *filterInfo, PlanBuildContext *pcontext);
@@ -1629,6 +1630,20 @@ BuildVecPlan(PlanState *planstate, VecExecuteState *estate)
 			}
 		}
 		break;
+		case T_WindowHashAggState:
+		{
+			if (!outerPlanState(planstate))
+				elog(ERROR, "WindowHashAgg node can't be leaf in vector plan");
+			pcontext.inputschema = GetSchemaFromSlot(
+					outerPlanState(planstate)->ps_ResultTupleSlot);
+
+			if (DEBUG1 >= log_min_messages)
+			{
+				g_autofree gchar *str = garrow_schema_to_string(pcontext.inputschema);
+				elog(DEBUG1, "input schema for WindowHashAgg: %s", str);
+			}
+		}
+		break;
 		case T_MaterialState:
 		{
 			VecMaterialState *vmatstate = (VecMaterialState *)planstate;
@@ -2445,7 +2460,9 @@ BuildAggProject(List *targetList, List *aggInfos, GArrowExecuteNode *input, Plan
 	g_autoptr(GError) error = NULL;
 
 	if (IsA(pcontext->planstate, WindowAggState))
-		project_options = build_winagg_project_options(targetList, aggInfos, pcontext);
+		project_options = build_windowagg_project_options(targetList, aggInfos, pcontext);
+	else if (IsA(pcontext->planstate, WindowHashAggState))
+		project_options = build_windowhashagg_project_options(targetList, aggInfos, pcontext);
 	else
 		project_options = build_agg_project_options(targetList, aggInfos, pcontext);
 
@@ -2497,7 +2514,8 @@ BuildProject(List *targetList, List *qualList, GArrowExecuteNode *input, PlanBui
 
 	/* Build Agg or WindowAgg if any */
 	if (IsA(pcontext->planstate->plan, Agg) ||
-	    IsA(pcontext->planstate->plan, WindowAgg))
+	    IsA(pcontext->planstate->plan, WindowAgg) ||
+	    IsA(pcontext->planstate->plan, WindowHashAgg))
 	{
 		g_autoptr(GArrowExecuteNode) aggregation_input = NULL;
 		g_autoptr(GArrowExecuteNode) aggregation = NULL;
@@ -2818,7 +2836,7 @@ build_agg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pc
 }
 
 static GArrowProjectNodeOptions *
-build_winagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext)
+build_windowagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext)
 {
 	GList *expressions = NULL;
 	g_autoptr(GArrowProjectNodeOptions) options = NULL;
@@ -2851,6 +2869,173 @@ build_winagg_project_options(List *targetList, List *aggInfos, PlanBuildContext 
 		garrow_list_free_ptr(&orderby_keys);
 		pfree(sortKey.orders);
 		pfree(sortKey.nulls_first);
+	}
+
+	/* find cols used by "partition by" clause */
+	const gchar **partcol_names = palloc0(sizeof(gchar *) * wagg->partNumCols);
+	for (int i = 0; i < wagg->partNumCols; i++)
+		partcol_names[i] = GetSchemaName(pcontext->inputschema, wagg->partColIdx[i], NULL);
+
+	if (wagg->partNumCols > 0)
+	{
+		pcontext->keys = partcol_names;
+		pcontext->nkey = wagg->partNumCols;
+	}
+	else
+	{
+		pcontext->keys = NULL;
+		pcontext->nkey = 0;
+	}
+
+	/* append all input columns with windowagg */
+	int num_fields = garrow_schema_n_fields(pcontext->inputschema);
+	length = list_length(aggInfos) + num_fields;
+	names = palloc(length * sizeof(gchar *));
+	int col = 0;
+	for (int i = 0; i < num_fields; i++)
+	{
+		g_autoptr(GArrowExpression) arrow_expr = NULL;
+		g_autoptr(GArrowField)	field = NULL;
+		g_autoptr(GError) error = NULL;
+
+		/* group key out name is same as input name */
+		const char *fname = GetSchemaName(pcontext->inputschema, i + 1, pcontext->map);
+		names[col] = fname;
+		arrow_expr = GARROW_EXPRESSION(garrow_field_expression_new(names[col], &error));
+		if (error)
+			elog(ERROR, "New arrow expression from column: %s error: %s",
+					names[i], error->message);
+		expressions = garrow_list_append_ptr(expressions, arrow_expr);
+		++col;
+	}
+
+	/* append window aggrefs */
+	foreach(l, aggInfos)
+	{
+		g_autoptr(GArrowExpression) arrow_expr = NULL;
+		VecAggInfo *agginfo = (VecAggInfo *) lfirst(l);
+		WindowFunc *wfunc = agginfo->wfunc;
+
+		Assert(IsA(wfunc, WindowFunc));
+
+		/* Todo: single arg only now*/
+		if(!wfunc->args)
+			continue;
+
+		Assert(list_length(wfunc->args) == 1);
+		arrow_expr = expr_to_arrow_expression(linitial(wfunc->args), pcontext);
+
+		/* FIXME: Add shared input expression later */
+
+		/* child expression is input of agg, use inname */
+		names[col] = agginfo->inname;
+
+		expressions = garrow_list_append_ptr(expressions, arrow_expr);
+		need_project = true;
+		col++;
+	}
+
+	/* append window aggrefs */
+	foreach(l, aggInfos)
+	{
+		VecAggInfo *agginfo = (VecAggInfo *) lfirst(l);
+		WindowFunc *wfunc = agginfo->wfunc;
+
+		/*
+		 * count() or count(*), needn't project this column.
+		 * Update aggname as another valid column.
+		 */
+		if(!wfunc->args)
+		{
+			ListCell	   *c;
+			char *name = NULL;
+
+			foreach(c, aggInfos)
+			{
+				VecAggInfo *cinfo = (VecAggInfo *) lfirst(c);
+
+				if (cinfo->wfunc->args)
+				{
+					name = cinfo->inname;
+					break;
+				}
+			}
+
+			/* If found other agg, count other column.
+			 * If no other column, means a count(*), no project for agg input.
+			 * So, use an arbitrary input column name as agg inname.
+			 */
+			/* Fixme: implement count(*) by arrow EmptyBatch */
+			if (!name)
+			{
+				name = (char *)GetSchemaName(pcontext->inputschema, 1, pcontext->map);
+			}
+			memcpy(agginfo->inname, name, sizeof(agginfo->inname));
+			continue;
+		}
+	}
+
+	if (!need_project)
+	{
+		garrow_list_free_ptr(&expressions);
+		return NULL;
+	}
+
+	options = garrow_project_node_options_new(expressions,
+											  (gchar**)names,
+											  col);
+
+	if (DEBUG1 >= log_min_messages)
+	{
+		for (GList *node = expressions; node; node = node->next)
+		{
+			g_autofree gchar *str =
+				garrow_expression_to_string(GARROW_EXPRESSION(node->data));
+			elog(DEBUG1, "%s result expressions: %s", __func__, str);
+		}
+	}
+	garrow_list_free_ptr(&expressions);
+
+	return garrow_move_ptr(options);
+}
+
+static GArrowProjectNodeOptions *
+build_windowhashagg_project_options(List *targetList, List *aggInfos, PlanBuildContext *pcontext)
+{
+	GList *expressions = NULL;
+	g_autoptr(GArrowProjectNodeOptions) options = NULL;
+	gsize			length;
+	bool 			need_project = false;
+	ListCell	   *l;
+	const gchar	  **names; /* project result names */
+
+	WindowHashAgg *wagg = (WindowHashAgg *) pcontext->planstate->plan;
+
+	/* find cols used by "order by" clause */
+	pcontext->orderby_sortoption = NULL;
+	if (wagg->ordNumCols > 0)
+	{
+		Oid opfamily, opcintype;
+		int16 strategy;
+		GList *orderby_keys = NULL;
+
+		for (int i = 0; i < wagg->ordNumCols; i++)
+		{
+			/* Find the operator in pg_amop */
+			if (!get_ordering_op_properties(wagg->ordOperators[i], &opfamily, &opcintype, &strategy))
+				elog(ERROR, "operator %u is not a valid ordering operator", wagg->ordOperators[i]);
+
+			g_autoptr(GArrowSortKey) key = NULL;
+			const char *field_name = GetSchemaName(pcontext->inputschema, wagg->ordColIdx[i], NULL);
+			key = garrow_sort_key_new((gchar *)pstrdup(field_name),
+									  (strategy == BTLessStrategyNumber) ? GARROW_SORT_ORDER_ASCENDING : GARROW_SORT_ORDER_DESCENDING,
+									  GARROW_SORT_ORDER_Default,
+									  wagg->ordNullsFirst[i] ? GARROW_SORT_ORDER_AT_START : GARROW_SORT_ORDER_AT_END);
+			orderby_keys = garrow_list_append_ptr(orderby_keys, key);
+		}
+
+		pcontext->orderby_sortoption = garrow_sort_options_new(orderby_keys, partition_top_k, take_thread_num, two_phase_take);
+		garrow_list_free_ptr(&orderby_keys);
 	}
 
 	/* find cols used by "partition by" clause */
@@ -3177,7 +3362,7 @@ BuildAggregatation(List *aggInfos, GArrowExecuteNode *input, PlanBuildContext *p
 	/* no aggref in targetlist, append plain/hash distinct for group by columns.
 	 * Out name will not be used, use dummy.
 	 */
-	if (!IsA(pcontext->planstate, WindowAggState) && ((pcontext->nkey > 0) && (!aggregations)))
+	if (!IsA(pcontext->planstate, WindowAggState) && !IsA(pcontext->planstate, WindowHashAggState) && ((pcontext->nkey > 0) && (!aggregations)))
 	{
 		agg_func = garrow_aggregation_new(
 			pcontext->aggstrategy == AGG_SORTED ? "plain_distinct" : "hash_distinct",
@@ -3215,6 +3400,16 @@ build_aggregatation_options(GList *aggregations, PlanBuildContext *pcontext)
 													pcontext->keys,
 													pcontext->nkey,
 													mode,
+													pcontext->orderby_sortoption,
+													&error);
+	}
+	else if (IsA(pcontext->planstate, WindowHashAggState))
+	{
+		options =
+			garrow_general_aggregate_node_options_new(aggregations,
+													pcontext->keys,
+													pcontext->nkey,
+													garrow_aggregate_get_parallel_window_mode(),
 													pcontext->orderby_sortoption,
 													&error);
 	}
@@ -3649,6 +3844,11 @@ SetArrowPlan(PlanState *ps, GArrowExecutePlan *plan)
 		VecWindowAggState *vwas = (VecWindowAggState *)ps;
 		vwas->estate.plan = plan;
 	}
+	else if (IsA(ps, WindowHashAggState))
+	{
+		VecWindowHashAggState *vwhas = (VecWindowHashAggState *)ps;
+		vwhas->estate.plan = plan;
+	}
 	else if (IsA(ps, HashJoinState))
 	{
 		VecHashJoinState *vhjs = (VecHashJoinState *)ps;
@@ -3724,6 +3924,11 @@ GetVecExecuteState(PlanState *ps)
 	else if (IsA(ps, WindowAggState))
 	{
 		VecWindowAggState *vwindow = (VecWindowAggState *)ps;
+		return &vwindow->estate;
+	}
+	else if (IsA(ps, WindowHashAggState))
+	{
+		VecWindowHashAggState *vwindow = (VecWindowHashAggState *)ps;
 		return &vwindow->estate;
 	}
 	// FIXME: Sequence

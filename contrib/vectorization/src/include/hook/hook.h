@@ -16,6 +16,7 @@ extern void VecExplainOneQuery(Query *query, int cursorOptions,
                                const char *queryString, ParamListInfo params,
                                QueryEnvironment *queryEnv);
 extern void VecExecutorStart(QueryDesc *queryDesc, int eflags);
+extern void VecExecutorFinish(QueryDesc *queryDesc);
 extern void VecExecutorEnd(QueryDesc *queryDesc);
 extern bool
 donothingVecReceive(TupleTableSlot *slot, DestReceiver *self);

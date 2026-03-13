@@ -84,6 +84,7 @@
 #include "vecexecutor/nodeAppend.h"
 #include "vecexecutor/nodeSequence.h"
 #include "vecexecutor/nodeWindowAgg.h"
+#include "vecexecutor/nodeWindowHashAgg.h"
 #include "vecexecutor/nodeMotion.h"
 #include "vecexecutor/nodeSeqscan.h"
 #include "vecexecutor/nodeResult.h"
@@ -334,6 +335,10 @@ ExecVecReScan(PlanState *node)
 
 		case T_WindowAggState:
 			ExecReScanWindowAgg((WindowAggState *) node);
+			break;
+
+		case T_WindowHashAggState:
+			ExecReScanVecWindowHashAgg((WindowHashAggState *) node);
 			break;
 
 		case T_UniqueState:
@@ -822,6 +827,10 @@ ExecVecSquelchNode(PlanState *node)
 
 		case T_WindowAggState:
 			ExecSquelchVecWindowAgg((WindowAggState *) node);
+			break;
+
+		case T_WindowHashAggState:
+			ExecSquelchVecWindowHashAgg((WindowHashAggState *) node);
 			break;
 
 		case T_ShareInputScanState:

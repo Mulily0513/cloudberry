@@ -211,6 +211,9 @@ _PG_init(void)
     vec_exec_run_prev = ExecutorRun_hook;
     ExecutorRun_hook = ExecutorRunWrapper;
 
+    vec_exec_finish_prev = ExecutorFinish_hook;
+    ExecutorFinish_hook = ExecutorFinishWrapper;
+
     vec_exec_end_prev = ExecutorEnd_hook;
     ExecutorEnd_hook = ExecutorEndWrapper;
 

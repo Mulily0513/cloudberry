@@ -184,6 +184,7 @@ typedef enum NodeTag
 	T_AggState,
 	T_TupleSplitState,
 	T_WindowAggState,
+	T_WindowHashAggState,
 	T_UniqueState,
 	T_GatherState,
 	T_GatherMergeState,

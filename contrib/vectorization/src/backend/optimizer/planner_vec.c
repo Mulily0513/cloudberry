@@ -95,6 +95,15 @@ static char* vector_foreign_data_wapper_whitelist[] =
 	"datalake_fdw"
 };
 
+typedef struct
+{
+	plan_tree_base_prefix base; /* Required prefix for plan_tree_walker/mutator */
+	bool has_windowhashagg;         /* Flag to indicate if WindowAgg node is found */
+} windowhashagg_check_context;
+
+static bool windowhashagg_check_walker(Node *node, windowhashagg_check_context *context);
+static bool windowhashagg_is_in_plan_tree(struct PlannedStmt *stmt);
+
 static bool
 is_type_vectorable(Oid typeOid)
 {
@@ -269,24 +278,47 @@ PlannedStmt *
 planner_hook_wrapper(Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams, OptimizerOptions *optimizer_options)
 {
 	PlannedStmt *result;
+	bool try_result;
 	bool optimizer_origin;
 	extern bool force_vectorization;
 	const int64 orca_spilling_mem_threshold = 1000LL * 1204 * 1024 * 1024;
-
-	optimizer_origin = optimizer;
-	if (enable_vector_optimizer)
-		optimizer_spilling_mem_threshold = optimizer ? orca_spilling_mem_threshold : 0;
-	result = generate_plan(parse, query_string, cursorOptions, boundParams, optimizer_options);
 
 	/* fallback for prepare and execute */
 	/* fallback for cursor */
 	if (!enable_vectorization || boundParams || cursorOptions != CURSOR_OPT_PARALLEL_OK)
 	{
-		return result;
+		return generate_plan(parse, query_string, cursorOptions, boundParams, optimizer_options);
 	}
 
 	init_vector_types();
-	if (!try_vectorize_plan(result) && force_vectorization) {
+
+	/* try bigger memory threshold for vector plan */
+	if (enable_vector_optimizer)
+		optimizer_spilling_mem_threshold = optimizer ? orca_spilling_mem_threshold : 0;
+
+	/* try WindowHashAgg */
+	OptimizerOptions *vec_optimizer_options = palloc(sizeof(OptimizerOptions));
+	if (optimizer_options)
+		memcpy(vec_optimizer_options, optimizer_options, sizeof(OptimizerOptions));
+	else
+		memset(vec_optimizer_options, 0, sizeof(OptimizerOptions));
+	vec_optimizer_options->create_vectorization_plan = true;
+	result = generate_plan(parse, query_string, cursorOptions, boundParams, vec_optimizer_options);
+	try_result = try_vectorize_plan(result);
+	if (try_result)
+		return result;
+
+	/* create plan again if WindowHashAgg is in plan tree */
+	if (windowhashagg_is_in_plan_tree(result)) {
+		result = generate_plan(parse, query_string, cursorOptions, boundParams, optimizer_options);
+		try_result = try_vectorize_plan(result);
+		if (try_result)
+			return result;
+	}
+
+	/* try another optimizer */
+	if (force_vectorization) {
+		optimizer_origin = optimizer;
 		PG_TRY();
 		{
 			optimizer = !optimizer;
@@ -784,6 +816,39 @@ is_plan_vectorable(Plan* plan, List *rtable)
 
 				break;
 			}
+		case T_WindowHashAgg:
+			{
+				WindowHashAgg *wagg = castNode(WindowHashAgg, plan);
+
+				int frameOptions = wagg->frameOptions;
+				if (wagg->startOffset || wagg->endOffset ||
+				    (frameOptions != FRAMEOPTION_DEFAULTS &&
+				     frameOptions != (FRAMEOPTION_DEFAULTS | FRAMEOPTION_NONDEFAULT) &&
+				     frameOptions != (FRAMEOPTION_NONDEFAULT | FRAMEOPTION_ROWS |
+				                      FRAMEOPTION_START_UNBOUNDED_PRECEDING |
+				                      FRAMEOPTION_END_CURRENT_ROW) &&
+				     frameOptions != (FRAMEOPTION_NONDEFAULT | FRAMEOPTION_ROWS |
+				                      FRAMEOPTION_BETWEEN |
+				                      FRAMEOPTION_START_UNBOUNDED_PRECEDING |
+				                      FRAMEOPTION_END_CURRENT_ROW)
+				    )
+				   )
+				{
+					FALLBACK_LOG("frameOption: %d with "
+					             "\"frame\" clause not supported.", frameOptions);
+					return false;
+				}
+
+				for (int i = 0; i < wagg->partNumCols; i++)
+				{
+					if (wagg->partOperators[i] == ARRAY_EQ_OP)
+					{
+						FALLBACK_LOG("ARRAY_EQ_OP in window agg.");
+						return false;
+					}
+				}
+			}
+			break;
 		case T_HashJoin:
 			{
 				HashJoin* hash_expr = (HashJoin *)plan;
@@ -1919,4 +1984,32 @@ leftjoin_pull_antijoin(Node *node, PreNodeContext *context)
 		context->parent_node = node;
 
 	return plan_tree_walker(node, leftjoin_pull_antijoin, context, true);
+}
+
+static bool
+windowhashagg_check_walker(Node *node, windowhashagg_check_context *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, WindowHashAgg))
+	{
+		context->has_windowhashagg = true;
+		return true;
+	}
+
+	return plan_tree_walker(node, windowhashagg_check_walker, context, true);
+}
+
+static bool
+windowhashagg_is_in_plan_tree(struct PlannedStmt *stmt)
+{
+	windowhashagg_check_context context;
+
+	exec_init_plan_tree_base(&context.base, stmt);
+	context.has_windowhashagg = false;
+
+	windowhashagg_check_walker((Node *) stmt->planTree, &context);
+
+	return context.has_windowhashagg;
 }

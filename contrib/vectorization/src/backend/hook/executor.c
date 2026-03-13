@@ -31,6 +31,7 @@
 
 #include "access/printtup_vec.h"
 #include "vecexecutor/nodeAssertOp.h"
+#include "vecexecutor/execAmi.h"
 #include "vecexecutor/execnodes.h"
 #include "vecexecutor/execslot.h"
 #include "vecexecutor/executor.h"
@@ -50,12 +51,14 @@
 #include "vecexecutor/nodeSort.h"
 #include "vecexecutor/nodeSubqueryscan.h"
 #include "vecexecutor/nodeWindowAgg.h"
+#include "vecexecutor/nodeWindowHashAgg.h"
 #include "vecnodes/nodes.h"
 
 /* In the future this hook will be cleaned up. */
 ExplainOneQuery_hook_type   vec_explain_prev;
 ExecutorStart_hook_type     vec_exec_start_prev;
 ExecutorRun_hook_type       vec_exec_run_prev;
+ExecutorFinish_hook_type    vec_exec_finish_prev;
 ExecutorEnd_hook_type       vec_exec_end_prev;
 
 /* decls for local routines only used within this module */
@@ -370,6 +373,22 @@ ExecutorRunWrapper(QueryDesc *queryDesc,
 	else
 		standard_ExecutorRun(queryDesc, direction, count, execute_once);
 } 
+
+void
+ExecutorFinishWrapper(QueryDesc *queryDesc)
+{
+	if (queryDesc->estate->es_top_eflags & EXEC_FLAG_VECTOR)
+	{
+		VecExecutorFinish(queryDesc);
+		return;
+	}
+
+	if (vec_exec_finish_prev)
+		(*vec_exec_finish_prev) (queryDesc);
+	else
+		standard_ExecutorFinish(queryDesc);
+
+}
 
 void
 ExecutorEndWrapper(QueryDesc *queryDesc)
@@ -1479,6 +1498,11 @@ VecExecInitNode(Plan *node, EState *estate, int eflags)
 													   estate, eflags);
 			break;
 
+		case T_WindowHashAgg:
+			result = (PlanState *)ExecInitVecWindowHashAgg((WindowHashAgg *)node,
+													   estate, eflags);
+			break;
+
 		case T_Hash:
 			result = (PlanState *) ExecInitVecHash((Hash *)node,
 												   estate, eflags);
@@ -1550,6 +1574,69 @@ VecExecInitNode(Plan *node, EState *estate, int eflags)
 	return result;
 }
 
+void
+VecExecutorFinish(QueryDesc *queryDesc)
+{
+	EState	   *estate;
+	PlanState *planstate = NULL;
+	GpExecIdentity exec_identity;
+	MemoryContext oldcontext;
+
+	/* sanity checks */
+	Assert(queryDesc != NULL);
+
+	estate = queryDesc->estate;
+
+	Assert(estate != NULL);
+	Assert(!(estate->es_top_eflags & EXEC_FLAG_EXPLAIN_ONLY));
+
+	/* This should be run once and only once per Executor instance */
+	Assert(!estate->es_finished);
+
+	/* Switch into per-query memory context */
+	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	/* Allow instrumentation of Executor overall runtime */
+	if (queryDesc->totaltime)
+		InstrStartNode(queryDesc->totaltime);
+
+	/* Execute queued AFTER triggers, unless told not to */
+	if (!(estate->es_top_eflags & EXEC_FLAG_SKIP_TRIGGERS))
+		AfterTriggerEndQuery(estate);
+
+	if (queryDesc->totaltime)
+		InstrStopNode(queryDesc->totaltime, 0);
+
+	/*
+	 * To squelch the whole plan as the query is finished
+	 *
+	 * For material node, when 'delayEagerFree' is true, it
+	 * will not be squelched even if 'ExecSquelchNode' is
+	 * called on it. But if it is not squechled, it will
+	 * not send the stop msg to its child motion node, and
+	 * the sender motion will hang there until the connection
+	 * is reset or closed. This can lead some issues.
+	 * For e.g: sometimes we need to collect the querystate
+	 * from all the backends through
+	 * 'cdbexplain_recvExecStats'. It will wait until the QE
+	 * sending the querystate to it. But the QE only sends
+	 * that in 'standard_ExecutorEnd'. But if it is still
+	 * blocked at sending out tuples, then the whole query
+	 * will hang up.
+	 */
+	exec_identity = getGpExecIdentity(queryDesc, ForwardScanDirection, estate);
+	if (exec_identity == GP_NON_ROOT_ON_QE)
+		planstate = (PlanState *)getMotionState(queryDesc->planstate, LocallyExecutingSliceIndex(estate));
+	else if (exec_identity == GP_ROOT_SLICE)
+		planstate = queryDesc->planstate;
+
+	if (exec_identity != GP_IGNORE && planstate != NULL)
+		ExecVecSquelchNode(planstate);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	estate->es_finished = true;
+}
 
 void
 VecExecutorEnd(QueryDesc *queryDesc)
@@ -1911,6 +1998,10 @@ VecExecEndNode(PlanState *node)
 
 		case T_WindowAggState:
 			ExecEndVecWindowAgg((WindowAggState *)node);
+			break;
+
+		case T_WindowHashAggState:
+			ExecEndVecWindowHashAgg((WindowHashAggState *)node);
 			break;
 
 		case T_HashState:

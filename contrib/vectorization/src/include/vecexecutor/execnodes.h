@@ -293,6 +293,123 @@ typedef struct VecWindowAggState
 
 } VecWindowAggState;
 
+typedef struct WindowHashAggState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+
+	/* these fields are filled in by ExecInitExpr: */
+	List	   *funcs;			/* all WindowFunc nodes in targetlist */
+	int			numfuncs;		/* total number of window functions */
+	int			numaggs;		/* number that are plain aggregates */
+
+	WindowStatePerFunc perfunc; /* per-window-function information */
+	WindowStatePerAgg peragg;	/* per-plain-aggregate information */
+	ExprState  *partEqfunction; /* equality funcs for partition columns */
+	ExprState  *ordEqfunction;	/* equality funcs for ordering columns */
+	Tuplestorestate *buffer;	/* stores rows of current partition */
+	int			current_ptr;	/* read pointer # for current row */
+	int			framehead_ptr;	/* read pointer # for frame head, if used */
+	int			frametail_ptr;	/* read pointer # for frame tail, if used */
+	int			grouptail_ptr;	/* read pointer # for group tail, if used */
+	int64		spooled_rows;	/* total # of rows in buffer */
+	int64		currentpos;		/* position of current row in partition */
+	int64		frameheadpos;	/* current frame head position */
+	int64		frametailpos;	/* current frame tail position (frame end+1) */
+	/* use struct pointer to avoid including windowapi.h here */
+	struct WindowObjectData *agg_winobj;	/* winobj for aggregate fetches */
+	int64		aggregatedbase; /* start row for current aggregates */
+	int64		aggregatedupto; /* rows before this one are aggregated */
+
+	int			frameOptions;	/* frame_clause options, see WindowDef */
+	ExprState  *startOffset;	/* expression for starting bound offset */
+	ExprState  *endOffset;		/* expression for ending bound offset */
+	Datum		startOffsetValue;	/* result of startOffset evaluation */
+	Datum		endOffsetValue; /* result of endOffset evaluation */
+
+	/* these fields are used with RANGE offset PRECEDING/FOLLOWING: */
+	FmgrInfo	startInRangeFunc;	/* in_range function for startOffset */
+	FmgrInfo	endInRangeFunc; /* in_range function for endOffset */
+	Oid			inRangeColl;	/* collation for in_range tests */
+	bool		inRangeAsc;		/* use ASC sort order for in_range tests? */
+	bool		inRangeNullsFirst;	/* nulls sort first for in_range tests? */
+	/*
+	 * In GPDB, we support RANGE/ROWS start/end expressions to contain
+	 * variables. You lose on some optimizations in that case, so we use
+	 * these flags to indicate if they don't contain any variables, to allow
+	 * those optimizations in the usual case that they don't.
+	 */
+	bool		start_offset_var_free;
+	bool		end_offset_var_free;
+
+	bool		start_offset_valid;		/* is startOffsetValue valid for current row? */
+	bool		end_offset_valid;		/* is endOffsetValue valid for current row? */
+
+	/* these fields are used in GROUPS mode: */
+	int64		currentgroup;	/* peer group # of current row in partition */
+	int64		frameheadgroup; /* peer group # of frame head row */
+	int64		frametailgroup; /* peer group # of frame tail row */
+	int64		groupheadpos;	/* current row's peer group head position */
+	int64		grouptailpos;	/* " " " " tail position (group end+1) */
+
+	MemoryContext partcontext;	/* context for partition-lifespan data */
+	MemoryContext aggcontext;	/* shared context for aggregate working data */
+	MemoryContext curaggcontext;	/* current aggregate's working data */
+	ExprContext *tmpcontext;	/* short-term evaluation context */
+
+	bool		all_first;		/* true if the scan is starting */
+	bool		all_done;		/* true if the scan is finished */
+	bool		partition_spooled;	/* true if all tuples in current partition
+									 * have been spooled into tuplestore */
+	bool		more_partitions;	/* true if there's more partitions after
+									 * this one */
+	bool		framehead_valid;	/* true if frameheadpos is known up to
+									 * date for current row */
+	bool		frametail_valid;	/* true if frametailpos is known up to
+									 * date for current row */
+	bool		grouptail_valid;	/* true if grouptailpos is known up to
+									 * date for current row */
+
+	TupleTableSlot *first_part_slot;	/* first tuple of current or next
+										 * partition */
+	TupleTableSlot *framehead_slot; /* first tuple of current frame */
+	TupleTableSlot *frametail_slot; /* first tuple after current frame */
+
+	/* temporary slots for tuples fetched back from tuplestore */
+	TupleTableSlot *agg_row_slot;
+	TupleTableSlot *temp_slot_1;
+	TupleTableSlot *temp_slot_2;
+} WindowHashAggState;
+
+typedef struct VecWindowHashAggState
+{
+	WindowHashAggState base;
+
+	VecExecuteState estate;
+
+	/* Arrow plan control params */
+	GArrowExecutePlan			*plan;
+	GArrowAggregationNodeState	*state; 
+	List						*rbs; 	/* n batches of data */
+
+	/* source schema */
+	GArrowSchema *source_schema;
+
+	/* outplan slot */
+	TupleTableSlot *outplan_slot;
+
+	/* for streaming loop */
+	bool init_arrow;
+
+	ExprContext *veccontext;
+
+	/* used by slice recordbatch */
+	TupleTableSlot *result_slot;
+	GArrowRecordBatch *origin_rb;
+	int offset;
+	int rows;
+
+} VecWindowHashAggState;
+
 /*
  * This struct is the data actually passed to an fmgr-called function.
  */
