@@ -38,5 +38,7 @@ extern bool gather_motion_take;
 extern bool enable_vector_memory_resource;
 extern int pool_threads;
 extern bool print_fallback_log;
+/* hash join spill memory budget in MB, 0 = disabled */
+extern int hashjoin_spill_memory_mb;
 
 #endif   /* GUC_VEC_H */

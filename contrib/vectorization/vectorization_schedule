@@ -92,6 +92,7 @@ test: clickhouse_release/clkhse_uninit
 
 # test join
 test: join/join
+test: join/hashjoin_spill
 
 # test subqueryscan
 test: subquery/subquery

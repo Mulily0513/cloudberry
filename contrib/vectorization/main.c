@@ -19,7 +19,6 @@
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
-#include "storage/ipc.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "utils/guc.h"
@@ -195,6 +194,18 @@ _PG_init(void)
 							 PGC_USERSET,
 							 GUC_GPDB_NO_SYNC,
 							 NULL, NULL, NULL);
+
+    DefineCustomIntVariable("vector.hashjoin_spill_memory_mb",
+                            "Memory budget in MB for hash join build side. "
+                            "When estimated hash table size exceeds this, data is spilled to disk. "
+                            "0 means disabled (no spill).",
+                            NULL,
+                            &hashjoin_spill_memory_mb,
+                            512,
+                            0, INT_MAX,
+                            PGC_USERSET,
+                            GUC_GPDB_NEED_SYNC,
+                            NULL, NULL, NULL);
 
     exec_simple_query_hook_prev = exec_simple_query_hook;
     exec_simple_query_hook = exec_simple_query_vec;

@@ -38,3 +38,4 @@ int control_global_memory_resource = 5;
 bool enable_vector_memory_resource = false;
 int pool_threads = 0;
 bool print_fallback_log = false;
+int hashjoin_spill_memory_mb = 512;

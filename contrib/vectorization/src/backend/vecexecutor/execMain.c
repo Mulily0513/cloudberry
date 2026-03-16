@@ -28,6 +28,11 @@
 #include "vecexecutor/execslot.h"
 #include "vecexecutor/executor.h"
 #include "utils/numeric.h"
+#include "utils/guc_vec.h"
+#include "storage/fd.h"
+#include "storage/ipc.h"
+
+#define VEC_SPILL_FILE_PREFIX "vec_spill"
 
 typedef struct VecAggInfo
 {
@@ -155,6 +160,7 @@ static inline VecAggInfo* new_agg_info(Aggref *aggref, int aggno, PlanBuildConte
 static inline VecAggInfo* new_winagg_info(WindowFunc *wfunc, PlanBuildContext *pcontext);
 static GArrowExpression *expr_to_arrow_expression(Expr *node, PlanBuildContext *pcontext);
 static const char* get_agg_func_name(Aggref *aggref, const AggFuncTable *table, PlanBuildContext *pcontext);
+static void CleanupArrowSpillFiles(int code, Datum arg);
 static GArrowExecuteNode* BuildSource(PlanBuildContext *pcontext);
 static GArrowExecuteNode* BuildScanNode(PlanBuildContext *pcontext);
 static GArrowExecuteNode *BuildProject(List *targetList, List *qualList, GArrowExecuteNode *input, PlanBuildContext *pcontext);
@@ -1841,6 +1847,16 @@ BuildVecPlan(PlanState *planstate, VecExecuteState *estate)
 		g_autofree gchar *str = garrow_execute_plan_to_string(estate->plan);
 		elog(LOG, "arrow plan in BuildVecPlan: %s", str);
 	}
+
+	{
+		static bool spill_cleanup_registered = false;
+
+		if (!spill_cleanup_registered)
+		{
+			on_proc_exit(CleanupArrowSpillFiles, (Datum) 0);
+			spill_cleanup_registered = true;
+		}
+	}
 }
 
 static void 
@@ -3523,6 +3539,44 @@ to_arrow_jointype(JoinType type, List *targetlist, List *joinqual)
 	return GARROW_INNER_JOIN;
 }
 
+/*
+ * on_proc_exit callback to clean up Arrow hash join spill files.
+ *
+ * Arrow creates spill files outside PG's VFD system, so AtProcExit_Files
+ * won't clean them. On normal ERROR, C++ destructors handle cleanup via
+ * VecExecEndNode. On FATAL, proc_exit runs this callback since C++
+ * destructors are skipped by longjmp/proc_exit.
+ */
+static void
+CleanupArrowSpillFiles(int code, Datum arg)
+{
+	char		spill_dir[MAXPGPATH];
+	DIR		   *dir;
+	struct dirent *de;
+	char		pid_pattern[64];
+
+	snprintf(spill_dir, MAXPGPATH, "%s/base/%s", DataDir, PG_TEMP_FILES_DIR);
+	snprintf(pid_pattern, sizeof(pid_pattern),
+			 "%s_%s_%d_", PG_TEMP_FILE_PREFIX, VEC_SPILL_FILE_PREFIX, MyProcPid);
+
+	dir = AllocateDir(spill_dir);
+	if (dir == NULL)
+		return;
+
+	while ((de = ReadDirExtended(dir, spill_dir, LOG)) != NULL)
+	{
+		if (strncmp(de->d_name, pid_pattern, strlen(pid_pattern)) == 0)
+		{
+			char	path[MAXPGPATH];
+
+			snprintf(path, MAXPGPATH, "%s/%s", spill_dir, de->d_name);
+			unlink(path);
+			elog(DEBUG1, "cleaned up Arrow spill file: %s", path);
+		}
+	}
+	FreeDir(dir);
+}
+
 static GArrowExecuteNode *
 BuildHashjoin(PlanBuildContext *pcontext, GArrowExecuteNode *left, GArrowExecuteNode *right, List *joinqual)
 {
@@ -3558,9 +3612,22 @@ BuildHashjoin(PlanBuildContext *pcontext, GArrowExecuteNode *left, GArrowExecute
 			keycmps = garrow_list_append_ptr(keycmps, cmp);
 		}
 	}
-	hashjoin_options =
-		garrow_hash_join_node_options_new(type, pcontext->left_hashkeys, pcontext->right_hashkeys, keycmps, filter_expr,
-										  "", "", false, &error);
+	{
+		char spill_dir[MAXPGPATH];
+		char spill_file_prefix[MAXPGPATH];
+
+		snprintf(spill_dir, MAXPGPATH, "%s/base/%s", DataDir, PG_TEMP_FILES_DIR);
+		snprintf(spill_file_prefix, sizeof(spill_file_prefix),
+				 "%s_%s_%d", PG_TEMP_FILE_PREFIX, VEC_SPILL_FILE_PREFIX, MyProcPid);
+
+		hashjoin_options =
+			garrow_hash_join_node_options_new(type, pcontext->left_hashkeys, pcontext->right_hashkeys, keycmps, filter_expr,
+											  "", "", false,
+											  (gint64)hashjoin_spill_memory_mb * 1024 * 1024,
+											  spill_dir,
+											  spill_file_prefix,
+											  &error);
+	}
 	if (error)
 		elog(ERROR, "Failed to create the hashjoin node, cause: %s", error->message);
 

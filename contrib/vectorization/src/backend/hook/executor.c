@@ -365,13 +365,42 @@ ExecutorRunWrapper(QueryDesc *queryDesc,
 				   uint64 count,
 				   bool execute_once)
 {
-	if (queryDesc->estate->es_top_eflags & EXEC_FLAG_VECTOR)
+	bool is_vec = queryDesc->estate->es_top_eflags & EXEC_FLAG_VECTOR;
+
+	if (is_vec)
 		set_printtup_wrapper(&queryDesc->dest);
 
-	if (vec_exec_run_prev)
-		(*vec_exec_run_prev) (queryDesc, direction, count, execute_once);
-	else
-		standard_ExecutorRun(queryDesc, direction, count, execute_once);
+	PG_TRY();
+	{
+		if (vec_exec_run_prev)
+			(*vec_exec_run_prev) (queryDesc, direction, count, execute_once);
+		else
+			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+	}
+	PG_CATCH();
+	{
+		/*
+		 * For vectorized queries, tear down the plan tree to release C++
+		 * resources (Arrow execution plans, spill file descriptors).
+		 * PG's longjmp skips C++ destructors, so we must call
+		 * VecExecEndNode explicitly here.
+		 */
+		if (is_vec)
+		{
+			PG_TRY();
+			{
+				VecExecEndNode(queryDesc->planstate);
+			}
+			PG_CATCH();
+			{
+				FlushErrorState();
+			}
+			PG_END_TRY();
+		}
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 } 
 
 void
