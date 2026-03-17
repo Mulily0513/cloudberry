@@ -207,6 +207,17 @@ _PG_init(void)
                             GUC_GPDB_NEED_SYNC,
                             NULL, NULL, NULL);
 
+    DefineCustomIntVariable("vector.winagg_spill_work_mem",
+                            "Memory budget for window hash aggregate spill. "
+                            "0 means use work_mem.",
+                            NULL,
+                            &winagg_spill_work_mem,
+                            0,
+                            0, MAX_KILOBYTES,
+                            PGC_USERSET,
+                            GUC_UNIT_KB | GUC_GPDB_NEED_SYNC,
+                            NULL, NULL, NULL);
+
     exec_simple_query_hook_prev = exec_simple_query_hook;
     exec_simple_query_hook = exec_simple_query_vec;
 

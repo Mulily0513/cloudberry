@@ -39,3 +39,4 @@ bool enable_vector_memory_resource = false;
 int pool_threads = 0;
 bool print_fallback_log = false;
 int hashjoin_spill_memory_mb = 512;
+int winagg_spill_work_mem = 0;
