@@ -120,6 +120,7 @@ run_capped_diff() {
   fi
   trap "rm -f '$tmp'" RETURN
   if ! git diff "$@" > "$tmp"; then
+    rm -f "$tmp"
     echo "ERROR: git diff failed."
     exit 1
   fi
@@ -193,6 +194,8 @@ truncate_diff() {
 
   if [[ "$was_capped" == true ]]; then
     echo "WARNING: Diff exceeded ${MAX_DIFF_SIZE} bytes. Truncating."
+    # Note: this is a character-based substring, not byte-based. For multi-byte
+    # UTF-8 diffs the result may slightly exceed MAX_DIFF_SIZE in bytes.
     DIFF="${DIFF:0:$MAX_DIFF_SIZE}"
     # Remove the last (likely incomplete) line to avoid truncated file paths
     # or malformed diff hunks that confuse downstream parsing.
@@ -580,7 +583,7 @@ call_claude() {
 
     # Build allowed tools list — allow Read on WORK_DIR (review artifacts)
     # and PROJECT_ROOT (full source files); add Skill tool when available.
-    local allowed_tools=("Read(/${WORK_DIR}/**)" "Read(/${PROJECT_ROOT}/**)")
+    local allowed_tools=("Read(/${WORK_DIR}/**)" "Read(/${PROJECT_ROOT}/**)" "Glob(/${WORK_DIR}/**)" "Glob(/${PROJECT_ROOT}/**)" "Grep(/${WORK_DIR}/**)" "Grep(/${PROJECT_ROOT}/**)")
     if [[ "$USE_SKILL" == true ]]; then
       allowed_tools+=("Skill(code-review)")
     fi
