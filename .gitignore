@@ -85,3 +85,7 @@ BUILD_NUMBER
 .claude/settings.json
 .claude/settings.local.json
 review/
+gpMgmt/bin/pythonSrc/ext/PyYAML-5.4.1/
+run_test.sh
+src/bin/run_test.sh
+src/pl/run_test.sh
