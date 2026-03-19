@@ -152,6 +152,10 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
+#include "libpq-fe.h"
+#include "libpq/pqcomm.h"
+#include "postmaster/fts_comm.h"
+
 #include "cdb/cdbgang.h"                /* cdbgang_parse_gpqeid_params */
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
@@ -484,6 +488,11 @@ static volatile sig_atomic_t WalReceiverRequested = false;
 static volatile bool StartWorkerNeeded = true;
 static volatile bool HaveCrashedWorker = false;
 
+#ifdef USE_EXPIRATION_DATE
+/* set when expiration is detected, to defer NotifySegmentsExpired to ServerLoop */
+static volatile sig_atomic_t expiration_shutdown_pending = false;
+#endif
+
 #ifdef USE_SSL
 /* Set when and if SSL has been initialized properly */
 static bool LoadedSSL = false;
@@ -525,6 +534,9 @@ static void BackendInitialize(Port *port);
 static void BackendRun(Port *port) pg_attribute_noreturn();
 static void ExitPostmaster(int status) pg_attribute_noreturn();
 static int	ServerLoop(void);
+#ifdef USE_EXPIRATION_DATE
+static pg_attribute_always_inline void CheckExpirationDate(void);
+#endif
 static int	BackendStartup(Port *port);
 static int	ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
@@ -1940,6 +1952,183 @@ DetermineSleepTime(struct timeval *timeout)
 	}
 }
 
+#ifdef USE_EXPIRATION_DATE
+
+#define GPSEGCONFIGDUMPFILE "gpsegconfig_dump"
+
+/*
+ * NotifySegmentsExpired
+ *
+ * Read segment configuration from the FTS dump file and send a
+ * FTS_MSG_SHUTDOWN message to each primary segment via libpq,
+ * causing them to initiate fast shutdown before the coordinator.
+ */
+static void
+NotifySegmentsExpired(void)
+{
+	FILE	   *fp;
+	char		buf[SEGMENT_CONFIGURATION_ONE_LINE_LENGTH];
+	int			dbid;
+	int			segindex;
+	char		role;
+	char		preferred_role;
+	char		mode;
+	char		status;
+	int			port;
+	char		hostname[MAXHOSTNAMELEN];
+	char		address[MAXHOSTNAMELEN];
+
+	fp = fopen(GPSEGCONFIGDUMPFILE, "r");
+	if (fp == NULL)
+	{
+		ereport(LOG,
+				(errmsg("could not open segment configuration file \"%s\": %m, "
+						"skipping segment shutdown notification",
+						GPSEGCONFIGDUMPFILE)));
+		return;
+	}
+
+	while (fgets(buf, sizeof(buf), fp))
+	{
+		PGconn	   *conn;
+		char		conninfo[1024];
+		char		msg[FTS_MSG_MAX_LEN];
+
+		if (sscanf(buf, "%d %d %c %c %c %c %d %63s %63s",
+				   &dbid, &segindex, &role, &preferred_role,
+				   &mode, &status, &port, hostname, address) < 9)
+			continue;
+
+		/* Notify all segments (primary and mirror) that are up, skip coordinator */
+		if (segindex < 0 ||
+			status != GP_SEGMENT_CONFIGURATION_STATUS_UP)
+			continue;
+
+		snprintf(conninfo, sizeof(conninfo),
+				 "host=%s port=%d gpconntype=%s connect_timeout=5",
+				 address, port, GPCONN_TYPE_FTS);
+
+		conn = PQconnectdb(conninfo);
+		if (PQstatus(conn) != CONNECTION_OK)
+		{
+			ereport(LOG,
+					(errmsg("could not connect to segment (dbid=%d, content=%d) "
+							"at %s:%d for expiration shutdown: %s",
+							dbid, segindex, address, port,
+							PQerrorMessage(conn))));
+			PQfinish(conn);
+			continue;
+		}
+
+		snprintf(msg, sizeof(msg), FTS_MSG_FORMAT,
+				 FTS_MSG_SHUTDOWN, dbid, segindex);
+
+		if (PQsendQuery(conn, msg) == 0)
+		{
+			ereport(LOG,
+					(errmsg("could not send shutdown message to segment "
+							"(dbid=%d, content=%d): %s",
+							dbid, segindex, PQerrorMessage(conn))));
+		}
+		else
+		{
+			ereport(LOG,
+					(errmsg("sent expiration shutdown to segment "
+							"(dbid=%d, content=%d) at %s:%d",
+							dbid, segindex, address, port)));
+
+			/* Wait briefly for the response */
+			PQgetResult(conn);
+		}
+
+		PQfinish(conn);
+	}
+
+	fclose(fp);
+}
+
+/*
+ * CheckExpirationDate
+ *
+ * Compare current date against the compile-time expiration date.
+ * If the database has expired, notify all segments to shut down first,
+ * then initiate fast shutdown on the coordinator.
+ * If expiration is within 7 days, emit a warning.
+ */
+static pg_attribute_always_inline void
+CheckExpirationDate(void)
+{
+	time_t		now;
+	struct tm	tm_exp;
+	double		diff_seconds;
+	int			remaining_days;
+
+	/* Only the dispatcher (coordinator) should enforce expiration */
+	if (Gp_role != GP_ROLE_DISPATCH)
+		return;
+
+	ereport(LOG,
+			(errmsg("checking expiration date")));
+
+	now = time(NULL);
+
+	/* Build expiration timestamp (end of the expiration day) */
+	memset(&tm_exp, 0, sizeof(tm_exp));
+	tm_exp.tm_year = EXPIRATION_YEAR - 1900;
+	tm_exp.tm_mon = EXPIRATION_MONTH - 1;
+	tm_exp.tm_mday = EXPIRATION_DAY;
+	tm_exp.tm_hour = 23;
+	tm_exp.tm_min = 59;
+	tm_exp.tm_sec = 59;
+	tm_exp.tm_isdst = -1;
+
+	diff_seconds = difftime(mktime(&tm_exp), now);
+	remaining_days = (int)(diff_seconds / 86400);
+
+	if (diff_seconds < 0)
+	{
+		ereport(LOG,
+				(errmsg("database has expired (expiration date: %s), "
+						"initiating cluster shutdown", EXPIRATION_DATE_STR)));
+
+		/*
+		 * Defer segment notification to ServerLoop, since we may be called
+		 * from a signal handler where blocking libpq calls are unsafe.
+		 */
+		expiration_shutdown_pending = true;
+
+		/* Trigger Fast Shutdown on the coordinator */
+		if (Shutdown < FastShutdown)
+		{
+			Shutdown = FastShutdown;
+			AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS,
+								PM_STATUS_STOPPING);
+
+			if (pmState == PM_RUN ||
+				pmState == PM_HOT_STANDBY)
+			{
+				ereport(LOG,
+						(errmsg("aborting any active transactions")));
+				pmState = PM_STOP_BACKENDS;
+			}
+			else if (pmState == PM_STARTUP || pmState == PM_RECOVERY)
+			{
+				pmState = PM_STOP_BACKENDS;
+			}
+
+			PostmasterStateMachine();
+		}
+	}
+	else if (remaining_days <= 7)
+	{
+		ereport(WARNING,
+				(errmsg("database will expire in %d day(s) "
+						"(expiration date: %s)",
+						remaining_days, EXPIRATION_DATE_STR)));
+	}
+}
+#endif							/* USE_EXPIRATION_DATE */
+
 /*
  * Main idle loop of postmaster
  *
@@ -2203,6 +2392,34 @@ ServerLoop(void)
 			}
 			last_lockfile_recheck_time = now;
 		}
+
+#ifdef USE_EXPIRATION_DATE
+		/*
+		 * Twice a day (every 12 hours), check whether the database has
+		 * exceeded the compile-time expiration date.  If so, initiate
+		 * fast shutdown.
+		 */
+		{
+			static time_t last_expiration_check_time = 0;
+
+			if (now - last_expiration_check_time >= 12 * SECS_PER_HOUR)
+			{
+				CheckExpirationDate();
+				last_expiration_check_time = now;
+			}
+		}
+
+		/*
+		 * If CheckExpirationDate() detected expiry (possibly from a signal
+		 * handler), notify segments from the main loop where blocking libpq
+		 * calls are safe.
+		 */
+		if (expiration_shutdown_pending)
+		{
+			expiration_shutdown_pending = false;
+			NotifySegmentsExpired();
+		}
+#endif
 
 		/*
 		 * Touch Unix socket and lock files every 58 minutes, to ensure that
@@ -3579,6 +3796,13 @@ reaper(SIGNAL_ARGS)
 			AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_READY);
 #ifdef USE_SYSTEMD
 			sd_notify(0, "READY=1");
+#endif
+
+#ifdef USE_EXPIRATION_DATE
+			ereport(LOG,
+					(errmsg("database expiration date is %s",
+							EXPIRATION_DATE_STR)));
+			CheckExpirationDate();
 #endif
 
 			continue;
@@ -5945,6 +6169,13 @@ sigusr1_handler(SIGNAL_ARGS)
 	{
 		SendProcSignal(LoginMonitorPID, PROCSIG_FAILED_LOGIN, InvalidBackendId);
 	}
+
+#ifdef USE_EXPIRATION_DATE
+	if (CheckPostmasterSignal(PMSIGNAL_CHECK_EXPIRATION))
+	{
+		CheckExpirationDate();
+	}
+#endif
 
 	if (StartupPID != 0 &&
 		(pmState == PM_STARTUP || pmState == PM_RECOVERY ||

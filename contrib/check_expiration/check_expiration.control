@@ -1,0 +1,4 @@
+comment = 'request postmaster to check database expiration date'
+default_version = '1.0'
+module_pathname = '$libdir/check_expiration'
+relocatable = true

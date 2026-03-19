@@ -44,6 +44,7 @@
 #define	FTS_MSG_PROBE "PROBE"
 #define FTS_MSG_SYNCREP_OFF "SYNCREP_OFF"
 #define FTS_MSG_PROMOTE "PROMOTE"
+#define FTS_MSG_SHUTDOWN "SHUTDOWN"
 
 /*
  * This is used for constructing string to store the full fts message request

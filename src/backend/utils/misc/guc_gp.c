@@ -457,6 +457,9 @@ int			gp_max_slices;
 /* System Information */
 static int	gp_server_version_num;
 static char *gp_server_version_string;
+#ifdef USE_EXPIRATION_DATE
+static char *cb_license_expiration_string;
+#endif
 
 /* Query Metrics */
 bool		gp_enable_query_metrics = false;
@@ -5197,6 +5200,20 @@ struct config_string ConfigureNamesString_gp[] =
 		GP_VERSION,
 		NULL, NULL, NULL
 	},
+
+#ifdef USE_EXPIRATION_DATE
+	{
+		/* Can't be set in postgresql.conf */
+		{"cb_license_expiration", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Shows the license expiration date."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&cb_license_expiration_string,
+		EXPIRATION_DATE_STR,
+		NULL, NULL, NULL
+	},
+#endif
 
 	{
 		{"default_index_access_method", PGC_USERSET, CLIENT_CONN_STATEMENT,

@@ -1077,6 +1077,15 @@
 /* Define to 1 to build with perfmon. (--enable-perfmon) */
 #undef USE_PERFMON
 
+/* Define to 1 if a database expiration date is configured. */
+#undef USE_EXPIRATION_DATE
+
+/* Expiration date components (only meaningful if USE_EXPIRATION_DATE is 1) */
+#undef EXPIRATION_YEAR
+#undef EXPIRATION_MONTH
+#undef EXPIRATION_DAY
+#undef EXPIRATION_DATE_STR
+
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 

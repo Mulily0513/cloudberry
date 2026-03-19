@@ -1,0 +1,16 @@
+-- Test check_expiration extension
+CREATE EXTENSION check_expiration;
+-- Test that the function exists and returns boolean
+SELECT check_expiration_date();
+NOTICE:  database was not compiled with expiration date support
+ check_expiration_date
+-----------------------
+ f
+(1 row)
+
+-- Test that non-superuser cannot call it
+SET ROLE pg_monitor;
+SELECT check_expiration_date();
+ERROR:  must be superuser to request expiration check
+RESET ROLE;
+DROP EXTENSION check_expiration;

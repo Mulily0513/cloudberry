@@ -22,6 +22,7 @@
 #include "cdb/cdbvars.h"
 #include "libpq/pqformat.h"
 #include "libpq/libpq.h"
+#include "miscadmin.h"
 #include "postmaster/fts.h"
 #include "postmaster/postmaster.h"
 #include "utils/faultinjector.h"
@@ -445,6 +446,30 @@ skip_promote:
 	SendFtsResponse(&response, FTS_MSG_PROMOTE);
 }
 
+static void
+HandleFtsShutdown(void)
+{
+	FtsResponse response = {
+		false, /* IsMirrorUp */
+		false, /* IsInSync */
+		false, /* IsSyncRepEnabled */
+		false, /* IsRoleMirror */
+		false, /* RequestRetry */
+	};
+
+	ereport(LOG,
+			(errmsg("received shutdown request due to database expiration")));
+
+	SendFtsResponse(&response, FTS_MSG_SHUTDOWN);
+
+	/*
+	 * Signal the postmaster to initiate fast shutdown (same as SIGINT).
+	 * This is done after sending the response so the coordinator knows
+	 * the message was received.
+	 */
+	kill(PostmasterPid, SIGINT);
+}
+
 void
 HandleFtsMessage(const char* query_string)
 {
@@ -487,6 +512,9 @@ HandleFtsMessage(const char* query_string)
 	else if (strncmp(query_string, FTS_MSG_PROMOTE,
 					 strlen(FTS_MSG_PROMOTE)) == 0)
 		HandleFtsWalRepPromote();
+	else if (strncmp(query_string, FTS_MSG_SHUTDOWN,
+					 strlen(FTS_MSG_SHUTDOWN)) == 0)
+		HandleFtsShutdown();
 	else
 		ereport(ERROR,
 				(errmsg("received unknown FTS query: %s", query_string)));

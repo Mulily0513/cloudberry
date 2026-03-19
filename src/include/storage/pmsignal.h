@@ -48,6 +48,8 @@ typedef enum
 	PMSIGNAL_FAILED_LOGIN,		/* send signal SIGUSR1 to login monitor launcher */
 	PMSIGNAL_START_LOGIN_MONITOR_WORKER,	/* start a login monitor worker */
 
+	PMSIGNAL_CHECK_EXPIRATION,	/* check database expiration date */
+
 	NUM_PMSIGNALS				/* Must be last value of enum! */
 } PMSignalReason;
 

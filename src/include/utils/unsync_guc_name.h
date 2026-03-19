@@ -36,6 +36,9 @@
 		"block_size",
 		"bonjour",
 		"bonjour_name",
+#ifdef USE_EXPIRATION_DATE
+		"cb_license_expiration",
+#endif
 		"check_function_bodies",
 		"checkpoint_completion_target",
 		"checkpoint_flush_after",

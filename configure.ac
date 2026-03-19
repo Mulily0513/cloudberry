@@ -1488,6 +1488,60 @@ if test "$with_zstd" = yes; then
 fi
 
 #
+# Expiration date
+#
+AC_MSG_CHECKING([whether to set a database expiration date])
+AC_ARG_WITH([expiration-date],
+  [AS_HELP_STRING([--with-expiration-date=DATE],
+    [set database expiration date in YYYY-MM-DD format])],
+  [],
+  [with_expiration_date=no])
+
+if test "$with_expiration_date" != "no" && test "$with_expiration_date" != ""; then
+  expiration_date="$with_expiration_date"
+  if ! echo "$expiration_date" | grep -qE '^[[0-9]]{4}-(0[[1-9]]|1[[0-2]])-(0[[1-9]]|[[12]][[0-9]]|3[[01]])$'; then
+    AC_MSG_ERROR([invalid expiration date format: "$expiration_date" (expected YYYY-MM-DD)])
+  fi
+
+  exp_year=`echo "$expiration_date" | cut -d- -f1`
+  exp_month=`echo "$expiration_date" | cut -d- -f2 | sed 's/^0//'`
+  exp_day=`echo "$expiration_date" | cut -d- -f3 | sed 's/^0//'`
+
+  dnl Validate calendar correctness (e.g., reject 2026-02-31)
+  dnl Uses portable shell arithmetic instead of GNU date -d
+  case $exp_month in
+    1|3|5|7|8|10|12) max_day=31 ;;
+    4|6|9|11)        max_day=30 ;;
+    2)
+      if test `expr \( $exp_year % 4 \)` -eq 0 && \
+         { test `expr \( $exp_year % 100 \)` -ne 0 || \
+           test `expr \( $exp_year % 400 \)` -eq 0; }; then
+        max_day=29
+      else
+        max_day=28
+      fi ;;
+  esac
+  if test "$exp_day" -gt "$max_day"; then
+    AC_MSG_ERROR([invalid expiration date: "$expiration_date" is not a valid calendar date (month $exp_month has at most $max_day days)])
+  fi
+
+  AC_DEFINE([USE_EXPIRATION_DATE], 1,
+    [Define to 1 if a database expiration date is configured.])
+  AC_DEFINE_UNQUOTED([EXPIRATION_YEAR], [$exp_year],
+    [Expiration year.])
+  AC_DEFINE_UNQUOTED([EXPIRATION_MONTH], [$exp_month],
+    [Expiration month (1-12).])
+  AC_DEFINE_UNQUOTED([EXPIRATION_DAY], [$exp_day],
+    [Expiration day (1-31).])
+  AC_DEFINE_UNQUOTED([EXPIRATION_DATE_STR], ["$expiration_date"],
+    [Expiration date string for display.])
+
+  AC_MSG_RESULT([yes, $expiration_date])
+else
+  AC_MSG_RESULT([no])
+fi
+
+#
 # Realtime library
 #
 PGAC_ARG_BOOL(with, rt, yes,
@@ -1583,7 +1637,7 @@ AC_SUBST(install_bin)
 # MDB locales
 #
 
-PGAC_ARG_BOOL(with, mdblocales, yes, [build without MDB locales],
+PGAC_ARG_BOOL(with, mdblocales, no, [build without MDB locales],
               [AC_DEFINE([USE_MDBLOCALES], 1, [Define to 1 to build with MDB locales. (--with-mdblocales)])])
 AC_SUBST(USE_MDBLOCALES)
 
