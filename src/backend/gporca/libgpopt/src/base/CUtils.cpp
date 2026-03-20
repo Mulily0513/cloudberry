@@ -1142,6 +1142,19 @@ CUtils::FParallelHashJoin(COperator *pop)
 	return (nullptr != popPHJN);
 }
 
+// check if a given operator is an anti-semi hash join
+// (NOT EXISTS / NOT IN variants, including parallel)
+BOOL
+CUtils::FAntiSemiHashJoin(COperator *pop)
+{
+	GPOS_ASSERT(nullptr != pop);
+
+	COperator::EOperatorId eopid = pop->Eopid();
+	return (eopid == COperator::EopPhysicalLeftAntiSemiHashJoin ||
+			eopid == COperator::EopPhysicalLeftAntiSemiHashJoinNotIn ||
+			eopid == COperator::EopPhysicalParallelLeftAntiSemiHashJoin ||
+			eopid == COperator::EopPhysicalParallelLeftAntiSemiHashJoinNotIn);
+}
 
 // check if a given operator is a correlated nested loops join
 BOOL
