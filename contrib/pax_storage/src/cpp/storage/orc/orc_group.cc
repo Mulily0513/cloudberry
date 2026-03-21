@@ -56,7 +56,7 @@ inline static std::pair<Datum, bool> GetColumnDatum(PaxColumn *column,
       return {0, true};
     }
     Assert(row_index >= *null_counts);
-    rc = column->GetDatum(row_index - *null_counts);
+    rc = column->GetDatum(row_index, *null_counts);
   } else {
     Assert(*null_counts == 0);
     rc = column->GetDatum(row_index);

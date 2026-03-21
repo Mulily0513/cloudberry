@@ -55,7 +55,7 @@ class PaxVecCommColumn : public PaxColumn {
 
   std::pair<char *, size_t> GetBuffer(size_t position) override;
 
-  Datum GetDatum(size_t position) override;
+  Datum GetDatum(size_t position, int null_counts) override;
 
   std::pair<char *, size_t> GetRangeBuffer(size_t start_pos,
                                            size_t len) override;
@@ -118,7 +118,7 @@ class PaxVecNonFixedColumn : public PaxColumn {
 
   std::pair<char *, size_t> GetBuffer(size_t position) override;
 
-  Datum GetDatum(size_t position) override;
+  Datum GetDatum(size_t position, int null_counts) override;
 
   std::pair<char *, size_t> GetRangeBuffer(size_t start_pos,
                                            size_t len) override;

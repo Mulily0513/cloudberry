@@ -99,7 +99,7 @@ std::pair<char *, size_t> PaxVecBitPackedColumn::GetBuffer(size_t position) {
   return std::make_pair(buffer, sizeof(bool));
 }
 
-Datum PaxVecBitPackedColumn::GetDatum(size_t position) {
+Datum PaxVecBitPackedColumn::GetDatum(size_t position, int /*null_counts*/) {
   Assert(position < GetRows());
   if (!flat_buffer_) {
     flat_buffer_ = std::make_unique<DataBuffer<bool>>(non_null_rows_ * sizeof(bool));

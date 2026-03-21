@@ -195,7 +195,7 @@ void PaxColumn::AddToastIndex(int32 index_of_toast) {
 
   toast_indexes_->Write(index_of_toast);
   toast_indexes_->Brush(sizeof(int32));
-  toast_flat_map_->Clear(total_rows_);
+  toast_flat_map_->Clear(index_of_toast);
 }
 
 std::string PaxColumn::DebugString() {
@@ -300,9 +300,13 @@ std::pair<char *, size_t> PaxCommColumn<T>::GetBuffer(size_t position) {
 }
 
 template <typename T>
-Datum PaxCommColumn<T>::GetDatum(size_t position) {
-  Assert(position < GetNonNullRows());
-  auto ptr = data_->Start() + (sizeof(T) * position);
+Datum PaxCommColumn<T>::GetDatum(size_t position, int null_counts) {
+  Assert(position < GetRows());
+  Assert(null_counts >= -1);
+  AssertImply(null_counts >= 0, (size_t)null_counts <= position);
+  size_t data_idx = (null_counts >= 0) ? (position - null_counts) : position;
+  Assert(data_idx < GetNonNullRows());
+  auto ptr = data_->Start() + (sizeof(T) * data_idx);
   return (Datum)(*reinterpret_cast<T *>(ptr));
 }
 
@@ -465,14 +469,19 @@ std::pair<char *, size_t> PaxNonFixedColumn::GetBuffer(size_t position) {
                         (*offsets_)[position + 1] - (*offsets_)[position]);
 }
 
-Datum PaxNonFixedColumn::GetDatum(size_t position) {
-  Assert(position < GetNonNullRows());
+Datum PaxNonFixedColumn::GetDatum(size_t position, int null_counts) {
+  Assert(position < GetRows());
+  Assert(null_counts >= -1);
+  AssertImply(null_counts >= 0, (size_t)null_counts <= position);
+  size_t data_idx = (null_counts >= 0) ? (position - null_counts) : position;
+  Assert(data_idx < GetNonNullRows());
   const char *buffer = nullptr;
   // safe to call without length
-  const auto &start_offset = (*offsets_)[position];
+  const auto &start_offset = (*offsets_)[data_idx];
   buffer = data_->GetBuffer() + start_offset;
   Datum datum = PointerGetDatum(buffer);
 
+  // position is the absolute row index, which matches toast_flat_map_ indexing.
   if (unlikely(IsToast(position))) {
     std::shared_ptr<MemoryObject> ref;
     auto external_buffer = GetExternalToastDataBuffer();

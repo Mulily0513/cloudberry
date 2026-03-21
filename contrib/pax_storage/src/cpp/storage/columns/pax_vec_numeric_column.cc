@@ -123,7 +123,7 @@ std::pair<char *, size_t> PaxShortNumericColumn::GetBuffer(size_t position) {
   return {DatumGetPointer(datum), VARSIZE_ANY_EXHDR(vl) + VARHDRSZ};
 }
 
-Datum PaxShortNumericColumn::GetDatum(size_t position) {
+Datum PaxShortNumericColumn::GetDatum(size_t position, int /*null_counts*/) {
   Assert(position < GetRows());
   int8 *raw_buffer;
   Datum datum;

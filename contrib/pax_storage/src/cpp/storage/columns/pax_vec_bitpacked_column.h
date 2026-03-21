@@ -50,7 +50,7 @@ class PaxVecBitPackedColumn final : public PaxVecEncodingColumn<int8> {
 
   std::pair<char *, size_t> GetBuffer(size_t position) override;
 
-  Datum GetDatum(size_t position) override;
+  Datum GetDatum(size_t position, int null_counts) override;
 
  private:
   void CheckExpandBitmap();

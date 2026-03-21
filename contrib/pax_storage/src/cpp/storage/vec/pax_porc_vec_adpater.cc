@@ -63,41 +63,66 @@ static void CopyNonFixedBuffer(PaxVecNonFixedColumn *column,
                                DataBuffer<char> *out_data_buffer) {
   char *buffer;
   size_t buffer_len;
-  char *offset_buffer = nullptr;
+  char *offset_buffer_raw = nullptr;
   size_t offset_buffer_len = 0;
-  Assert(visibility_map_bitset && invisible_rows > 0);
   std::tie(buffer, buffer_len) = column->GetBuffer();
-  std::tie(offset_buffer, offset_buffer_len) = column->GetOffsetBuffer(false);
+  std::tie(offset_buffer_raw, offset_buffer_len) = column->GetOffsetBuffer(false);
 
-  // offsets are not continuous
   auto const typlen = sizeof(int32);
   auto visible_num = total_rows - invisible_rows;
-  auto visible_len = typlen * (visible_num + 1);
-  size_t data_len = 0;
-  int adjust_offset = 0;
-  auto offset_array = reinterpret_cast<int32 *>(offset_buffer);
+  auto offset_array = reinterpret_cast<int32 *>(offset_buffer_raw);
 
-  visible_len = TYPEALIGN(MEMORY_ALIGN_SIZE, visible_len);
+  bool has_toast = column->ToastCounts() > 0;
+  auto et_buffer = has_toast ? column->GetExternalToastDataBuffer() : nullptr;
+
+  // Pass 1: Build offset buffer and calculate total data size.
+  // For toast rows, use pax_toast_raw_size to get the detoasted size.
+  auto visible_len = TYPEALIGN(MEMORY_ALIGN_SIZE, typlen * (visible_num + 1));
   out_offset_buffer->Set(BlockBuffer::Alloc<char>(visible_len), visible_len);
+
+  int32 adjust_offset = 0;
   for (size_t i = 0; i < total_rows; i++) {
-    if (!visibility_map_bitset->Test(group_base_offset + i)) {
-      out_offset_buffer->Write(&adjust_offset, typlen);
-      adjust_offset += offset_array[i + 1] - offset_array[i];
-      out_offset_buffer->Brush(typlen);
+    if (visibility_map_bitset &&
+        visibility_map_bitset->Test(group_base_offset + i)) {
+      continue;
+    }
+    out_offset_buffer->Write(&adjust_offset, typlen);
+    out_offset_buffer->Brush(typlen);
+
+    auto value_size = offset_array[i + 1] - offset_array[i];
+    if (value_size > 0 && has_toast && column->IsToast(i)) {
+      adjust_offset += pax_toast_raw_size(
+          PointerGetDatum(&buffer[offset_array[i]]));
+    } else {
+      adjust_offset += value_size;
     }
   }
-
   out_offset_buffer->Write(&adjust_offset, typlen);
   out_offset_buffer->Brush(typlen);
 
-  // append data buffer
-  data_len = TYPEALIGN(MEMORY_ALIGN_SIZE, adjust_offset);
+  // Pass 2: Copy data buffer, detoasting toast rows.
+  auto data_len = TYPEALIGN(MEMORY_ALIGN_SIZE, adjust_offset);
   out_data_buffer->Set(BlockBuffer::Alloc<char>(data_len), data_len);
+
   for (size_t i = 0; i < total_rows; i++) {
+    if (visibility_map_bitset &&
+        visibility_map_bitset->Test(group_base_offset + i)) {
+      continue;
+    }
     auto value_size = offset_array[i + 1] - offset_array[i];
-    if (value_size > 0 && !visibility_map_bitset->Test(group_base_offset + i)) {
-      out_data_buffer->Write(&buffer[offset_array[i]], value_size);
-      out_data_buffer->Brush(value_size);
+    if (value_size > 0) {
+      if (has_toast && column->IsToast(i)) {
+        auto decompress_size = pax_detoast_raw(
+            PointerGetDatum(&buffer[offset_array[i]]),
+            out_data_buffer->GetAvailableBuffer(),
+            out_data_buffer->Available(),
+            et_buffer ? et_buffer->Start() : nullptr,
+            et_buffer ? et_buffer->Used() : 0);
+        out_data_buffer->Brush(decompress_size);
+      } else {
+        out_data_buffer->Write(&buffer[offset_array[i]], value_size);
+        out_data_buffer->Brush(value_size);
+      }
     }
   }
 }
@@ -172,8 +197,11 @@ std::pair<size_t, size_t> VecAdapter::AppendPorcVecFormat(PaxColumns *columns) {
         Assert(!vec_buffer->GetBuffer());
         Assert(!offset_buffer->GetBuffer());
 
-        // no need try transfer memory buffer
-        if (invisible_rows != 0) {
+        // When there are invisible rows or toast data, we must do a
+        // per-row copy.  Toast entries are small pointers that expand
+        // into full-size data after detoasting, so zero-copy is not
+        // possible when toast is present.
+        if (invisible_rows != 0 || column->ToastCounts() > 0) {
           CopyNonFixedBuffer(dynamic_cast<PaxVecNonFixedColumn*>(column),
                              micro_partition_visibility_bitmap_,
                              group_base_offset_, invisible_rows, total_rows,

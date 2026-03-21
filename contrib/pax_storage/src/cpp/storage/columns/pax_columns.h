@@ -91,7 +91,7 @@ class PaxColumns : public PaxColumn {
   std::pair<char *, size_t> GetBuffer(size_t position) override;
 
   // can't call this function on columns
-  Datum GetDatum(size_t position) override {
+  Datum GetDatum(size_t position, int /*null_counts*/) override {
     CBDB_RAISE(cbdb::CException::kExTypeUnImplements);
   }
 

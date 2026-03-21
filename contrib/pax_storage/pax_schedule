@@ -5,6 +5,7 @@ test: pax_parallel
 test: cbdb_parallel
 test: alter_distributed 
 test: toast toast_failed detoast ddl numeric types filter
+test: pax_toast_null_position_bug
 test: update
 test: statistics_bloom_filter
 

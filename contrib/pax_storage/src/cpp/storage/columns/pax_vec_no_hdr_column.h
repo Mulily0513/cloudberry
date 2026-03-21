@@ -42,7 +42,7 @@ class PaxVecNoHdrColumn final : public PaxVecNonFixedEncodingColumn {
       : PaxVecNonFixedEncodingColumn(data_capacity, length_capacity,
                                      decoding_option) {}
 
-  Datum GetDatum(size_t position) override {
+  Datum GetDatum(size_t position, int /*null_counts*/) override {
     CBDB_CHECK(position < offsets_->GetSize(),
                cbdb::CException::ExType::kExTypeOutOfRange,
                fmt("Fail to get buffer [pos=%lu, total rows=%lu], \n %s",

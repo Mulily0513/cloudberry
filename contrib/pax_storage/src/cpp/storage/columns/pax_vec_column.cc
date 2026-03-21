@@ -128,7 +128,7 @@ std::pair<char *, size_t> PaxVecCommColumn<T>::GetBuffer(size_t position) {
 }
 
 template <typename T>
-Datum PaxVecCommColumn<T>::GetDatum(size_t position) {
+Datum PaxVecCommColumn<T>::GetDatum(size_t position, int /*null_counts*/) {
   Assert(position < GetRows());
   auto ptr = data_->Start() + (sizeof(T) * position);
   return (Datum)(*reinterpret_cast<T *>(ptr));
@@ -285,7 +285,7 @@ std::pair<char *, size_t> PaxVecNonFixedColumn::GetBuffer(size_t position) {
                         last_offset - start_offset);
 }
 
-Datum PaxVecNonFixedColumn::GetDatum(size_t position) {
+Datum PaxVecNonFixedColumn::GetDatum(size_t position, int /*null_counts*/) {
   Assert(position < GetRows());
   Datum datum;
   char *buffer;
