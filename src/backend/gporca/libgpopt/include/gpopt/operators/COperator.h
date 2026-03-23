@@ -213,6 +213,7 @@ public:
 		EopPhysicalCorrelatedNotInLeftAntiSemiNLJoin,
 		EopPhysicalFullMergeJoin,
 		EopPhysicalDynamicTableScan,
+		EopPhysicalParallelDynamicTableScan,
 		EopPhysicalSequence,
 		EopPhysicalTVF,
 		EopPhysicalCTEProducer,

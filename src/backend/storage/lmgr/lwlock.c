@@ -174,6 +174,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"SharedTidBitmap",
 	/* LWTRANCHE_PARALLEL_APPEND: */
 	"ParallelAppend",
+	/* LWTRANCHE_PARALLEL_DYNAMIC_SEQSCAN: */
+	"ParallelDynamicSeqScan",
 	/* LWTRANCHE_PER_XACT_PREDICATE_LIST: */
 	"PerXactPredicateList",
 	/* LWTRANCHE_DISTRIBUTEDLOG_BUFFERS */

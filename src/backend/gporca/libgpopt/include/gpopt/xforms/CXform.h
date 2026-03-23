@@ -257,6 +257,7 @@ public:
 		ExfFullJoinCommutativity,
 		ExfSplitWindowFunc,
 		ExfImplementParallelSequenceProject,
+		ExfDynamicGet2ParallelDynamicTableScan,
 		ExfInvalid,
 		ExfSentinel = ExfInvalid
 	};

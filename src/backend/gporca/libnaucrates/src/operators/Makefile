@@ -66,6 +66,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalDynamicIndexScan.o \
               CDXLPhysicalDynamicIndexOnlyScan.o \
               CDXLPhysicalDynamicTableScan.o \
+              CDXLPhysicalParallelDynamicTableScan.o \
               CDXLPhysicalForeignScan.o \
               CDXLPhysicalGatherMotion.o \
               CDXLPhysicalHashDistributeWorkersMotion.o \

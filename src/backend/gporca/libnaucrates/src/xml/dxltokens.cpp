@@ -151,6 +151,8 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("DynamicForeignScan")},
 		{EdxltokenPhysicalSequence, GPOS_WSZ_LIT("Sequence")},
 		{EdxltokenPhysicalDynamicTableScan, GPOS_WSZ_LIT("DynamicTableScan")},
+		{EdxltokenPhysicalParallelDynamicTableScan,
+		 GPOS_WSZ_LIT("ParallelDynamicTableScan")},
 		{EdxltokenPhysicalDynamicIndexScan, GPOS_WSZ_LIT("DynamicIndexScan")},
 		{EdxltokenPhysicalDynamicIndexOnlyScan,
 		 GPOS_WSZ_LIT("DynamicIndexOnlyScan")},

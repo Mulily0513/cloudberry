@@ -37,6 +37,7 @@
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
 #include "executor/nodeMemoize.h"
+#include "executor/nodeDynamicSeqscan.h"
 #include "executor/nodePartitionSelector.h"
 #include "executor/nodeSeqscan.h"
 #include "executor/nodeSort.h"
@@ -266,6 +267,11 @@ ExecParallelEstimate(PlanState *planstate, ExecParallelEstimateContext *e)
 				ExecAppendEstimate((AppendState *) planstate,
 								   e->pcxt);
 			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanEstimate((DynamicSeqScanState *) planstate,
+										   e->pcxt);
+			break;
 		case T_CustomScanState:
 			if (planstate->plan->parallel_aware)
 				ExecCustomScanEstimate((CustomScanState *) planstate,
@@ -489,6 +495,11 @@ ExecParallelInitializeDSM(PlanState *planstate,
 			if (planstate->plan->parallel_aware)
 				ExecAppendInitializeDSM((AppendState *) planstate,
 										d->pcxt);
+			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanInitializeDSM((DynamicSeqScanState *) planstate,
+												d->pcxt);
 			break;
 		case T_CustomScanState:
 			if (planstate->plan->parallel_aware)
@@ -983,6 +994,11 @@ ExecParallelReInitializeDSM(PlanState *planstate,
 			if (planstate->plan->parallel_aware)
 				ExecAppendReInitializeDSM((AppendState *) planstate, pcxt);
 			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanReInitializeDSM((DynamicSeqScanState *) planstate,
+												  pcxt);
+			break;
 		case T_CustomScanState:
 			if (planstate->plan->parallel_aware)
 				ExecCustomScanReInitializeDSM((CustomScanState *) planstate,
@@ -1335,6 +1351,11 @@ ExecParallelInitializeWorker(PlanState *planstate, ParallelWorkerContext *pwcxt)
 			if (planstate->plan->parallel_aware)
 				ExecAppendInitializeWorker((AppendState *) planstate, pwcxt);
 			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanInitializeWorker((DynamicSeqScanState *) planstate,
+												   pwcxt);
+			break;
 		case T_CustomScanState:
 			if (planstate->plan->parallel_aware)
 				ExecCustomScanInitializeWorker((CustomScanState *) planstate,
@@ -1542,6 +1563,11 @@ EstimateGpParallelDSMEntrySize(PlanState *planstate, ParallelContext *pctx)
 			if (planstate->plan->parallel_aware)
 				ExecAppendEstimate((AppendState*) planstate, pctx);
 			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanEstimate((DynamicSeqScanState *) planstate,
+										   pctx);
+			break;
 		case T_HashJoinState:
 			if (planstate->plan->parallel_aware)
 				ExecHashJoinEstimate((HashJoinState *) planstate,
@@ -1600,6 +1626,11 @@ InitializeGpParallelWorkers(PlanState *planstate, ParallelWorkerContext *pwcxt)
 		case T_AppendState:
 			if (planstate->plan->parallel_aware)
 				ExecAppendInitializeWorker((AppendState *) planstate, pwcxt);
+			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanInitializeWorker((DynamicSeqScanState *) planstate,
+												   pwcxt);
 			break;
 		case T_HashState:
 			break;
@@ -1660,6 +1691,11 @@ InitializeGpParallelDSMEntry(PlanState *planstate, ParallelContext *pctx)
 			if (planstate->plan->parallel_aware)
 				ExecAppendInitializeDSM((AppendState *) planstate,
 										pctx);
+			break;
+		case T_DynamicSeqScanState:
+			if (planstate->plan->parallel_aware)
+				ExecDynamicSeqScanInitializeDSM((DynamicSeqScanState *) planstate,
+												pctx);
 			break;
 		case T_HashJoinState:
 			if (planstate->plan->parallel_aware)

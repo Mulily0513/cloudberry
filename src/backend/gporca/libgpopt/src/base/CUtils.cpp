@@ -52,6 +52,7 @@
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
 #include "gpopt/operators/CPhysicalParallelBitmapTableScan.h"
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
+#include "gpopt/operators/CPhysicalParallelDynamicTableScan.h"
 #include "gpopt/operators/CPredicateUtils.h"
 #include "gpopt/operators/CScalarArray.h"
 #include "gpopt/operators/CScalarArrayCoerceExpr.h"
@@ -1220,7 +1221,8 @@ CUtils::FPhysicalParallelScan(COperator *pop)
 	GPOS_ASSERT(nullptr != pop);
 
 	return (COperator::EopPhysicalParallelTableScan == pop->Eopid() ||
-			COperator::EopPhysicalParallelBitmapTableScan == pop->Eopid());
+			COperator::EopPhysicalParallelBitmapTableScan == pop->Eopid() ||
+			COperator::EopPhysicalParallelDynamicTableScan == pop->Eopid());
 }
 
 // check if a given operator is a physical agg
@@ -1312,6 +1314,14 @@ CUtils::UlExtractWorkersFromGroupInternal(
 		{
 			CPhysicalParallelAppendTableScan *popScan =
 				CPhysicalParallelAppendTableScan::PopConvert(popChild);
+			return popScan->UlParallelWorkers();
+		}
+
+		// Check for parallel dynamic table scan (partitioned tables)
+		if (COperator::EopPhysicalParallelDynamicTableScan == popChild->Eopid())
+		{
+			CPhysicalParallelDynamicTableScan *popScan =
+				CPhysicalParallelDynamicTableScan::PopConvert(popChild);
 			return popScan->UlParallelWorkers();
 		}
 

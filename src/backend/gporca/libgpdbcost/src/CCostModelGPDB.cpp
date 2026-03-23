@@ -35,6 +35,7 @@
 #include "gpopt/operators/CPhysicalParallelIndexScan.h"
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
 #include "gpopt/operators/CPhysicalParallelBitmapTableScan.h"
+#include "gpopt/operators/CPhysicalParallelDynamicTableScan.h"
 #include "gpopt/operators/CPhysicalParallelAppendTableScan.h"
 #include "gpopt/operators/CPhysicalParallelHashJoin.h"
 #include "gpopt/operators/CPhysicalMotion.h"
@@ -476,6 +477,10 @@ CCostModelGPDB::CostChildren(CMemoryPool *mp, CExpressionHandle &exprhdl,
 					else if (COperator::EopPhysicalParallelBitmapTableScan == scanOp->Eopid())
 					{
 						ulWorkers = CPhysicalParallelBitmapTableScan::PopConvert(scanOp)->UlParallelWorkers();
+					}
+					else if (COperator::EopPhysicalParallelDynamicTableScan == scanOp->Eopid())
+					{
+						ulWorkers = CPhysicalParallelDynamicTableScan::PopConvert(scanOp)->UlParallelWorkers();
 					}
 					GPOS_ASSERT(ulWorkers > 0);
 
@@ -3215,14 +3220,20 @@ CCostModelGPDB::CostParallelTableScan(CMemoryPool *mp,
 
 	COperator *pop = exprhdl.Pop();
 	GPOS_ASSERT(COperator::EopPhysicalParallelTableScan == pop->Eopid() ||
+		    COperator::EopPhysicalParallelDynamicTableScan == pop->Eopid() ||
 		    COperator::EopPhysicalParallelAppendTableScan == pop->Eopid());
 
-	// Get the parallel table scan operatora
+	// Get the parallel table scan operator
 	ULONG ulWorkers = 0;
 
 	if (COperator::EopPhysicalParallelTableScan == pop->Eopid())
 	{
 		CPhysicalParallelTableScan *popParallelScan = CPhysicalParallelTableScan::PopConvert(pop);
+		ulWorkers = popParallelScan->UlParallelWorkers();
+	}
+	else if (COperator::EopPhysicalParallelDynamicTableScan == pop->Eopid())
+	{
+		CPhysicalParallelDynamicTableScan *popParallelScan = CPhysicalParallelDynamicTableScan::PopConvert(pop);
 		ulWorkers = popParallelScan->UlParallelWorkers();
 	}
 	else if(COperator::EopPhysicalParallelAppendTableScan == pop->Eopid())
@@ -3444,6 +3455,7 @@ CCostModelGPDB::Cost(
 		}
 
 		case COperator::EopPhysicalParallelTableScan:
+		case COperator::EopPhysicalParallelDynamicTableScan:
 		case COperator::EopPhysicalParallelAppendTableScan:
 		{
 			return CostParallelTableScan(m_mp, exprhdl, this, pci);

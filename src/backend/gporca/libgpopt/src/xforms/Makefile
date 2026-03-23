@@ -28,6 +28,7 @@ OBJS        = CDecorrelator.o \
               CXformDynamicGet2DynamicTableScan.o \
               CXformDynamicGet2AppendTableScan.o \
               CXformDynamicGet2ParallelAppendTableScan.o \
+              CXformDynamicGet2ParallelDynamicTableScan.o \
               CXformDynamicIndexOnlyGet2DynamicIndexOnlyScan.o \
               CXformDynamicIndexGet2DynamicIndexScan.o \
               CXformEagerAgg.o \

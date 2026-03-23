@@ -2233,6 +2233,10 @@ typedef struct DynamicSeqScanState
 
 	/* runtime filter support */
 	List		*filters;			/* the list of struct ScanKeyData for runtime filters */
+
+	/* Parallel support */
+	Size		pdss_len;	/* size of ParallelDynamicSeqScanDesc in DSM */
+	struct ParallelDynamicSeqScanDesc *pdss; /* shared state in DSM (NULL if serial) */
 } DynamicSeqScanState;
 
 /*

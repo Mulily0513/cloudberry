@@ -481,6 +481,8 @@ CConfigParamMapping::PackConfigParamInBitset(
 		// disable dynamic table scan if the corresponding GUC is turned off
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfDynamicGet2DynamicTableScan));
+		traceflag_bitset->ExchangeSet(
+			GPOPT_DISABLE_XFORM_TF(CXform::ExfDynamicGet2ParallelDynamicTableScan));
 	}
 
 	if (!optimizer_enable_tablescan)

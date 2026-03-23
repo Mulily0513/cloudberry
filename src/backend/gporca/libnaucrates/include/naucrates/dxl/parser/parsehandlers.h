@@ -36,6 +36,7 @@
 #include "naucrates/dxl/parser/CParseHandlerDynamicIndexOnlyScan.h"
 #include "naucrates/dxl/parser/CParseHandlerDynamicIndexScan.h"
 #include "naucrates/dxl/parser/CParseHandlerDynamicTableScan.h"
+#include "naucrates/dxl/parser/CParseHandlerPhysicalParallelDynamicTableScan.h"
 #include "naucrates/dxl/parser/CParseHandlerEnumeratorConfig.h"
 #include "naucrates/dxl/parser/CParseHandlerExtStats.h"
 #include "naucrates/dxl/parser/CParseHandlerExtStatsDependencies.h"

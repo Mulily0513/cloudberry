@@ -92,6 +92,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalSplit.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTVF.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalParallelDynamicTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalParallelTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalValuesScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
@@ -500,6 +501,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 		{
 			plan = TranslateDXLDynTblScan(dxlnode, output_context,
 										  ctxt_translation_prev_siblings);
+			break;
+		}
+		case EdxlopPhysicalParallelDynamicTableScan:
+		{
+			plan = TranslateDXLParallelDynTblScan(
+				dxlnode, output_context, ctxt_translation_prev_siblings);
 			break;
 		}
 		case EdxlopPhysicalDynamicIndexScan:
@@ -5830,6 +5837,100 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLParallelDynTblScan
+//
+//	@doc:
+//		Translates a DXL parallel dynamic table scan node into a
+//		DynamicSeqScan node with parallel_aware = true
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLParallelDynTblScan(
+	const CDXLNode *dyn_tbl_scan_dxlnode, CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray * /*ctxt_translation_prev_siblings*/)
+{
+	CDXLPhysicalParallelDynamicTableScan *dyn_tbl_scan_dxlop =
+		CDXLPhysicalParallelDynamicTableScan::Cast(
+			dyn_tbl_scan_dxlnode->GetOperator());
+
+	ULONG parallel_workers = dyn_tbl_scan_dxlop->UlParallelWorkers();
+
+	/* translation context for column mappings in the base relation */
+	CDXLTranslateContextBaseTable base_table_context(m_mp);
+
+	Index index = ProcessDXLTblDescr(dyn_tbl_scan_dxlop->GetDXLTableDescr(),
+									 &base_table_context);
+
+	/* create dynamic scan node */
+	DynamicSeqScan *dyn_seq_scan = MakeNode(DynamicSeqScan);
+
+	dyn_seq_scan->seqscan.scanrelid = index;
+
+	const CDXLTableDescr *dxl_table_descr =
+		dyn_tbl_scan_dxlop->GetDXLTableDescr();
+	GPOS_ASSERT(dxl_table_descr->LockMode() != -1);
+
+	dyn_seq_scan->partOids = TranslatePartOids(dyn_tbl_scan_dxlop->GetParts(),
+											   dxl_table_descr->LockMode());
+
+	OID oid_type =
+		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
+			->Oid();
+
+	const IMDRelation *md_rel =
+		m_md_accessor->RetrieveRel(dxl_table_descr->MDId());
+
+	OID oidRel = CMDIdGPDB::CastMdid(md_rel->MDId())->Oid();
+
+	dyn_seq_scan->join_prune_paramids =
+		TranslateJoinPruneParamids(dyn_tbl_scan_dxlop->GetSelectorIds(),
+								   oid_type, m_dxl_to_plstmt_context);
+
+	Plan *plan = &(dyn_seq_scan->seqscan.plan);
+	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+
+	/* set parallel execution flags */
+	plan->parallel_aware = true;
+	plan->parallel_safe = true;
+	plan->parallel = (int) parallel_workers;
+
+	/* translate operator costs */
+	TranslatePlanCosts(dyn_tbl_scan_dxlnode, plan);
+
+	GPOS_ASSERT(2 == dyn_tbl_scan_dxlnode->Arity());
+
+	/* translate proj list and filter */
+	CDXLNode *project_list_dxlnode =
+		(*dyn_tbl_scan_dxlnode)[EdxltsIndexProjList];
+	CDXLNode *filter_dxlnode = (*dyn_tbl_scan_dxlnode)[EdxltsIndexFilter];
+
+	List *security_query_quals = NIL;
+	List *query_quals = NIL;
+
+	AddSecurityQuals(oidRel, &security_query_quals, &index);
+
+	TranslateProjListAndFilter(
+		project_list_dxlnode, filter_dxlnode,
+		&base_table_context,
+		nullptr,
+		&plan->targetlist, &query_quals, output_context);
+
+	security_query_quals = gpdb::ListConcat(security_query_quals, query_quals);
+	plan->qual = security_query_quals;
+
+	/* adjust row count for parallel workers */
+	if (parallel_workers > 1)
+	{
+		plan->plan_rows = ceil(plan->plan_rows / parallel_workers);
+	}
+
+	SetParamIds(plan);
+
+	return plan;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CTranslatorDXLToPlStmt::TranslateDXLDynIdxOnlyScan
 //
 //	@doc:
@@ -8497,6 +8598,12 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 		CDXLPhysicalParallelBitmapTableScan *parallel_bitmap_dxlop =
 			CDXLPhysicalParallelBitmapTableScan::Cast(dxlop);
 		return parallel_bitmap_dxlop->UlParallelWorkers();
+	}
+	else if (EdxlopPhysicalParallelDynamicTableScan == dxlop->GetDXLOperator())
+	{
+		CDXLPhysicalParallelDynamicTableScan *parallel_dyn_scan_dxlop =
+			CDXLPhysicalParallelDynamicTableScan::Cast(dxlop);
+		return parallel_dyn_scan_dxlop->UlParallelWorkers();
 	}
 	else if (EdxlopPhysicalTableScan == dxlop->GetDXLOperator() ||
 			 EdxlopPhysicalDynamicTableScan == dxlop->GetDXLOperator() ||

@@ -438,6 +438,14 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate a parallel dynamic table scan operator
+	Plan *TranslateDXLParallelDynTblScan(
+		const CDXLNode *dyn_tbl_scan_dxlnode,
+		CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
 	// translate a dynamic index scan operator
 	Plan *TranslateDXLDynIdxScan(
 		const CDXLNode *dyn_idx_scan_dxlnode,
