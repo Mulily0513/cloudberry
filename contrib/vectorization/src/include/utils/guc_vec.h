@@ -42,5 +42,10 @@ extern bool print_fallback_log;
 extern int hashjoin_spill_memory_mb;
 /* memory budget (KB) for window hash agg spill; 0 means use work_mem */
 extern int winagg_spill_work_mem;
+extern bool sort_use_external_sort;
+extern int sort_external_batch_size;
+extern int sort_external_num_threads;
+extern int sort_external_max_rows;
+extern char *sort_external_temp_file_base;
 
 #endif   /* GUC_VEC_H */

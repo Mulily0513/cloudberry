@@ -20,6 +20,7 @@
 #include "nodes/nodes.h"
 #include "parser/scansup.h"
 #include "optimizer/optimizer.h"
+#include "utils/arrow_sort_options_vec.h"
 #include "utils/fmgr_vec.h"
 #include "utils/lsyscache.h"
 #include "utils/tuptable_vec.h"
@@ -2883,7 +2884,7 @@ build_windowagg_project_options(List *targetList, List *aggInfos, PlanBuildConte
 			orderby_keys = garrow_list_append_ptr(orderby_keys, key);
 		}
 
-		pcontext->orderby_sortoption = garrow_sort_options_new(orderby_keys, partition_top_k, take_thread_num, two_phase_take);
+		pcontext->orderby_sortoption =  vec_sort_options_new(orderby_keys, partition_top_k, take_thread_num, two_phase_take);
 		garrow_list_free_ptr(&orderby_keys);
 		pfree(sortKey.orders);
 		pfree(sortKey.nulls_first);
@@ -3052,7 +3053,7 @@ build_windowhashagg_project_options(List *targetList, List *aggInfos, PlanBuildC
 			orderby_keys = garrow_list_append_ptr(orderby_keys, key);
 		}
 
-		pcontext->orderby_sortoption = garrow_sort_options_new(orderby_keys, partition_top_k, take_thread_num, two_phase_take);
+		pcontext->orderby_sortoption =  vec_sort_options_new(orderby_keys, partition_top_k, take_thread_num, two_phase_take);
 		garrow_list_free_ptr(&orderby_keys);
 	}
 
