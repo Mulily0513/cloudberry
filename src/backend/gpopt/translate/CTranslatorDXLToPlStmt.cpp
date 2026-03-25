@@ -8479,6 +8479,12 @@ CTranslatorDXLToPlStmt::ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode)
 			CDXLPhysicalParallelIndexOnlyScan::Cast(dxlop);
 		return parallel_ios_dxlop->UlParallelWorkers();
 	}
+	else if (EdxlopPhysicalParallelAppend == dxlop->GetDXLOperator())
+	{
+		CDXLPhysicalParallelAppend *parallel_append_dxlop =
+			CDXLPhysicalParallelAppend::Cast(dxlop);
+		return parallel_append_dxlop->UlParallelWorkers();
+	}
 	else if (EdxlopPhysicalParallelWindow == dxlop->GetDXLOperator())
 	{
 		// Parallel Window operator - return its parallel workers
