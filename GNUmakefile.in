@@ -10,6 +10,17 @@ include $(top_builddir)/src/Makefile.global
 
 $(call recurse,all install,src config)
 
+# Automatically point core.hooksPath at the in-repo hooks directory so that
+# every developer gets the pre-push coverage check without manual setup.
+.PHONY: setup-git-hooks
+setup-git-hooks:
+	@if [ -d .git ] && [ -d scripts/hooks ]; then \
+	    current=$$(git config --local core.hooksPath 2>/dev/null); \
+	    if [ "$$current" != "scripts/hooks" ]; then \
+	        git config --local core.hooksPath scripts/hooks 2>/dev/null && \
+	            echo "Git hooks activated: core.hooksPath = scripts/hooks" || true; \
+	    fi \
+	fi
 
 all:
 ifeq ($(or $(enable_vectorization),$(enable_datalake),$(enable_pax)),yes)

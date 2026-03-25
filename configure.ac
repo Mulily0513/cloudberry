@@ -3353,6 +3353,17 @@ AC_CONFIG_HEADERS([src/interfaces/ecpg/include/ecpg_config.h],
 
 
 AC_OUTPUT
+
+# Automatically activate in-repo git hooks (pre-push coverage check, etc.)
+# so that every developer gets them after running ./configure.
+if test -d "$srcdir/.git" && test -d "$srcdir/scripts/hooks"; then
+    current_hooks_path=$(git -C "$srcdir" config --local core.hooksPath 2>/dev/null || true)
+    if test "$current_hooks_path" != "scripts/hooks"; then
+        git -C "$srcdir" config --local core.hooksPath scripts/hooks 2>/dev/null && \
+            echo "configure: git hooks activated: core.hooksPath = scripts/hooks" || true
+    fi
+fi
+
 # The configure args contain '-Wl,-rpath,\$$ORIGIN`, when it falls
 # as a C literal string, it's invalid, so converting `\` to `\\`
 # to be correct for C program.

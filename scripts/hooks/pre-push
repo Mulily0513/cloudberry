@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# pre-push hook: incremental test coverage check for new C/C++ code.
+#
+# This hook is activated automatically via core.hooksPath when
+# developers run ./configure or make.  It delegates to
+# check-coverage.sh which lives next to this file.
+#
+# Skip:  SKIP_COVERAGE_CHECK=1 git push
+#
+
+if [ "${SKIP_COVERAGE_CHECK}" = "1" ]; then
+    echo "[coverage-check] Skipped by SKIP_COVERAGE_CHECK=1"
+    exit 0
+fi
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$HOOK_DIR/check-coverage.sh" "$@"
