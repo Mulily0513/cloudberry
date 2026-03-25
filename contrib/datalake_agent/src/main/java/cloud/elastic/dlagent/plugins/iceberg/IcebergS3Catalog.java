@@ -31,7 +31,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hadoop.HadoopCatalog;
-import org.apache.iceberg.exceptions.NoSuchTableException;
 import com.google.common.base.Preconditions;
 
 import org.slf4j.Logger;
@@ -55,14 +54,16 @@ public class IcebergS3Catalog implements IcebergCatalog {
 
         Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
 
-        String[] bucketName = new String[1];
-        String[] prefix = new String[1];
-        Utilities.parserBucketAndPrefix(catalogLocation, bucketName, prefix);
-
-        String warehouseLocation = String.format("%s/%s", configuration.get("fs.defaultFS"), prefix[0]);
+        String fsPrefix = configuration.get("fs.prefix");
+        if (fsPrefix == null) {
+            LOG.warn("fs.prefix not set; falling back to empty prefix");
+            fsPrefix = "";
+        }
+        String warehouseLocation = String.format("%s/%s", configuration.get("fs.defaultFS"), fsPrefix);
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
 
         LOG.info("warehouse location of iceberg hadoop-table {}", warehouseLocation);
+
 
         hadoopCatalog.setConf(this.configuration);
         hadoopCatalog.initialize("", props);
@@ -88,29 +89,7 @@ public class IcebergS3Catalog implements IcebergCatalog {
     public Table loadTable(TableIdentifier tableId, String tableLocation,
                            Map<String, String> tableProps) throws Exception {
         Preconditions.checkState(tableId != null);
-        final int MAX_ATTEMPTS = 5;
-        final int SLEEP_MS = 500;
-        int attempt = 0;
-        while (attempt < MAX_ATTEMPTS) {
-            try {
-                return hadoopCatalog.loadTable(tableId);
-            } catch (NullPointerException | UncheckedIOException e) {
-                if (attempt == MAX_ATTEMPTS - 1) {
-                    // Throw exception on last attempt.
-                    throw e;
-                }
-                LOG.warn("Caught Exception during Iceberg table loading: {}: {}", tableId, e);
-            }
-            ++attempt;
-            try {
-                Thread.sleep(SLEEP_MS);
-            } catch (InterruptedException e) {
-                // Ignored.
-            }
-        }
-        // We shouldn't really get there, but to make the compiler happy:
-        throw new Exception(
-                String.format("Failed to load Iceberg table with id: %s", tableId));
+        return hadoopCatalog.loadTable(tableId);
     }
 
     @Override

@@ -9,6 +9,7 @@
 #include "src/common/fileSystemWrapper.h"
 #include "src/provider/iceberg/iceberg_task_reader.h"
 #include "src/provider/iceberg/iceberg_file_index.h"
+#include "src/provider/iceberg/iceberg_delete_index.h"
 #include "src/provider/hudi/hudi_task_reader.h"
 #include "row_reader.h"
 #include "src/common/dataBufferArray_c.h"
@@ -132,24 +133,26 @@ typedef struct FileMapEntry {
     int     file_id;
 } FileMapEntry;
 
-/* 
- * Custom hash func: Derefference pointer and hash the string content
+/*
+ * Custom hash func: Dereference char** key and hash the string content.
+ * The hash table key is a char* pointer (keysize = sizeof(char*)).
+ * hash_search passes a pointer TO that key, so key is actually char**.
  */
 static uint32
 filename_hash(const void *key, Size keysize)
 {
-    const char *str = (const char *) key;
+    const char *str = *(const char *const *) key;
     return DatumGetUInt32(hash_any((const unsigned char *) str, strlen(str)));
 }
 
-/* 
- * Custom hash cmp: Derefference pointer and compare the string content
+/*
+ * Custom hash cmp: Dereference char** keys and compare the string content.
  */
 static int
 filename_match(const void *key1, const void *key2, Size keysize)
 {
-    const char *s1 = (const char *) key1;
-    const char *s2 = (const char *) key2;
+    const char *s1 = *(const char *const *) key1;
+    const char *s2 = *(const char *const *) key2;
 
     return strcmp(s1, s2);
 }
@@ -164,7 +167,17 @@ datalakeCreateRowReader(MemoryContext mcxt,
 				DLTblFmt format,
 				ExternalTableMetadata *tableOptions)
 {
-	DatalakeRowReader *reader = palloc0(sizeof(DatalakeRowReader));
+	MemoryContext oldcxt;
+	DatalakeRowReader *reader = MemoryContextAllocZero(TopMemoryContext,
+													sizeof(DatalakeRowReader));
+
+	/*
+	 * Allocate all reader-owned data in TopMemoryContext so they survive
+	 * executor context teardown during abort.  The abort callback
+	 * (remoteFileAbortCallback -> datalakeRowReaderClose) runs after
+	 * AtAbort_Portals() has already destroyed the executor context.
+	 */
+	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
 	flatCombinedTasks(combinedScanTasks, &reader->fileScanTasks);
 	list_free(combinedScanTasks);
@@ -178,6 +191,8 @@ datalakeCreateRowReader(MemoryContext mcxt,
 	reader->format = format;
 	reader->fileIndexMapInitialized = false;  /* Will be lazily initialized on first iteration */
 
+	MemoryContextSwitchTo(oldcxt);
+
 	/* Set handler based on format */
 	if (FORMAT_IS_ICEBERG(format))
 		reader->handler = &icebergHandler;
@@ -186,7 +201,7 @@ datalakeCreateRowReader(MemoryContext mcxt,
 	else
 		reader->handler = &deltaLakeHandler;
 
-	reader->taskMcxt = AllocSetContextCreate(CurrentMemoryContext,
+	reader->taskMcxt = AllocSetContextCreate(TopMemoryContext,
 											 "RowReaderContext",
 											 ALLOCSET_DEFAULT_MINSIZE,
 											 ALLOCSET_DEFAULT_INITSIZE,
@@ -209,6 +224,19 @@ datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 		!reader->fileIndexMapInitialized)
 	{
 		icebergFileIndexMapInitialize(reader);
+	}
+
+	/*
+	 * For Iceberg tables, lazily build a global position delete index on first
+	 * iteration.  This reads all position delete files once and builds a
+	 * hash table of (dataFilePath -> bitmap), so each task can look up its
+	 * delete set in O(1) instead of re-reading all delete files.
+	 */
+	if (FORMAT_IS_ICEBERG(reader->format) && reader->deleteIndex == NULL)
+	{
+		reader->deleteIndex = icebergBuildDeleteIndex(TopMemoryContext,
+													  reader->gopherFilesystem,
+													  reader->fileScanTasks);
 	}
 
 	while (true)
@@ -235,6 +263,7 @@ datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 			initInfo.fileScanTask = curTask;
 			initInfo.tableOptions = reader->tableOptions;
 			initInfo.buffer = reader->buffer;
+			initInfo.deleteIndex = reader->deleteIndex;
 
 			/* For Iceberg tables, use the file ID stored in the task */
 			if (datalake_iceberg_file_index_map != NULL)
@@ -273,6 +302,9 @@ datalakeRowReaderClose(DatalakeRowReader *reader)
 	if (reader->curReader)
 		reader->handler->Close(reader->curReader);
 
+	if (reader->deleteIndex)
+		icebergDeleteIndexDestroy((IcebergDeleteIndex *) reader->deleteIndex);
+
 	list_free_deep(reader->datafileDesc);
 	MemoryContextDelete(reader->taskMcxt);
 	if (reader->buffer)
@@ -303,9 +335,100 @@ flatCombinedTasks(List *combinedScanTasks, List **fileScanTasks)
 }
 
 /*
- * Lazy initialization function for Iceberg file index map.
- * This function is called on the first iteration to build the file index map.
- * It deduplicates files using a hash table and populates the global fileIndexMap.
+ * icebergFileIndexMapPopulateFromAllFragments
+ *
+ * Populate the global file index map using the COMPLETE fragment list that
+ * every segment received from the coordinator.  Because all segments iterate
+ * the same ordered list, each segment assigns the same file ID to the same
+ * file path, making file IDs globally consistent across segments.
+ *
+ * This is critical for UPDATE/DELETE: the executor may Redistribute Motion
+ * rows to a different segment than the one that scanned them.  The receiving
+ * segment must be able to decode the ctid (which contains a file ID) and map
+ * it back to the correct file path.
+ *
+ * allFragments layout: [ExternalTableMetadata, combinedTask0, combinedTask1, ...]
+ * Each combinedTask is a List of FileScanTask.
+ */
+void
+icebergFileIndexMapPopulateFromAllFragments(IcebergFileIndexMap *map,
+											List *allFragments)
+{
+	ListCell   *lco;
+	ListCell   *lci;
+	int			i = 0;
+	uint32		fileCount = 0;
+	HTAB	   *filePathToIdMap = NULL;
+	HASHCTL		hashCtl;
+
+	Assert(map != NULL);
+	Assert(allFragments != NIL);
+
+	/* Create hash set for file path deduplication */
+	MemSet(&hashCtl, 0, sizeof(hashCtl));
+	hashCtl.keysize = sizeof(char *);
+	hashCtl.entrysize = sizeof(FileMapEntry);
+	hashCtl.hash = filename_hash;
+	hashCtl.match = filename_match;
+
+	filePathToIdMap = hash_create("Iceberg global file path to ID map",
+								  1024,
+								  &hashCtl,
+								  HASH_ELEM | HASH_COMPARE | HASH_FUNCTION);
+
+	/* Iterate ALL combined tasks (not just this segment's) */
+	foreach_with_count(lco, allFragments, i)
+	{
+		List	   *combinedScanTask;
+
+		if (i == 0)
+			continue;			/* skip ExternalTableMetadata */
+
+		combinedScanTask = (List *) lfirst(lco);
+
+		foreach(lci, combinedScanTask)
+		{
+			FileScanTask   *task = (FileScanTask *) lfirst(lci);
+			const char	   *filePath = task->dataFile->filePath;
+			int64			recordCount = task->dataFile->recordCount;
+			bool			found;
+			FileMapEntry   *entry;
+
+			entry = (FileMapEntry *) hash_search(filePathToIdMap,
+												 (void *) &filePath,
+												 HASH_FIND, &found);
+			if (!found)
+			{
+				uint32 fileId;
+
+				fileId = icebergAddFile(map, filePath, recordCount);
+
+				entry = (FileMapEntry *) hash_search(filePathToIdMap,
+													 (void *) &filePath,
+													 HASH_ENTER, &found);
+				entry->file_id = fileId;
+				fileCount++;
+			}
+		}
+	}
+
+	hash_destroy(filePathToIdMap);
+
+	elog(DEBUG1, "Populated global Iceberg file index with %u unique files from all fragments",
+		 fileCount);
+}
+
+/*
+ * Lazy initialization function for Iceberg file index map on a per-reader basis.
+ *
+ * When the global map has been pre-populated by
+ * icebergFileIndexMapPopulateFromAllFragments (the UPDATE/DELETE path),
+ * this function only needs to look up the already-assigned file IDs for
+ * this segment's local tasks.
+ *
+ * When the global map is empty (legacy / fallback path), this function
+ * populates it from the local tasks only, which is fine for SELECT or
+ * single-segment scenarios.
  */
 static void
 icebergFileIndexMapInitialize(DatalakeRowReader *reader)
@@ -319,18 +442,41 @@ icebergFileIndexMapInitialize(DatalakeRowReader *reader)
 
 	/* Create hash set for file path deduplication */
 	MemSet(&hashCtl, 0, sizeof(hashCtl));
-	hashCtl.keysize = sizeof(char*);  /* Max file path length */
-	hashCtl.entrysize = sizeof(FileMapEntry);  /* Store fileId as value */
+	hashCtl.keysize = sizeof(char*);
+	hashCtl.entrysize = sizeof(FileMapEntry);
 	hashCtl.hash = filename_hash;
 	hashCtl.match = filename_match;
 	hashCtl.hcxt = reader->mcxt;
 
 	filePathToIdMap = hash_create("Iceberg file path to ID map",
-	                              1024,  /* Initial size */
+	                              1024,
 	                              &hashCtl,
 	                              HASH_ELEM | HASH_COMPARE | HASH_FUNCTION | HASH_CONTEXT);
 
-	/* Build file index by scanning all tasks, deduplicating files */
+	/*
+	 * If the map was pre-populated from all fragments, build a reverse
+	 * lookup (filePath -> fileId) from the existing map entries so we can
+	 * quickly assign file IDs to local tasks.
+	 */
+	if (datalake_iceberg_file_index_map->numFiles > 0)
+	{
+		uint32 nfiles = icebergGetNumFiles(datalake_iceberg_file_index_map);
+
+		for (uint32 fid = 0; fid < nfiles; fid++)
+		{
+			const char	   *fp = icebergGetFilePath(datalake_iceberg_file_index_map, fid);
+			bool			found;
+			FileMapEntry   *entry;
+
+			entry = (FileMapEntry *) hash_search(filePathToIdMap,
+												 (void *) &fp,
+												 HASH_ENTER, &found);
+			entry->file_id = fid;
+		}
+		fileCount = nfiles;
+	}
+
+	/* Assign file IDs to each local task */
 	foreach(lc, reader->fileScanTasks)
 	{
 		FileScanTask *task = (FileScanTask *) lfirst(lc);
@@ -340,40 +486,33 @@ icebergFileIndexMapInitialize(DatalakeRowReader *reader)
 		FileMapEntry *entry;
 		uint32 fileId;
 
-		/* Check if file path already has an assigned ID */
 		entry = (FileMapEntry *) hash_search(filePathToIdMap,
 		                                     (void *) &filePath,
 		                                     HASH_FIND, &found);
 
 		if (!found)
 		{
-			/* File not seen before, assign new ID and add to global index */
+			/* File not in map yet (fallback: map was not pre-populated) */
 			fileId = icebergAddFile(datalake_iceberg_file_index_map, filePath, recordCount);
 
-			/* Store ID in hash map for future lookups */
 			entry = (FileMapEntry *) hash_search(filePathToIdMap,
 			                                     (void *) &filePath,
 			                                     HASH_ENTER, &found);
 			entry->file_id = fileId;
-
 			fileCount++;
 		}
 		else
 		{
-			/* File already exists, retrieve assigned ID */
 			fileId = entry->file_id;
 		}
 
-		/* Store file ID in task for later use */
 		task->fileId = fileId;
 	}
 
-	/* Clean up hash map */
 	hash_destroy(filePathToIdMap);
 
-	elog(DEBUG1, "Built Iceberg file index with %u unique files", fileCount);
+	elog(DEBUG1, "Iceberg file index initialized for reader with %u unique files", fileCount);
 
-	/* Mark as initialized */
 	reader->fileIndexMapInitialized = true;
 }
 

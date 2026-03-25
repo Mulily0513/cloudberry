@@ -361,13 +361,28 @@ tts_heap_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	Assert(!TTS_EMPTY(slot));
 
 	/*
-	 * In some code paths it's possible to get here with a non-materialized
-	 * slot, in which case we can't retrieve system columns.
+	 * When hslot->tuple is NULL (e.g. FDW using ExecStoreVirtualTuple),
+	 * we can still return certain system columns that don't require
+	 * tuple data.  This is needed for Iceberg foreign tables where ORCA
+	 * plans reference ctid/gp_segment_id for duplicate elimination in
+	 * EXISTS subqueries (e.g. TPC-DS Q94).
 	 */
 	if (!hslot->tuple)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot retrieve a system column in this context")));
+	{
+		switch (attnum)
+		{
+			case SelfItemPointerAttributeNumber:
+				*isnull = false;
+				return PointerGetDatum(&slot->tts_tid);
+			case GpSegmentIdAttributeNumber:
+				*isnull = false;
+				return Int32GetDatum(GpIdentity.segindex);
+			default:
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot retrieve a system column in this context")));
+		}
+	}
 
 	return heap_getsysattr(hslot->tuple, attnum,
 						   slot->tts_tupleDescriptor, isnull);

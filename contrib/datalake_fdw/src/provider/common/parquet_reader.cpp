@@ -9,6 +9,7 @@ extern "C"
 {
 #include "postgres.h"
 #include "access/tupdesc.h"
+#include "datatype/timestamp.h"
 #include "utils/memutils.h"
 #include "nodes/pg_list.h"
 #include "utils/builtins.h"
@@ -56,7 +57,7 @@ ParquetReader::createMapping(List *columnDesc, bool *attrUsed)
 	foreach_with_count(lc, columnDesc, i)
 	{
 		DatalakeFieldDescription *entry = (DatalakeFieldDescription *) lfirst(lc);
-		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN};
+		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN, 0, 0};
 		typeMap_.push_back(typInfo);
 
 		if (!attrUsed[i])
@@ -72,6 +73,8 @@ ParquetReader::createMapping(List *columnDesc, bool *attrUsed)
 				typeMap_[i].columnIndex_ = j;
 				typeMap_[i].fileTypeId_ = mapParquetDataType(field->physical_type());
 				typeMap_[i].timeUnit_ = getTimeUnit(field);
+				typeMap_[i].scale_ = field->type_scale();
+				typeMap_[i].typeLength_ = field->type_length();
 				break;
 			}
 		}
@@ -89,6 +92,18 @@ ParquetReader::readNextRowGroup()
 	auto rowGroupReader = reader_->RowGroup(rowGroups_[curGroup_]);
 	size_t typeSize = typeMap_.size();
 
+	curRow_ = 0;
+	numRows_ = rowGroupReader->metadata()->num_rows();
+
+	/*
+	 * Use the full row group size as Scanner batch_size instead of the default 128.
+	 * This makes Scanner::ReadBatch() decode the entire column in one call,
+	 * so subsequent NextValue() calls are pure array accesses (similar to PAX's
+	 * ReadStripe + GetDatum pattern). This reduces ReadBatch call count from
+	 * ~(numRows/128) to 1 per column per row group.
+	 */
+	int64_t scannerBatchSize = numRows_ > 0 ? numRows_ : parquet::DEFAULT_SCANNER_BATCH_SIZE;
+
 	scanners_.clear();
 	scanners_.resize(numColumns_);
 	for (size_t i = 0; i < typeSize; ++i)
@@ -97,12 +112,10 @@ ParquetReader::readNextRowGroup()
 
 		if (typInfo.columnIndex_ >= 0)
 		{
-			scanners_[typInfo.columnIndex_] = parquet::Scanner::Make(rowGroupReader->Column(typInfo.columnIndex_));
+			scanners_[typInfo.columnIndex_] = parquet::Scanner::Make(
+				rowGroupReader->Column(typInfo.columnIndex_), scannerBatchSize);
 		}
 	}
-
-	curRow_ = 0;
-	numRows_ = rowGroupReader->metadata()->num_rows();
 
 	return true;
 }
@@ -234,7 +247,7 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 			((parquet::TypedScanner<parquet::FLBAType> *)scanner.get())->NextValue(&value, &isNull);
 			if (isNull)
 				PG_RETURN_DATUM(0);
-			int typeLen = metadata->schema()->Column(typInfo.columnIndex_)->type_length();
+			int typeLen = typInfo.typeLength_;
 			if (!buffer_)
 			{
 				bytea *result = (bytea *) gpdbPalloc(typeLen + VARHDRSZ);
@@ -295,8 +308,37 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
 		{
+			/*
+			 * Direct conversion from Parquet timestamp to PG timestamp.
+			 *
+			 * PG stores timestamps as microseconds since PG epoch (2000-01-01).
+			 * Parquet stores timestamps since Unix epoch (1970-01-01) in
+			 * millis/micros/nanos. The old code divided to seconds then
+			 * multiplied back to microseconds, losing sub-second precision.
+			 */
+			static const int64 UNIX_TO_PG_EPOCH_USECS =
+				((int64)(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)) * SECS_PER_DAY * USECS_PER_SEC;
+
 			((parquet::TypedScanner<parquet::Int64Type> *)scanner.get())->NextValue(&d.int64Value, &isNull);
-			return TimestampGetDatum(time_t_to_timestamptz(transformTimestamp(d.int64Value, typInfo.timeUnit_))); // micorsec, refer to iceberg spec
+			if (isNull)
+				PG_RETURN_DATUM(0);
+
+			int64 pgTimestamp;
+			switch (typInfo.timeUnit_)
+			{
+				case TIMEUNIT_MILLIS:
+					pgTimestamp = d.int64Value * 1000 - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				case TIMEUNIT_MICROS:
+					pgTimestamp = d.int64Value - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				case TIMEUNIT_NANOS:
+					pgTimestamp = d.int64Value / 1000 - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				default:
+					throw Error("parquet error: Unknown timestamp precision");
+			}
+			return TimestampGetDatum(pgTimestamp);
 		}
 		case DATEOID:
 		{
@@ -318,8 +360,7 @@ ParquetReader::readDecimal(std::shared_ptr<parquet::Scanner> &scanner, const Typ
 {
 	ReaderValue d;
 	parquet::FixedLenByteArray value;
-	const parquet::ColumnDescriptor *columnDesc = metadata->schema()->Column(typInfo.columnIndex_);
-	int scale = columnDesc->type_scale();
+	int scale = typInfo.scale_;
 	char *out_buf = nullptr;
 
 	if (!buffer_)
@@ -353,11 +394,10 @@ ParquetReader::readDecimal(std::shared_ptr<parquet::Scanner> &scanner, const Typ
 		}
 		default:
 		{
-			int typeLen = columnDesc->type_length();
 			((parquet::TypedScanner<parquet::FLBAType> *)scanner.get())->NextValue(&value, &isNull);
 			if (isNull)
 				PG_RETURN_DATUM(0);
-			int_to_numeric_with_scale(FLBA_to_int128(value.ptr, typeLen), scale, (Numeric) out_buf);
+			int_to_numeric_with_scale(FLBA_to_int128(value.ptr, typInfo.typeLength_), scale, (Numeric) out_buf);
 			return NumericGetDatum(out_buf);
 		}
 	}

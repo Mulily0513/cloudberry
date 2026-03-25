@@ -135,5 +135,10 @@ datalake_create_fragment_context(Oid relid,
 extern void
 datalakeDoRPC(datalake_gphadoop_context *context);
 
+extern char *
+get_catalog_type(char *profile, List *locations);
+
+extern const char *
+transform_datalake_options(const char *key);
 
 #endif							/* _PROTOCOL_H_ */

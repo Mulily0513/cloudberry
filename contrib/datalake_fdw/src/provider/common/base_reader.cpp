@@ -44,8 +44,6 @@ void BaseFileReader::populateRecord(DatalakeInternalRecord *record)
 bool
 BaseFileReader::next(DatalakeInternalRecord *record)
 {
-	MemoryContext oldContext;
-
 	if (curRow_ >= numRows_)
 	{
 		do
@@ -56,11 +54,14 @@ BaseFileReader::next(DatalakeInternalRecord *record)
 		while (!numRows_);
 	}
 
-	MemoryContextReset(rowContext_);
-
-	oldContext = MemoryContextSwitchTo(rowContext_);
+	/*
+	 * Skip per-row MemoryContextReset and context switch here.
+	 * When buffer_ is used (Iceberg/Hudi), populateRecord() does no palloc
+	 * so rowContext_ stays empty. The caller (FDW iterateScanStatus) already
+	 * resets its own per-row MemoryContext, so any allocations from
+	 * variable-length types without buffer_ are still cleaned up each row.
+	 */
 	populateRecord(record);
-	MemoryContextSwitchTo(oldContext);
 
 	curRow_++;
 

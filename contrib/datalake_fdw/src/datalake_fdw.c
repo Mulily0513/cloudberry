@@ -259,6 +259,7 @@ double hudiLogSizeScaleFactor;
 int external_table_limit_segment_num;
 bool enable_list_in_master;
 bool enable_get_block_location;
+bool enable_iceberg_fragment_cache;
 
 void
 _PG_init(void)
@@ -402,6 +403,17 @@ _PG_init(void)
 							NULL,
 							&enable_get_block_location,
 							false,
+							PGC_USERSET,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomBoolVariable("datalake.enable_iceberg_fragment_cache",
+							"Cache Iceberg fragment lists using snapshot ID validation.",
+							NULL,
+							&enable_iceberg_fragment_cache,
+							true,
 							PGC_USERSET,
 							0,
 							NULL,
@@ -591,6 +603,79 @@ dataLakeGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntab
 	dataLakeFdwPlanState* fdw_private = (dataLakeFdwPlanState *) palloc0(sizeof(dataLakeFdwPlanState));
 	baserel->fdw_private = fdw_private;
 
+	/*
+	 * For Iceberg tables, fetch actual row count and data size from Iceberg
+	 * snapshot metadata to provide accurate estimates to the optimizer.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH)
+	{
+		dataLakeOptions *options = datalakeGetOptions(foreigntableid);
+
+		if (FORMAT_IS_ICEBERG(options->format))
+		{
+			PG_TRY();
+			{
+				IcebergTableStatistics *stats =
+					datalakeGetTableStatistics(foreigntableid, options);
+
+				if (stats != NULL)
+				{
+					if (stats->recordCount > 0)
+					{
+						baserel->tuples = (double) stats->recordCount;
+
+						/*
+						 * Also update the relcache entry so that ORCA's
+						 * cdb_estimate_partitioned_numtuples() sees the
+						 * accurate row count.  Without this, ORCA computes
+						 * ndistinct = stadistinct_ratio * pg_class.reltuples
+						 * using the stale pg_class value, leading to massive
+						 * underestimates that cause catastrophic Broadcast
+						 * plans (e.g. TPC-H Q3: 157s vs 10s).
+						 *
+						 * This is an in-memory-only update to the relcache;
+						 * it does NOT modify pg_class on disk.
+						 */
+						Relation rel = RelationIdGetRelation(foreigntableid);
+						if (RelationIsValid(rel))
+						{
+							if (stats->recordCount > 0)
+								rel->rd_rel->reltuples =
+									(float4) stats->recordCount;
+							if (stats->bytesInDataFile > 0)
+								rel->rd_rel->relpages =
+									(int32) ((stats->bytesInDataFile + (BLCKSZ - 1)) / BLCKSZ);
+							RelationClose(rel);
+						}
+					}
+
+					if (stats->bytesInDataFile > 0)
+					{
+						baserel->pages = (BlockNumber)
+							((stats->bytesInDataFile + (BLCKSZ - 1)) / BLCKSZ);
+					}
+
+					pfree(stats);
+				}
+			}
+			PG_CATCH();
+			{
+				ErrorData *edata = CopyErrorData();
+				if (edata->sqlerrcode == ERRCODE_QUERY_CANCELED ||
+					edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN)
+				{
+					FreeErrorData(edata);
+					PG_RE_THROW();
+				}
+				FlushErrorState();
+				FreeErrorData(edata);
+				elog(DEBUG1, "datalake_fdw: failed to fetch Iceberg statistics "
+					 "for relation %u, using default estimates", foreigntableid);
+			}
+			PG_END_TRY();
+		}
+	}
+
 	set_baserel_size_estimates(root, baserel);
 }
 
@@ -745,6 +830,15 @@ dataLakeBeginForeignScan(ForeignScanState *node, int eflags)
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
 		fragmentData = datalakeGetExternalFragmentList(dataLakesstate->rel, dataLakesstate->quals, dataLakesstate->options, NULL);
+
+		/*
+		 * Save fragment list on coordinator before list_concat (which may
+		 * be destructive).  BeginForeignModify will attach this to the
+		 * ModifyTable plan's fdw_private for dispatch to writer QEs.
+		 */
+		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format) && fragmentData != NIL)
+			datalake_iceberg_all_fragments = list_copy(fragmentData);
+
 		if (fragmentData != NIL)
 		{
 			foreignScan->fdw_private = list_concat(foreignScan->fdw_private, fragmentData);
@@ -753,6 +847,7 @@ dataLakeBeginForeignScan(ForeignScanState *node, int eflags)
 		List *random_segments = datalakeSelectRandomSegments(segmentcount, external_table_limit_segment_num);
 		/* put the random segments into the list */
 		foreignScan->fdw_private = list_concat(foreignScan->fdw_private, random_segments);
+
 		/* register resource context for gopher */
 		dataLakesstate->gopher_handle_t = gopher_registe_resource_context(/*gp_is_writer*/false);
 		node->fdw_state = (void*)dataLakesstate;
@@ -777,6 +872,55 @@ dataLakeBeginForeignScan(ForeignScanState *node, int eflags)
 	dataLakesstate->rel = node->ss.ss_currentRelation;
 	dataLakesstate->fragments = fragmentData;
 	dataLakesstate->retrieved_attrs = retrieved_attrs;
+
+	/*
+	 * For Iceberg tables, save the full fragment list (containing ALL
+	 * segments' files) so that BeginForeignModify can use it to build a
+	 * globally consistent file index map.  Without this, each segment would
+	 * independently number files starting from 0, and Redistribute Motion
+	 * during UPDATE would send rows to segments whose local file IDs don't
+	 * match the originating segment's encoding.
+	 */
+	if (FORMAT_IS_ICEBERG(dataLakesstate->options->format))
+		datalake_iceberg_all_fragments = fragmentData;
+
+	/*
+	 * For Iceberg UPDATE/DELETE with cross-slice plans (e.g. Redistribute
+	 * Motion between Foreign Scan and ModifyTable), the scan runs in a
+	 * separate QE process from BeginForeignModify.  We need the file index
+	 * map here so that:
+	 *   (a) icebergEncodeTID encodes correct, globally consistent file IDs
+	 *   (b) iterateScanStatus stores HeapTuples (not VirtualTuples), which
+	 *       is required for system column access (gp_segment_id, ctid)
+	 *
+	 * Detect the UPDATE/DELETE context by checking if the plan's target list
+	 * references ctid (added by dataLakeAddForeignUpdateTargets).
+	 */
+	if (FORMAT_IS_ICEBERG(dataLakesstate->options->format) &&
+		datalake_iceberg_file_index_map == NULL &&
+		foreignScan->fsSystemCol)
+	{
+		MemoryContextCallback *mcb;
+
+		datalake_iceberg_file_index_map = icebergCreateFileIndexMap();
+		if (datalake_iceberg_file_index_map == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("failed to create Iceberg file index map")));
+
+		if (datalake_iceberg_all_fragments != NULL)
+			icebergFileIndexMapPopulateFromAllFragments(
+				datalake_iceberg_file_index_map,
+				datalake_iceberg_all_fragments);
+
+		mcb = MemoryContextAlloc(CurrentMemoryContext,
+								  sizeof(MemoryContextCallback));
+		mcb->func = fileIndexMapCallback;
+		mcb->arg = NULL;
+		MemoryContextRegisterResetCallback(CurrentMemoryContext, mcb);
+
+		elog(DEBUG2, "datalake_fdw: Created Iceberg file index map in BeginForeignScan (cross-slice UPDATE/DELETE)");
+	}
 
 	if (hasZeorSelectedPartition(dataLakesstate))
 	{
@@ -1015,6 +1159,7 @@ dataLakeEndForeignScan(ForeignScanState *node)
 		/* release resource context for gopher */
 		cleanup_gopher_resource_context(sstate->gopher_handle_t);
 		sstate->gopher_handle_t = NULL;
+		datalake_iceberg_all_fragments = NULL;
 		return;
 	}
 
@@ -1024,6 +1169,14 @@ dataLakeEndForeignScan(ForeignScanState *node)
 	}
 
 	endScanStatus(sstate);
+
+	/*
+	 * Clear the global fragment reference to prevent dangling pointers.
+	 * The fragment data lives in the scan's memory context which is about
+	 * to be freed.  If a subsequent query (e.g. UPDATE after INSERT) runs
+	 * in the same backend, it must not use stale fragment pointers.
+	 */
+	datalake_iceberg_all_fragments = NULL;
 
 	elog(DEBUG5, "datalake_fdw: dataLakeEndForeignScan ends on segment: %d", DATALAKE_SEGMENT_ID);
 }
@@ -1105,6 +1258,34 @@ dataLakeBeginForeignModify(ModifyTableState *mtstate,
 
 		FDW_ResultMetaList = NIL;
 
+		/*
+		 * For Iceberg UPDATE/DELETE, attach the global fragment list to
+		 * fdwPrivLists so the writer QEs can populate the file index map.
+		 * In cross-slice plans (e.g. Redistribute Motion between the
+		 * ForeignScan and ModifyTable), the writer QE process doesn't run
+		 * BeginForeignScan, so it has no fragment data.  We solve this by
+		 * appending the fragments to the ModifyTable's fdw_private, which
+		 * is serialized and dispatched to all writer QEs.
+		 */
+		if (datalake_iceberg_all_fragments != NULL &&
+			(mtstate->operation == CMD_UPDATE || mtstate->operation == CMD_DELETE))
+		{
+			ModifyTable *mt = (ModifyTable *) mtstate->ps.plan;
+			ListCell *cell = list_nth_cell(mt->fdwPrivLists, subplan_index);
+			List *privList = (List *) lfirst(cell);
+
+			/*
+			 * Build a new list rather than mutating the cached plan node
+			 * with list_concat.  This avoids double-append on prepared
+			 * statement re-execution and ensures the appended ListCells
+			 * live in the current executor memory context.
+			 */
+			List *newPrivList = list_copy(privList);
+			newPrivList = list_concat(newPrivList,
+									  list_copy(datalake_iceberg_all_fragments));
+			lfirst(cell) = newPrivList;
+		}
+
 		mcb = MemoryContextAlloc(CurrentMemoryContext,
 								  sizeof(MemoryContextCallback));
 		mcb->func = resultMetaListCallback;
@@ -1116,6 +1297,19 @@ dataLakeBeginForeignModify(ModifyTableState *mtstate,
 
 	Value *val = lfirst(list_nth_cell(fdw_private, FdwModifyFileDir));
 	dataLakesstate->fragments = lappend(dataLakesstate->fragments, pstrdup(val->val.str));
+
+	/*
+	 * For Iceberg UPDATE/DELETE, extract the global fragment list that the
+	 * coordinator appended to fdw_private.  This is needed in the writer QE
+	 * which doesn't run BeginForeignScan (the ForeignScan is in a different
+	 * slice).  fdw_private layout: [0]=fileDir, [1..N]=fragment list.
+	 */
+	if (FORMAT_IS_ICEBERG(dataLakesstate->options->format) &&
+		datalake_iceberg_all_fragments == NULL &&
+		list_length(fdw_private) > 1)
+	{
+		datalake_iceberg_all_fragments = list_copy_tail(fdw_private, 1);
+	}
 
 	if (mtstate->operation == CMD_UPDATE || mtstate->operation == CMD_DELETE)
 	{
@@ -1147,6 +1341,23 @@ dataLakeBeginForeignModify(ModifyTableState *mtstate,
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("failed to create Iceberg file index map")));
+
+			/*
+			 * Eagerly populate the file index map with ALL files from ALL
+			 * segments' fragments.  This ensures every segment assigns the
+			 * same file ID to the same file path, which is critical when
+			 * Redistribute Motion sends rows across segments during UPDATE.
+			 *
+			 * datalake_iceberg_all_fragments was saved by BeginForeignScan
+			 * and contains the complete, ordered fragment list that every
+			 * segment received from the coordinator.
+			 */
+			if (datalake_iceberg_all_fragments != NULL)
+			{
+				icebergFileIndexMapPopulateFromAllFragments(
+					datalake_iceberg_file_index_map,
+					datalake_iceberg_all_fragments);
+			}
 
 			/*
 			 * Register a callback to clean up the fileIndexMap when the memory context
@@ -1594,23 +1805,16 @@ iterateScanStatus(ForeignScanState *node, dataLakeFdwScanState *dataLakesstate)
 		}
 
 		/*
-		 * For Iceberg UPDATE/DELETE operations, we need to use heap_form_tuple to create
-		 * a HeapTuple so system columns (ctid, gp_segment_id) can be properly retrieved.
-		 * System columns are retrieved via heap_getsysattr, not from tts_values array.
-		 *
-		 * gp_segment_id: heap_getsysattr returns GpIdentity.segindex automatically
-		 * ctid: heap_getsysattr returns tup->t_self (which we set from tts_tid)
+		 * For Iceberg UPDATE/DELETE, we need a full HeapTuple for system
+		 * columns and junk attributes.
 		 */
-		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format))
+		if (FORMAT_IS_ICEBERG(dataLakesstate->options->format) &&
+			datalake_iceberg_file_index_map != NULL)
 		{
 			TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 			HeapTuple	htup;
 			htup = heap_form_tuple(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
-
-			/* Set ctid - heap_getsysattr will read from tup->t_self */
 			htup->t_self = slot->tts_tid;
-
-			/* Store HeapTuple in slot */
 			ExecStoreHeapTuple(htup, slot, false);
 			return;
 		}
@@ -1898,6 +2102,9 @@ fileIndexMapCallback(void *arg)
 		icebergFreeFileIndexMap(datalake_iceberg_file_index_map);
 		datalake_iceberg_file_index_map = NULL;
 	}
+
+	/* Clear the global fragment reference (memory owned by scan state) */
+	datalake_iceberg_all_fragments = NULL;
 }
 
 /*
@@ -2015,6 +2222,7 @@ EndCopyModify(CopyToState cstate)
 #endif
 
 static List *latestFragmentData = NIL;
+static double latestIcebergRecordCount = 0;
 
 static void
 costDataLakeScan(ForeignPath *path, PlannerInfo *root,
@@ -2044,8 +2252,44 @@ costDataLakeScan(ForeignPath *path, PlannerInfo *root,
 	path->path.total_cost = startup_cost + run_cost;
 }
 
+/*
+ * Shuffle a list in-place using the Fisher-Yates algorithm.
+ * Returns a new list with elements in random order.
+ */
+static List *
+analyzeShuffleFragments(List *fragments)
+{
+	int			nfrags = list_length(fragments);
+	ListCell   *cell;
+	int			i;
+	void	  **arr;
+	List	   *result = NIL;
+
+	if (nfrags <= 1)
+		return fragments;
+
+	arr = palloc(nfrags * sizeof(void *));
+	i = 0;
+	foreach(cell, fragments)
+		arr[i++] = lfirst(cell);
+
+	for (i = nfrags - 1; i > 0; i--)
+	{
+		int		j = random() % (i + 1);
+		void   *tmp = arr[i];
+		arr[i] = arr[j];
+		arr[j] = tmp;
+	}
+
+	for (i = 0; i < nfrags; i++)
+		result = lappend(result, arr[i]);
+
+	pfree(arr);
+	return result;
+}
+
 static ForeignScanState *
-dataLakeAnalyzeBeginScan(Relation relation)
+dataLakeAnalyzeBeginScan(Relation relation, int *total_fragments)
 {
 	int   i;
 	int   segmentcount = DATALAKE_SEGMENT_COUNT;
@@ -2071,6 +2315,29 @@ dataLakeAnalyzeBeginScan(Relation relation)
 															NIL,
 															state->options,
 															latestFragmentData);
+
+	/*
+	 * For ANALYZE, shuffle fragments so we can scan a random subset
+	 * and stop early once we've collected enough sample rows.
+	 *
+	 * For Iceberg/Hudi, fragmentData[0] is ExternalTableMetadata (not a
+	 * CombinedScanTask). It must stay at position 0 because
+	 * datalakeProtocolImportStart skips i==0 and casts it to
+	 * ExternalTableMetadata*. Shuffling it would cause SIGSEGV when
+	 * flatCombinedTasks tries to list_free a non-List pointer.
+	 */
+	*total_fragments = list_length(fragmentData);
+	if (FORMAT_IS_ICEBERG(state->options->format) || FORMAT_IS_HUDI(state->options->format))
+	{
+		List *metadata = list_make1(linitial(fragmentData));
+		List *tasks = list_copy_tail(fragmentData, 1);
+		tasks = analyzeShuffleFragments(tasks);
+		fragmentData = list_concat(metadata, tasks);
+	}
+	else
+	{
+		fragmentData = analyzeShuffleFragments(fragmentData);
+	}
 
 	state->options->readFdw = true;
 	state->provider = initProvider(state->options->format, DL_OP_READ, false);
@@ -2963,7 +3230,7 @@ acquire_sample_rows_dispatcher(Relation relation, bool inh, int elevel,
 	 * may result in different behaviour under different acl configuration.
 	 */
 	initStringInfo(&str);
-	appendStringInfo(&str, "select public.datalake_acquire_sample_rows(%u, %d, '%s', '%s');",
+	appendStringInfo(&str, "select datalake_acquire_sample_rows(%u::oid, %d, '%s'::boolean, '%s'::text);",
 					 RelationGetRelid(relation),
 					 perseg_targrows,
 					 inh ? "t" : "f",
@@ -3113,6 +3380,7 @@ segmentAcquireSampleRowsFunc(Relation relation, int elevel,
 	DataLakeAnalyzeState astate;
 	ForeignScanState *state;
 	TupleTableSlot *slot;
+	int			total_fragments;
 
 	/* Initialize workspace state */
 	astate.rows = rows;
@@ -3128,17 +3396,67 @@ segmentAcquireSampleRowsFunc(Relation relation, int elevel,
 											"datalake_fdw temporary data",
 											ALLOCSET_SMALL_SIZES);
 
-	state = dataLakeAnalyzeBeginScan(relation);
-	for (;;)
+	state = dataLakeAnalyzeBeginScan(relation, &total_fragments);
+
+	/*
+	 * Scan rows from shuffled fragments using reservoir sampling.
+	 *
+	 * We must scan significantly more rows than targRows to get accurate
+	 * ndistinct estimates.  The previous approach stopped at targRows,
+	 * which for target=100 meant only 30,000 rows from a single fragment.
+	 * This gave PostgreSQL's stadistinct estimator far too little data
+	 * diversity, causing ORCA to severely underestimate GROUP BY
+	 * cardinality and choose catastrophic Streaming Partial HashAggregate
+	 * plans (e.g. TPC-H Q3: 30s vs 12s).
+	 *
+	 * We now scan at least (total_fragments * rows_per_fragment) rows to
+	 * ensure coverage across all fragments, similar to how heap ANALYZE
+	 * samples random pages across the whole table.  Reservoir sampling
+	 * in analyze_row_processor ensures we keep exactly targRows rows
+	 * in the final sample regardless of how many we scan.
+	 */
 	{
-		/* Allow users to cancel long query */
-		CHECK_FOR_INTERRUPTS();
+		int		rows_per_fragment = Max(targRows / Max(total_fragments, 1), 1000);
+		double	scan_limit = (double) total_fragments * rows_per_fragment;
 
-		slot = dataLakeAnalyzeScanNext(state);
-		if (TupIsNull(slot))
-			break;
+		/* Scan at least 10x targRows to ensure reservoir has good diversity */
+		if (scan_limit < (double) targRows * 10)
+			scan_limit = (double) targRows * 10;
 
-		analyze_row_processor(slot, &astate);
+		/*
+		 * Ensure a minimum scan of 100K rows.  Parquet files are often
+		 * sorted (e.g. date_dim sorted by year), so scanning only a few
+		 * thousand rows produces MCVs/histograms that miss large portions
+		 * of the value range (e.g. only years 1900-1917 instead of
+		 * 1900-2100).  100K rows covers most dimension tables entirely
+		 * while adding negligible overhead for large tables.
+		 */
+		if (scan_limit < 100000.0)
+			scan_limit = 100000.0;
+
+		/*
+		 * Cap scan_limit to avoid excessive ANALYZE time on very large
+		 * tables (e.g. SF10000 with 6000 fragments would scan 6M rows).
+		 * 1M rows is enough for accurate stadistinct on high-cardinality
+		 * columns while keeping ANALYZE under a few seconds per segment.
+		 */
+		if (scan_limit > 1000000.0)
+			scan_limit = 1000000.0;
+
+		for (;;)
+		{
+			/* Allow users to cancel long query */
+			CHECK_FOR_INTERRUPTS();
+
+			slot = dataLakeAnalyzeScanNext(state);
+			if (TupIsNull(slot))
+				break;
+
+			analyze_row_processor(slot, &astate);
+
+			if (astate.samplerows >= scan_limit)
+				break;
+		}
 	}
 
 	dataLakeAnalyzeEndScan(state);
@@ -3146,16 +3464,18 @@ segmentAcquireSampleRowsFunc(Relation relation, int elevel,
 	/* We assume that we have no dead tuple. */
 	*totalDeadRows = 0.0;
 
-	/* We've retrieved all living tuples from foreign server. */
+	/*
+	 * Estimate total row count.  samplerows is the number of rows scanned
+	 * (which may be much larger than targRows due to our extended scanning),
+	 * while numrows is the number of rows kept in the reservoir (at most
+	 * targRows).
+	 */
 	*totalRows = astate.samplerows;
 
-	/*
-	 * Emit some interesting relation info
-	 */
 	ereport(elevel,
-			(errmsg("\"%s\": table contains %.0f rows, %d rows in sample",
+			(errmsg("\"%s\": scanned %.0f rows across %d fragments, %d rows in sample",
 					RelationGetRelationName(relation),
-					astate.samplerows, astate.numrows)));
+					astate.samplerows, total_fragments, astate.numrows)));
 
 	return astate.numrows;
 }
@@ -3167,15 +3487,34 @@ dataLakeAcquireSampleRowsFunc(Relation relation, int elevel,
 							  double *totalRows,
 							  double *totalDeadRows)
 {
-	if (Gp_role == GP_ROLE_DISPATCH)
+	/*
+	 * On the coordinator (DISPATCH or UTILITY mode), dispatch the sample
+	 * collection to segments.  GP_ROLE_UTILITY occurs when analyze_rel is
+	 * called internally (e.g. from datalake_acquire_sample_rows which runs
+	 * in utility mode on the coordinator).
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH || Gp_role == GP_ROLE_UTILITY)
 	{
+		int numrows;
+
 		/* Fetch sample from the segments. */
-		return acquire_sample_rows_dispatcher(relation, false, elevel,
-											  rows, targRows,
-											  totalRows, totalDeadRows);
+		numrows = acquire_sample_rows_dispatcher(relation, false, elevel,
+												 rows, targRows,
+												 totalRows, totalDeadRows);
+
+		/*
+		 * For Iceberg tables, override totalRows with the precise record
+		 * count from Iceberg snapshot metadata. The per-segment sample-based
+		 * estimate is wildly inaccurate because each segment only reports
+		 * the rows it sampled, not the table total.
+		 */
+		if (latestIcebergRecordCount > 0)
+			*totalRows = latestIcebergRecordCount;
+
+		return numrows;
 	}
 
-	return segmentAcquireSampleRowsFunc(relation, elevel, rows, 
+	return segmentAcquireSampleRowsFunc(relation, elevel, rows,
 										targRows, totalRows, totalDeadRows);
 }
 
@@ -3197,7 +3536,7 @@ dataLakeAnalyzeForeignTable(Relation relation,
 	int segmentcount = DATALAKE_SEGMENT_COUNT;
 	options = datalakeGetOptions(RelationGetRelid(relation));
 
-	if (Gp_role == GP_ROLE_DISPATCH)
+	if (Gp_role == GP_ROLE_DISPATCH || Gp_role == GP_ROLE_UTILITY)
 	{
 		latestFragmentData = datalakeGetExternalFragmentList(relation, NULL, options, &totalSize);
 		/* master does not process any fragments */
@@ -3208,6 +3547,11 @@ dataLakeAnalyzeForeignTable(Relation relation,
 		{
 			statistics = datalakeGetTableStatistics(RelationGetRelid(relation), options);
 			totalSize = statistics->bytesInDataFile;
+			latestIcebergRecordCount = (double) statistics->recordCount;
+		}
+		else
+		{
+			latestIcebergRecordCount = 0;
 		}
 		if (statistics) {
 			pfree(statistics);

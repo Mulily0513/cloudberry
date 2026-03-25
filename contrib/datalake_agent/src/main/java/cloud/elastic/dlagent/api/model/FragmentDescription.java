@@ -28,10 +28,33 @@ import java.util.List;
 @Setter
 public class FragmentDescription {
     private TableOptions tableOptions;
+    private List<Fragment> deleteFiles;
     private List<CombinedTask> combinedTasks;
+    private Long snapshotId;
+    private boolean notModified;
 
     public FragmentDescription(TableOptions tableOptions, List<CombinedTask> combinedTasks) {
         this.tableOptions = tableOptions;
         this.combinedTasks = combinedTasks;
+    }
+
+    public FragmentDescription(TableOptions tableOptions, List<CombinedTask> combinedTasks, Long snapshotId) {
+        this.tableOptions = tableOptions;
+        this.combinedTasks = combinedTasks;
+        this.snapshotId = snapshotId;
+    }
+
+    public FragmentDescription(TableOptions tableOptions, List<Fragment> deleteFiles,
+                               List<CombinedTask> combinedTasks, Long snapshotId) {
+        this.tableOptions = tableOptions;
+        this.deleteFiles = deleteFiles;
+        this.combinedTasks = combinedTasks;
+        this.snapshotId = snapshotId;
+    }
+
+    public static FragmentDescription notModified(long snapshotId) {
+        FragmentDescription desc = new FragmentDescription(null, null, snapshotId);
+        desc.notModified = true;
+        return desc;
     }
 }

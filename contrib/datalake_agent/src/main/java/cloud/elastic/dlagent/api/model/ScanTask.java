@@ -31,6 +31,7 @@ public class ScanTask {
     private Long start;
     private Long length;
     private List<Fragment> deletes;
+    private List<Integer> deleteIndexes;
     private Fragment data;
     private String instantTime;
 
@@ -40,5 +41,12 @@ public class ScanTask {
         this.start = start;
         this.length = length;
         this.instantTime = instantTime;
+    }
+
+    public ScanTask(Fragment data, List<Integer> deleteIndexes, Long start, Long length) {
+        this.data = data;
+        this.deleteIndexes = deleteIndexes;
+        this.start = start;
+        this.length = length;
     }
 }

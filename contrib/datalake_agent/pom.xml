@@ -199,6 +199,13 @@
             <version>${iceberg.version}</version>
         </dependency>
 
+        <!-- Custom FileIO implementation for Gopher storage -->
+        <dependency>
+            <groupId>org.cbdb.iceberg</groupId>
+            <artifactId>iceberg-gopher</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
+
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
@@ -264,6 +271,31 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+    <repositories>
+            <repository>
+                <id>nexus-releases</id>
+                <name>HashData Releases</name>
+                <url>https://nexus.hashdata.dev/repository/maven-hosted/</url>
+                <releases>
+                    <enabled>true</enabled>
+                </releases>
+                <snapshots>
+                    <enabled>false</enabled>
+                </snapshots>
+            </repository>
+            <repository>
+                <id>nexus-snapshots</id>
+                <name>HashData Snapshots</name>
+                <url>https://nexus.hashdata.dev/repository/maven-snapshot-hosted/</url>
+                <releases>
+                    <enabled>false</enabled>
+                </releases>
+                <snapshots>
+                    <enabled>true</enabled>
+                    <updatePolicy>daily</updatePolicy>
+                </snapshots>
+            </repository>
+        </repositories>
 
     <build>
         <plugins>

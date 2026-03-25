@@ -42,6 +42,8 @@ protected:
 		Oid fileTypeId_;
 		int columnIndex_;
 		TIMEUNIT timeUnit_;
+		int scale_;			/* Decimal scale (NUMERIC only) */
+		int typeLength_;	/* Fixed-length byte size (BPCHAR/FLBA only) */
 	};
 
 	int curGroup_;

@@ -26,6 +26,7 @@ typedef struct DatalakeReaderInitInfo
 	ExternalTableMetadata *tableOptions;
 	void		   *buffer;
 	uint32			fileId;			/* File ID for current task (Iceberg only) */
+	void		   *deleteIndex;	/* IcebergDeleteIndex for pre-built delete bitmaps */
 } DatalakeReaderInitInfo;
 
 typedef struct DatalakeInternalRecord
@@ -106,6 +107,7 @@ typedef struct DatalakeRowReader
 	MemoryContext			curMcxt;
 	void 					*buffer;
 	bool					fileIndexMapInitialized;	/* Track if Iceberg file index map has been initialized */
+	void					*deleteIndex;				/* IcebergDeleteIndex for position delete dedup */
 } DatalakeRowReader;
 
 typedef struct DatalakeRemoteFileHandle

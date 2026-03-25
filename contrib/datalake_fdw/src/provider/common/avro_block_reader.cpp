@@ -7,6 +7,7 @@
 extern "C"
 {
 #include "postgres.h"
+#include "datatype/timestamp.h"
 #include "utils/memutils.h"
 #include "nodes/pg_list.h"
 #include "utils/builtins.h"
@@ -311,8 +312,27 @@ AvroBlockReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
 		{
+			static const int64 UNIX_TO_PG_EPOCH_USECS =
+				((int64)(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)) * SECS_PER_DAY * USECS_PER_SEC;
+
 			avro_value_get_long(pfield, &data.int64Value);
-			return TimestampGetDatum(time_t_to_timestamptz(transformTimestamp(data.int64Value, typInfo.timeUnit_))); // micorsec, hudi spec
+
+			int64 pgTimestamp;
+			switch (typInfo.timeUnit_)
+			{
+				case TIMEUNIT_MILLIS:
+					pgTimestamp = data.int64Value * 1000 - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				case TIMEUNIT_MICROS:
+					pgTimestamp = data.int64Value - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				case TIMEUNIT_NANOS:
+					pgTimestamp = data.int64Value / 1000 - UNIX_TO_PG_EPOCH_USECS;
+					break;
+				default:
+					throw Error("Unknown timestamp precision");
+			}
+			return TimestampGetDatum(pgTimestamp);
 		}
 		case DATEOID:
 		{

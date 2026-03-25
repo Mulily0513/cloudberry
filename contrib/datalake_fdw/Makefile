@@ -26,6 +26,7 @@ OBJS = 	src/datalake_fdw.o \
 		src/dlproxy/hive.o \
 		src/dlproxy/hudi.o \
 		src/dlproxy/iceberg.o \
+		src/dlproxy/iceberg_fragment_cache.o \
 		src/dlproxy/libchurl.o \
 		src/dlproxy/protocol.o \
 		src/dlproxy/uriparser.o \
@@ -78,6 +79,7 @@ OBJS = 	src/datalake_fdw.o \
 		src/provider/iceberg/iceberg_equality_filter.o \
 		src/provider/iceberg/iceberg_task_reader.o \
 		src/provider/iceberg/iceberg_position_filter.o \
+		src/provider/iceberg/iceberg_delete_index.o \
 		src/provider/iceberg/iceberg_read.o \
 		src/provider/iceberg/iceberg_write.o \
 		src/provider/iceberg/iceberg_posdel_write.o \

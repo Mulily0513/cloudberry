@@ -64,8 +64,10 @@ import org.apache.iceberg.types.Types;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -136,10 +138,32 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
 
     public FragmentDescription getFragments(String pattern) throws Exception {
         IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
-        Table table = catalog.loadTable(context.getDataSource());
+        Table table;
+        try {
+            table = catalog.loadTable(context.getDataSource());
+        } catch (NoSuchTableException e) {
+            return new FragmentDescription(null, java.util.Collections.emptyList(), -1L);
+        }
+
+        /* Get current snapshot ID (cheap: reads already-loaded metadata) */
+        Snapshot currentSnapshot = table.currentSnapshot();
+        long snapshotId = (currentSnapshot != null) ? currentSnapshot.snapshotId() : -1;
+
+        /* Check conditional cache: if client has same snapshot, skip planTasks */
+        String ifSnapshotStr = context.getOptions().get("if-snapshot-id");
+        if (ifSnapshotStr != null) {
+            try {
+                long ifSnapshotId = Long.parseLong(ifSnapshotStr);
+                if (snapshotId == ifSnapshotId) {
+                    return FragmentDescription.notModified(snapshotId);
+                }
+            } catch (NumberFormatException e) {
+                /* ignore malformed header, proceed normally */
+            }
+        }
 
         icebergUtilities.verifySchema(table.schema(), context);
-        
+
         TableScan scan = table
                 .newScan()
                 .project(expectedSchema(table));
@@ -158,7 +182,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
             throw e;
         }
 
-        return new FragmentDescription(null, transformTasks(table, scanTasks));
+        return transformTasks(table, scanTasks, snapshotId);
     }
 
     public List<Partition> getPartitions(String pattern) throws Exception {
@@ -200,11 +224,16 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
             properties.put(TableProperties.DELETE_MODE, "merge-on-read");
             properties.put(TableProperties.MERGE_MODE, "merge-on-read");
 
-            table = catalog.createTable(TableIdentifier.parse(context.getDataSource()),
-                                        icebergUtilities.formSchemaFromTupleDes(context),
-                                        null,
-                                        null,
-                                        properties);
+            try {
+                table = catalog.createTable(TableIdentifier.parse(context.getDataSource()),
+                                            icebergUtilities.formSchemaFromTupleDes(context),
+                                            null,
+                                            null,
+                                            properties);
+            } catch (org.apache.iceberg.exceptions.AlreadyExistsException ae) {
+                // Another segment created the table concurrently, just load it
+                table = catalog.loadTable(context.getDataSource());
+            }
         }
         AppendFiles batchAppend = table.newAppend();
 
@@ -272,8 +301,17 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
     @Override
     public Map<String, String> getCurrentSnapshotSummary() throws Exception {
         IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
-        Table table = catalog.loadTable(context.getDataSource());
-        return table.currentSnapshot().summary();
+        Table table;
+        try {
+            table = catalog.loadTable(context.getDataSource());
+        } catch (NoSuchTableException e) {
+            return java.util.Collections.emptyMap();
+        }
+        Snapshot currentSnapshot = table.currentSnapshot();
+        if (currentSnapshot == null) {
+            return java.util.Collections.emptyMap();
+        }
+        return currentSnapshot.summary();
     }
 
     public Schema expectedSchema(Table table) {
@@ -346,9 +384,37 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         return eqColumnNames;
     }
 
-    private List<CombinedTask> transformTasks(Table table, List<CombinedScanTask> scanTasks) {
-        List<CombinedTask> tasks = Lists.newArrayList();
+    private FragmentDescription transformTasks(Table table, List<CombinedScanTask> scanTasks, long snapshotId) {
+        // Pass 1: collect all unique delete files by path
+        Map<String, Fragment> uniqueDeleteMap = new LinkedHashMap<>();
+        for (CombinedScanTask combinedScanTask : scanTasks) {
+            for (FileScanTask fileScanTask : combinedScanTask.tasks()) {
+                if (fileScanTask.isDataTask()) {
+                    continue;
+                }
+                for (DeleteFile delete : fileScanTask.deletes()) {
+                    String path = delete.path().toString();
+                    if (!uniqueDeleteMap.containsKey(path)) {
+                        List<String> deleteSchemas = null;
+                        if (delete.content() == EQUALITY_DELETES) {
+                            deleteSchemas = getEqColumnNames(table, delete);
+                        }
+                        uniqueDeleteMap.put(path, new Fragment(path,
+                                new IcebergFileFragmentMetadata(delete.format(), delete.content(), delete.recordCount(), deleteSchemas)));
+                    }
+                }
+            }
+        }
 
+        // Build index lookup: path -> index in deleteFiles list
+        List<Fragment> allDeleteFiles = new ArrayList<>(uniqueDeleteMap.values());
+        Map<String, Integer> deleteIndexMap = new HashMap<>();
+        for (int i = 0; i < allDeleteFiles.size(); i++) {
+            deleteIndexMap.put(allDeleteFiles.get(i).getSourceName(), i);
+        }
+
+        // Pass 2: build tasks with delete index references
+        List<CombinedTask> tasks = Lists.newArrayList();
         for (CombinedScanTask combinedScanTask : scanTasks) {
             List<ScanTask> combinedTask = Lists.newArrayList();
             for (FileScanTask fileScanTask : combinedScanTask.tasks()) {
@@ -357,29 +423,29 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
                 }
 
                 DataFile file = fileScanTask.file();
-
                 Fragment data = new Fragment(file.path().toString(),
                         new IcebergFileFragmentMetadata(file.format(), file.content(), file.recordCount(), null));
 
-                List<Fragment> deletes = Lists.newArrayList();
+                List<Integer> deleteIndexes = new ArrayList<>();
                 for (DeleteFile delete : fileScanTask.deletes()) {
-                    List<String> deleteSchemas = null;
-                    if (delete.content() == EQUALITY_DELETES) {
-                        deleteSchemas = getEqColumnNames(table, delete);
+                    Integer deleteIdx = deleteIndexMap.get(delete.path().toString());
+                    if (deleteIdx == null) {
+                        LOG.warn("Delete file path {} not found in global index map, skipping", delete.path());
+                        continue;
                     }
-
-                    Fragment deleteFragment = new Fragment(delete.path().toString(),
-                            new IcebergFileFragmentMetadata(delete.format(), delete.content(), delete.recordCount(), deleteSchemas));
-                    deletes.add(deleteFragment);
+                    deleteIndexes.add(deleteIdx);
                 }
 
-                combinedTask.add(new ScanTask(data, deletes, fileScanTask.start(), fileScanTask.length(), null));
+                combinedTask.add(new ScanTask(data, deleteIndexes, fileScanTask.start(), fileScanTask.length()));
             }
 
             tasks.add(new CombinedTask(combinedTask));
         }
 
-        return tasks;
+        LOG.info("transformTasks: {} unique delete files, {} combined tasks",
+                allDeleteFiles.size(), tasks.size());
+
+        return new FragmentDescription(null, allDeleteFiles, tasks, snapshotId);
     }
 
     public boolean open() throws Exception {

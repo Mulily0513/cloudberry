@@ -7,6 +7,7 @@
 #include "iceberg_position_filter.h"
 #include "iceberg_equality_filter.h"
 #include "iceberg_task_reader.h"
+#include "iceberg_delete_index.h"
 
 static void printDebugLog(int taskId,
 						  const char *filePath,
@@ -55,8 +56,21 @@ createIcebergTaskReader(void *args)
 	list_free(info->fileScanTask->deletes);
 
 	if (list_length(posDeletes) > 0)
-		filter = (Reader *) datalakeCreatePositionFilter(info->mcxt, filter, info->gopherFilesystem,
-												 info->fileScanTask->dataFile->filePath, posDeletes);
+	{
+		if (info->deleteIndex != NULL)
+		{
+			/* Use pre-built bitmap from global delete index */
+			void *bitmap = icebergDeleteIndexLookup(
+				(IcebergDeleteIndex *) info->deleteIndex,
+				info->fileScanTask->dataFile->filePath);
+			filter = (Reader *) datalakeCreatePositionFilterFromBitmap(filter, bitmap);
+		}
+		else
+		{
+			filter = (Reader *) datalakeCreatePositionFilter(info->mcxt, filter, info->gopherFilesystem,
+													 info->fileScanTask->dataFile->filePath, posDeletes);
+		}
+	}
 
 	if (list_length(eqDeletes) > 0)
 		filter = (Reader *) datalakeCreateEqualityFilter(info->mcxt, info->datafileDesc,

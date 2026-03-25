@@ -17,6 +17,7 @@
 #define ICEBERG_FILE_INDEX_H
 
 #include "postgres.h"
+#include "nodes/pg_list.h"
 #include "storage/itemptr.h"
 
 /* Bit layout constants */
@@ -92,5 +93,15 @@ icebergEncodeTID(ItemPointer tid, uint32 fileId, int64 rowOffset);
 /* Decode TID into file ID and row offset */
 extern void
 icebergDecodeTID(ItemPointer tid, uint32 *fileId, int64 *rowOffset);
+
+/*
+ * Populate the file index map with ALL files from all segments' fragments.
+ * This ensures globally consistent file IDs across all segments, which is
+ * required for Iceberg UPDATE/DELETE when Redistribute Motion is involved.
+ * allFragments is the complete fragment list: [metadata, task0, task1, ...].
+ */
+extern void
+icebergFileIndexMapPopulateFromAllFragments(IcebergFileIndexMap *map,
+											List *allFragments);
 
 #endif /* ICEBERG_FILE_INDEX_H */

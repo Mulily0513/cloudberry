@@ -167,7 +167,8 @@ positionFilterClose(Reader *filter)
 {
 	DatalakePositionFilter *positionFilter = (DatalakePositionFilter *) filter;
 
-	if (positionFilter->deletesSet != NULL)
+	/* Only destroy bitmap if we own it (not borrowed from global index) */
+	if (positionFilter->deletesSet != NULL && !positionFilter->borrowedBitmap)
 		datalakeDestroyBitmap(positionFilter->deletesSet);
 
 	if (positionFilter->sortedMerge != NULL)
@@ -181,6 +182,24 @@ positionFilterClose(Reader *filter)
 	pfree(positionFilter);
 
 	elog(DEBUG1, "close iceberg position filter");
+}
+
+DatalakePositionFilter *
+datalakeCreatePositionFilterFromBitmap(Reader *dataReader, void *bitmap)
+{
+	DatalakePositionFilter *filter = palloc0(sizeof(DatalakePositionFilter));
+
+	filter->base = methods;
+	filter->dataReader = dataReader;
+	filter->deletesSet = bitmap;
+	filter->borrowedBitmap = true;
+
+	if (bitmap == NULL)
+		filter->isEmptySet = true;
+
+	elog(DEBUG1, "create position filter from global delete index");
+
+	return filter;
 }
 
 static void

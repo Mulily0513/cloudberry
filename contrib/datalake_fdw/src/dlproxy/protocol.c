@@ -86,7 +86,7 @@ getFieldTypeOidByName(const char *typeName)
 			 errmsg("unsupported data type \"%s\"", typeName)));
 }
 
-static char *
+char *
 get_catalog_type(char *profile, List *locations)
 {
 	DatalakeGPHDUri *uri;
@@ -108,7 +108,7 @@ get_catalog_type(char *profile, List *locations)
 	return catalogType;
 }
 
-static const char *
+const char *
 transform_datalake_options(const char *key)
 {
 	int i;
@@ -344,8 +344,11 @@ datalake_create_fragment_context(Oid relid,
 	return create_context_(relid, relno, NULL, NULL, restrictInfo, targetList, uriStr, transform);
 }
 
-void
-datalakeDoRPC(datalake_gphadoop_context *context)
+/*
+ * Perform a single RPC attempt (no retry).
+ */
+static void
+datalakeDoRPC_once(datalake_gphadoop_context *context)
 {
 	/*
 	 * Determine if this is a write operation with file_list to send.
@@ -397,6 +400,84 @@ datalakeDoRPC(datalake_gphadoop_context *context)
 
 		/* check if the connection terminated with an error */
 		datalake_churl_read_check_connectivity(context->churl_handle);
+	}
+}
+
+/*
+ * Check if an error indicates that dlagent is not reachable (not yet started
+ * or temporarily unavailable).  Only these transient connection errors are
+ * worth retrying.
+ */
+static bool
+is_dlagent_connect_error(ErrorData *edata)
+{
+	if (edata->sqlerrcode == ERRCODE_CONNECTION_EXCEPTION)
+		return true;
+
+	/* CURLE_COULDNT_CONNECT (7) surfaces as a generic internal error */
+	if (edata->message &&
+		(strstr(edata->message, "Couldn't connect") ||
+		 strstr(edata->message, "Connection refused")))
+		return true;
+
+	return false;
+}
+
+#define DLAGENT_CONNECT_MAX_RETRIES     10
+#define DLAGENT_CONNECT_RETRY_INTERVAL_SEC 1
+
+void
+datalakeDoRPC(datalake_gphadoop_context *context)
+{
+	for (int attempt = 0; ; attempt++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		MemoryContext oldcontext = CurrentMemoryContext;
+		bool should_retry = false;
+
+		PG_TRY();
+		{
+			datalakeDoRPC_once(context);
+			return; /* success */
+		}
+		PG_CATCH();
+		{
+			MemoryContextSwitchTo(oldcontext);
+
+			ErrorData *edata = CopyErrorData();
+
+			if (is_dlagent_connect_error(edata) &&
+				attempt < DLAGENT_CONNECT_MAX_RETRIES)
+			{
+				FlushErrorState();
+				FreeErrorData(edata);
+
+				/* Clean up the failed connection */
+				if (context->churl_handle)
+				{
+					datalake_churl_cleanup(context->churl_handle, true);
+					context->churl_handle = NULL;
+				}
+				context->buffer_pos = 0;
+				context->completed = false;
+
+				elog(LOG, "dlagent not ready, retrying in %d second(s) (%d/%d)...",
+					 DLAGENT_CONNECT_RETRY_INTERVAL_SEC,
+					 attempt + 1, DLAGENT_CONNECT_MAX_RETRIES);
+
+				pg_usleep(DLAGENT_CONNECT_RETRY_INTERVAL_SEC * 1000000L);
+				should_retry = true;
+			}
+			else
+			{
+				FreeErrorData(edata);
+				PG_RE_THROW();
+			}
+		}
+		PG_END_TRY();
+
+		if (!should_retry)
+			break;
 	}
 }
 

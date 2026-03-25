@@ -25,12 +25,14 @@ import com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import cloud.elastic.dlagent.api.configuration.DlServerProperties;
+import cloud.elastic.dlagent.api.configuration.GopherConfigurationProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import cloud.elastic.dlagent.plugins.hudi.utilities.FilePathUtils;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.Map;
@@ -56,8 +58,16 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
             "krb_principal_keytab", SecureLogin.CONFIG_KEY_SERVICE_KEYTAB,
             "hadoop_rpc_protection","hadoop.rpc.protection",
             "data_transfer_protocol", "dfs.encrypt.data.transfer");
+
+    /** Gopher configuration from Spring application.properties */
+    private final GopherConfigurationProperties gopherConfiguration;
+
     @Autowired
-    public BaseConfigurationFactory(DlServerProperties dlagentServerProperties) {}
+    public BaseConfigurationFactory(DlServerProperties dlagentServerProperties,
+                                   GopherConfigurationProperties gopherConfiguration) {
+        this.gopherConfiguration = gopherConfiguration;
+        LOG.info("BaseConfigurationFactory initialized with Gopher configuration");
+    }
 
     /**
      * {@inheritDoc}
@@ -100,6 +110,13 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
 
         // add the server name itself as a configuration property
         configuration.set(DLAGENT_SERVER_NAME_PROPERTY, serverName);
+
+        // Inject Gopher configuration from Spring application.properties
+        Map<String, String> gopherProps = gopherConfiguration.toGopherPropertiesMap();
+        if (!gopherProps.isEmpty()) {
+            LOG.debug("Injecting {} Gopher properties from Spring configuration", gopherProps.size());
+            gopherProps.forEach(configuration::set);
+        }
 
         // add additional properties, if provided
         if (additionalProperties != null) {
@@ -177,8 +194,28 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
         String[] prefix = new String[1];
         Utilities.parserBucketAndPrefix(FilePathUtils.unescapeString(location), bucketName, prefix);
 
+        // Check if Gopher mode is enabled
+        configuration.set("fs.prefix", prefix[0]);
+
+        String gopherEnabled = configuration.get("gopher.enabled");
+        boolean isGopherMode = "true".equalsIgnoreCase(gopherEnabled);
+
+        if (isGopherMode) {
+            // Gopher mode: set fs.gopher.* configurations
+            LOG.info("Configuring S3 in Gopher mode");
+            configuration.set("fs.gopher.bucket", bucketName[0]);
+            configuration.set("fs.gopher.prefix", prefix[0]);
+
+            String protocol = (String)serverMap.get("fs.gopher.ufs_type");
+            if (protocol != null && !protocol.isEmpty()) {
+                configuration.set("fs.gopher.ufs_type", protocol);
+                configuration.set("fs.defaultFS", String.format("%s://%s", protocol, bucketName[0]));
+            }
+        }
+
+        // Process remaining server configurations
         serverMap.forEach((key, value) -> {
-            if (key.equals("fs.defaultFS")) {
+            if (key.equals("fs.defaultFS") && !isGopherMode) {
                 String defaultFs = String.format("%s%s", value.toString(), bucketName[0]);
                 configuration.set(key, defaultFs);
             } else {
@@ -199,17 +236,62 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
 
     private void transformHdfsConfig(Map<String, Object> serverMap, Configuration configuration) {
         transformOptions(serverMap, hdfsOptionMapping, configuration);
+
+        // Check if Gopher mode is enabled
+        String gopherEnabled = configuration.get("gopher.enabled");
+        boolean isGopherMode = "true".equalsIgnoreCase(gopherEnabled);
+
+        configuration.set("fs.protocol", "hdfs");
         configuration.set("ipc.client.connection.maxidletime", "900000");
+
+        if (isGopherMode) {
+            // Gopher mode: set fs.gopher.* and gopher.* configurations for HDFS
+            LOG.info("Configuring HDFS in Gopher mode");
+
+            // Set UFS type to hdfs
+            configuration.set("gopher.ufs_type", "hdfs");
+            configuration.set("fs.gopher.ufs_type", "hdfs");
+
+            // Set GopherFileSystem for hdfs:// scheme
+            String gopherFileSystemClass = "org.cbdb.iceberg.gopher.fs.GopherFileSystem";
+            configuration.set("fs.hdfs.impl", gopherFileSystemClass);
+            LOG.info("Gopher mode: set fs.hdfs.impl to {}", gopherFileSystemClass);
+        } else {
+            // Original HDFS mode
+            LOG.info("Configuring HDFS in original HDFS mode");
+        }
 
         if (Utilities.isSecurityEnabled(configuration)) {
             String servicePrincipal = (String) serverMap.get("krb_service_principal");
             if (servicePrincipal != null) {
                 configuration.set("dfs.namenode.kerberos.principal", servicePrincipal);
+                if (isGopherMode) {
+                    configuration.set("gopher.krb_principal", servicePrincipal);
+                    configuration.set("fs.gopher.krb_principal", servicePrincipal);
+                }
             }
 
             String transferProtection = (String) serverMap.get("data_transfer_protection");
             if (transferProtection != null) {
-                configuration.set("dfs.data.transfer.protection", transferProtection);
+                if (isGopherMode) {
+                    // Gopher handles its own data transfer protection, including "none"
+                    configuration.set("dfs.data.transfer.protection", transferProtection);
+                    configuration.set("gopher.data_transfer_protocol", transferProtection);
+                    configuration.set("fs.gopher.data_transfer_protocol", transferProtection);
+                } else if (!"none".equalsIgnoreCase(transferProtection)) {
+                    // HadoopFileIO: only set valid QualityOfProtection values (authentication/integrity/privacy).
+                    // "none" is not a valid enum value and DataTransferSaslUtil copies dfs.data.transfer.protection
+                    // to hadoop.rpc.protection, causing IllegalArgumentException in SaslPropertiesResolver.
+                    configuration.set("dfs.data.transfer.protection", transferProtection);
+                }
+            }
+
+            String rpcProtection = (String) serverMap.get("hadoop_rpc_protection");
+            if (rpcProtection != null) {
+                if (isGopherMode) {
+                    configuration.set("gopher.hadoop_rpc_protection", rpcProtection);
+                    configuration.set("fs.gopher.hadoop_rpc_protection", rpcProtection);
+                }
             }
         }
 
@@ -218,22 +300,76 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
             configuration.set(SecureLogin.CONFIG_KEY_SERVICE_USER_NAME, serviceUser);
         }
 
+        // Get HDFS authentication method
+        String authMethod = (String) serverMap.get("hdfs_auth_method");
+        if (authMethod != null && isGopherMode) {
+            configuration.set("gopher.auth_method", authMethod);
+            configuration.set("fs.gopher.auth_method", authMethod);
+        }
+
         Boolean enableHa = (Boolean) serverMap.get("is_ha_supported");
         if (enableHa == null || enableHa == false) {
-            String defaultFs = String.format("hdfs://%s:%s", serverMap.get("hdfs_namenode_host"),
-                    serverMap.get("hdfs_namenode_port"));
+            // Non-HA mode
+            String host = String.valueOf(serverMap.get("hdfs_namenode_host"));
+            String port = String.valueOf(serverMap.get("hdfs_namenode_port"));
+            String defaultFs = String.format("hdfs://%s:%s", host, port);
 
+            if (isGopherMode) {
+                // Set Gopher-specific HDFS configurations
+                configuration.set("gopher.name_node", host);
+                configuration.set("fs.gopher.name_node", host);
+                configuration.set("gopher.port", port);
+                configuration.set("fs.gopher.port", port);
+                configuration.set("gopher.is_ha_supported", "false");
+                configuration.set("fs.gopher.is_ha_supported", "false");
+            }
+
+            configuration.set("fs.namenode.host", host);
+            configuration.set("fs.namenode.port", port);
             configuration.set("fs.defaultFS", defaultFs);
             return;
         }
 
-        transformHdfsHaConfig(serverMap, configuration);
+        // HA mode
+        transformHdfsHaConfig(serverMap, configuration, isGopherMode);
     }
 
-    private void transformHdfsHaConfig(Map<String, Object> serverMap, Configuration configuration) {
+    private void transformHdfsHaConfig(Map<String, Object> serverMap, Configuration configuration, boolean isGopherMode) {
         String nameServices = (String) serverMap.get("dfs.nameservices");
 
+        configuration.set("fs.nameservices", nameServices);
         configuration.set("fs.defaultFS", String.format("hdfs://%s", nameServices));
+
+        if (isGopherMode) {
+            // Set Gopher-specific HA configurations
+            configuration.set("gopher.dfs_nameservices", nameServices);
+            configuration.set("fs.gopher.dfs_nameservices", nameServices);
+            configuration.set("gopher.is_ha_supported", "true");
+            configuration.set("fs.gopher.is_ha_supported", "true");
+
+            // Get HA namenodes
+            String haNamenodes = (String) serverMap.get("dfs.ha.namenodes");
+            if (haNamenodes != null) {
+                configuration.set("gopher.dfs_ha_namenodes", haNamenodes);
+                configuration.set("fs.gopher.dfs_ha_namenodes", haNamenodes);
+            }
+
+            // Get namenode RPC addresses
+            String namenodeRpcAddress = (String) serverMap.get("dfs.namenode.rpc-address");
+            if (namenodeRpcAddress != null) {
+                configuration.set("gopher.dfs_namenode_rpc_address", namenodeRpcAddress);
+                configuration.set("fs.gopher.dfs_namenode_rpc_address", namenodeRpcAddress);
+            }
+
+            // Get failover proxy provider
+            String providerKey = String.format("dfs.client.failover.proxy.provider.%s", nameServices);
+            String providerValue = (String) serverMap.get(providerKey);
+            if (providerValue != null) {
+                configuration.set("gopher.dfs_client_failover_proxy_provider", providerValue);
+                configuration.set("fs.gopher.dfs_client_failover_proxy_provider", providerValue);
+            }
+        }
+
         serverMap.forEach((key, value) -> {
             if (value == null) {
                 return;
@@ -253,6 +389,10 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
         Boolean useHostName = (Boolean) serverMap.get("dfs_client_use_datanode_hostname");
         if (useHostName != null && useHostName == true) {
             configuration.set("dfs.client.use.datanode.hostname", "true");
+            if (isGopherMode) {
+                configuration.set("gopher.dfs_client_use_datanode_hostname", "true");
+                configuration.set("fs.gopher.dfs_client_use_datanode_hostname", "true");
+            }
         }
     }
 }

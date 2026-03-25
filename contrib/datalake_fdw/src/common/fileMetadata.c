@@ -10,6 +10,34 @@
 #include "cdb/cdbdispatchresult.h"
 #include "utils/json.h"
 
+
+/*
+ * Compatibility shim for pqAddTuple which may not be exported
+ * by older postgres binaries.
+ */
+static bool
+pqAddTuple_compat(PGresult *res, PGresAttValue *tup, const char **errmsgp)
+{
+	if (res->ntups >= res->tupArrSize)
+	{
+		int newSize = (res->tupArrSize > 0) ? res->tupArrSize * 2 : 128;
+		PGresAttValue **newTuples;
+
+		newTuples = (PGresAttValue **)
+			realloc(res->tuples, newSize * sizeof(PGresAttValue *));
+		if (!newTuples)
+		{
+			*errmsgp = "out of memory for query result";
+			return false;
+		}
+		res->tuples = newTuples;
+		res->tupArrSize = newSize;
+	}
+	res->tuples[res->ntups] = tup;
+	res->ntups++;
+	return true;
+}
+
 List *FDW_ResultMetaList = NIL;
 
 typedef struct CdbDispatchCmdAsync
@@ -71,7 +99,7 @@ receiveDataMeta_internal(PGconn *conn, PGresult *result,
 		}
 
 		/* And add the tuple to the PGresult's tuple array */
-		if (!pqAddTuple(result, tup, errmsg))
+		if (!pqAddTuple_compat(result, tup, errmsg))
 			return false;
 
 		/* Success! */

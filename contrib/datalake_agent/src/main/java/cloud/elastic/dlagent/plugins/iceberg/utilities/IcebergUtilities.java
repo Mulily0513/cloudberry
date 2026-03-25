@@ -25,18 +25,15 @@ import cloud.elastic.dlagent.api.error.UnsupportedTypeException;
 import cloud.elastic.dlagent.api.io.DataType;
 import cloud.elastic.dlagent.api.model.Fragment;
 import cloud.elastic.dlagent.api.model.Metadata;
-import cloud.elastic.dlagent.api.model.Partition;
 import cloud.elastic.dlagent.api.model.RequestContext;
 import cloud.elastic.dlagent.api.utilities.ColumnDescriptor;
 import cloud.elastic.dlagent.api.utilities.EnumGpdbType;
 import cloud.elastic.dlagent.api.utilities.GpdbFragmentMetadata;
 import cloud.elastic.dlagent.api.utilities.Utilities;
-import cloud.elastic.dlagent.plugins.iceberg.IcebergDataFile;
 import cloud.elastic.dlagent.service.rest.FileListRequest;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
@@ -48,6 +45,8 @@ import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.NestedField;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.Map;
@@ -62,6 +61,8 @@ import java.util.stream.Collectors;
  */
 @Component
 public class IcebergUtilities {
+
+    private static final Logger LOG = LoggerFactory.getLogger(IcebergUtilities.class);
 
     /**
      * Checks if iceberg type is supported, and if so return its matching GPDB
@@ -182,8 +183,24 @@ public class IcebergUtilities {
 
     /**
      * Compose Iceberg catalog properties from Hadoop Configuration.
+     *
+     * <p>Delegates to either Gopher or original S3 configuration based on gopher.enabled flag.
      */
     public Map<String, String> composeCatalogProperties(Configuration configuration) {
+        if (isGopherEnabled(configuration)) {
+            return composeGopherCatalogProperties(configuration);
+        } else {
+            return composeOriginalCatalogProperties(configuration);
+        }
+    }
+
+    /**
+     * Compose catalog properties for Gopher mode.
+     *
+     * <p>Sets up GopherFileSystem for metadata operations, converts legacy configuration
+     * to unified fs.gopher.* format, and configures GopherFileIO for data file operations.
+     */
+    private Map<String, String> composeGopherCatalogProperties(Configuration configuration) {
         Map<String, String> props = new HashMap<>();
         List<String> configKeys = new ArrayList<>(Arrays.asList(
                 CatalogProperties.FILE_IO_IMPL, CatalogProperties.IO_MANIFEST_CACHE_ENABLED,
@@ -198,13 +215,210 @@ public class IcebergUtilities {
             }
         }
 
+        // Set GopherFileIO if not explicitly configured
         if (!props.containsKey(CatalogProperties.FILE_IO_IMPL)) {
-            // Manifest caching only enabled if "io-impl" is specified. Default to HadoopFileIO
-            // if non-existent.
-            props.put(CatalogProperties.FILE_IO_IMPL, HadoopFileIO.class.getName());
+            props.put(CatalogProperties.FILE_IO_IMPL, "org.cbdb.iceberg.gopher.client.GopherFileIO");
+            LOG.info("Gopher enabled, using GopherFileIO");
+        }
+
+        // Setup GopherFileSystem and related configuration
+        Map<String, String> gopherProps = setupGopherConfiguration(configuration);
+        props.putAll(gopherProps);
+
+        return props;
+    }
+
+    /**
+     * Compose catalog properties for original S3 mode.
+     *
+     * <p>Uses HadoopFileIO with original S3 configuration (pre-Gopher implementation).
+     */
+    private Map<String, String> composeOriginalCatalogProperties(Configuration configuration) {
+        Map<String, String> props = new HashMap<>();
+        List<String> configKeys = new ArrayList<>(Arrays.asList(
+                CatalogProperties.FILE_IO_IMPL, CatalogProperties.IO_MANIFEST_CACHE_ENABLED,
+                CatalogProperties.IO_MANIFEST_CACHE_EXPIRATION_INTERVAL_MS,
+                CatalogProperties.IO_MANIFEST_CACHE_MAX_TOTAL_BYTES,
+                CatalogProperties.IO_MANIFEST_CACHE_MAX_CONTENT_LENGTH));
+
+        for (String key : configKeys) {
+            String val = configuration.get("iceberg." + key);
+            if (val != null) {
+                props.put(key, val);
+            }
+        }
+
+        // Use HadoopFileIO for original S3 logic
+        if (!props.containsKey(CatalogProperties.FILE_IO_IMPL)) {
+            props.put(CatalogProperties.FILE_IO_IMPL, org.apache.iceberg.hadoop.HadoopFileIO.class.getName());
+            LOG.info("Gopher not enabled, using HadoopFileIO");
         }
 
         return props;
+    }
+
+    /**
+     * Checks if Gopher should be enabled based on configuration.
+     *
+     * <p>Gopher is considered enabled if gopher.enabled is set to "true"
+     *
+     * @param configuration Hadoop Configuration
+     * @return true if Gopher should be used, false otherwise
+     */
+    public boolean isGopherEnabled(Configuration configuration) {
+        String enabledFlag = configuration.get("gopher.enabled");
+        return "true".equalsIgnoreCase(enabledFlag);
+    }
+
+    /**
+     * Sets up GopherFileSystem and converts configuration to unified Gopher format.
+     *
+     * <p>This performs two main tasks:
+     * <ol>
+     * <li>Registers GopherFileSystem for gopher:// URI scheme</li>
+     * <li>Converts legacy fs.&lt;protocol&gt;.* config to fs.gopher.* format</li>
+     * </ol>
+     *
+     * @param configuration Hadoop Configuration with legacy settings
+     * @return Map of Gopher-formatted properties for Iceberg FileIO
+     */
+    private Map<String, String> setupGopherConfiguration(Configuration configuration) {
+        Map<String, String> gopherProps = new HashMap<>();
+
+        // Determine the storage protocol
+        String protocol = inferStorageProtocol(configuration);
+
+        // Register GopherFileSystem for all relevant schemes
+        String gopherFileSystemClass = "org.cbdb.iceberg.gopher.fs.GopherFileSystem";
+        configuration.set("fs.gopher.impl", gopherFileSystemClass);
+        configuration.set("fs.gs.impl", gopherFileSystemClass);
+        configuration.set("fs." + protocol + ".impl", gopherFileSystemClass);
+
+        LOG.info("Gopher mode: set fs.{}.impl to {}", protocol, gopherFileSystemClass);
+
+        // Set UFS type
+        gopherProps.put("gopher.ufs_type", protocol);
+        configuration.set("fs.gopher.ufs_type", protocol);
+
+        // Convert protocol-specific configuration to Gopher format
+        convertProtocolConfiguration(configuration, gopherProps, protocol);
+
+        // Copy basic Gopher configuration if present
+        copyBasicGopherConfig(configuration, gopherProps);
+
+        LOG.info("GopherFileSystem configured with protocol: {}", protocol);
+
+        return gopherProps;
+    }
+
+    /**
+     * Infers the storage protocol from configuration.
+     *
+     * <p>Checks in order:
+     * <ol>
+     * <li>Explicit fs.gopher.ufs_type setting</li>
+     * <li>fs.defaultFS scheme</li>
+     * <li>Default to "s3a"</li>
+     * </ol>
+     */
+    private String inferStorageProtocol(Configuration configuration) {
+        // Check explicit protocol setting
+        String protocol = configuration.get("fs.gopher.ufs_type");
+        if (protocol != null && !protocol.isEmpty()) {
+            return protocol;
+        }
+
+        // Check fs.defaultFS
+        String defaultFS = configuration.get("fs.defaultFS");
+        if (defaultFS != null && !defaultFS.isEmpty()) {
+            return defaultFS.split("://")[0];
+        }
+
+        // Default to S3A
+        LOG.warn("Could not determine storage protocol, defaulting to s3a");
+        return "s3a";
+    }
+
+    /**
+     * Converts protocol-specific configuration to Gopher format.
+     *
+     * <p>Maps fs.&lt;protocol&gt;.&lt;key&gt; to gopher.&lt;key&gt;
+     */
+    private void convertProtocolConfiguration(Configuration configuration,
+                                             Map<String, String> gopherProps,
+                                             String protocol) {
+        String protocolPrefix = "fs.gopher.";
+
+        // Common object storage key mappings
+        Map<String, String> objectStorageMappings = new HashMap<>();
+        objectStorageMappings.put("bucket", "gopher.bucket");
+        objectStorageMappings.put("access_key", "gopher.access_key");
+        objectStorageMappings.put("secret_key", "gopher.secret_key");
+        objectStorageMappings.put("endpoint", "gopher.endpoint");
+        objectStorageMappings.put("region", "gopher.region");
+        objectStorageMappings.put("use_https", "gopher.useHttps");
+        objectStorageMappings.put("use_virtual_host", "gopher.useVirtualHost");
+
+        // HDFS-specific mappings (keys match fs.gopher.* set by transformHdfsConfig)
+        Map<String, String> hdfsMappings = new HashMap<>();
+        hdfsMappings.put("name_node", "gopher.name_node");
+        hdfsMappings.put("port", "gopher.port");
+        hdfsMappings.put("auth_method", "gopher.auth_method");
+        hdfsMappings.put("is_ha_supported", "gopher.is_ha_supported");
+        hdfsMappings.put("ufs_type", "gopher.ufs_type");
+        hdfsMappings.put("hadoop_rpc_protection", "gopher.hadoop_rpc_protection");
+        hdfsMappings.put("krb_principal", "gopher.krb_principal");
+        hdfsMappings.put("data_transfer_protocol", "gopher.data_transfer_protocol");
+        hdfsMappings.put("dfs_nameservices", "gopher.dfs_nameservices");
+        hdfsMappings.put("dfs_ha_namenodes", "gopher.dfs_ha_namenodes");
+        hdfsMappings.put("dfs_namenode_rpc_address", "gopher.dfs_namenode_rpc_address");
+        hdfsMappings.put("dfs_client_failover_proxy_provider", "gopher.dfs_client_failover_proxy_provider");
+        hdfsMappings.put("dfs_client_use_datanode_hostname", "gopher.dfs_client_use_datanode_hostname");
+        hdfsMappings.put("krb5_ticket_cache_path", "gopher.krb5_ticket_cache_path");
+        hdfsMappings.put("krb_server_key_file", "gopher.krb_server_key_file");
+        hdfsMappings.put("krb_delegation_token", "gopher.krb_delegation_token");
+
+        // Choose mappings based on protocol
+        Map<String, String> mappings = ("hdfs".equals(protocol)) ? hdfsMappings : objectStorageMappings;
+
+        // Iterate through configuration and convert matching keys
+        for (Map.Entry<String, String> entry : configuration) {
+            String key = entry.getKey();
+            if (key.startsWith(protocolPrefix)) {
+                String suffix = key.substring(protocolPrefix.length());
+                String gopherKey = mappings.get(suffix);
+
+                if (gopherKey != null) {
+                    String value = entry.getValue();
+                    gopherProps.put(gopherKey, value);
+                    configuration.set(gopherKey, value);
+                    LOG.debug("Converted {} -> {}", key, gopherKey);
+                }
+            }
+        }
+    }
+
+    /**
+     * Copies basic Gopher configuration if present.
+     */
+    private void copyBasicGopherConfig(Configuration configuration,
+                                       Map<String, String> gopherProps) {
+        String[] basicKeys = {
+            "gopher.worker_path",
+            "gopher.connect_path",
+            "gopher.connect_plasma_path",
+            "gopher.cache_strategy",
+            "gopher.mode",
+            "gopher.log_level"
+        };
+
+        for (String key : basicKeys) {
+            String value = configuration.get(key);
+            if (value != null && !value.isEmpty()) {
+                gopherProps.put(key, value);
+                configuration.set("fs." + key, value);
+            }
+        }
     }
 
     /**

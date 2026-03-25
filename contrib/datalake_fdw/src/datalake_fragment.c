@@ -1,6 +1,7 @@
 #include "datalake_fragment.h"
 #include "datalake_option.h"
 #include "dlproxy/protocol.h"
+#include "dlproxy/iceberg_fragment_cache.h"
 #include "common/fileSystemWrapper.h"
 #include "common/partition_selector.h"
 #include "dlproxy/datalake.h"
@@ -60,13 +61,17 @@ datalakeGetFragmentList(dataLakeOptions *options, int64_t *totalSize)
 
 void datalakeCommitExternalWrite(Relation relation, dataLakeFdwScanState *sstate, List *file_list)
 {
+	Oid relid = RelationGetRelid(relation);
 	List *locations = convert_iceberg_hudi_options(sstate->options);
+
 	if (sstate->cmd == CMD_UPDATE || sstate->cmd == CMD_DELETE)
 	{
-		internal_commit_external_update(RelationGetRelid(relation), file_list, locations);
+		internal_commit_external_update(relid, file_list, locations);
+		iceberg_fragment_cache_invalidate(relid);
 		return;
 	}
-	commit_external_write(RelationGetRelid(relation), file_list, locations);
+	commit_external_write(relid, file_list, locations);
+	iceberg_fragment_cache_invalidate(relid);
 }
 
 char *datalakeGetExternalWriteLocation(Oid relid)
@@ -77,7 +82,7 @@ char *datalakeGetExternalWriteLocation(Oid relid)
 
 	if (opts->format == DL_ICEBERG_TABLE)
 	{
-		if (pg_strcasecmp(opts->catalog_type, "hive") == 0)
+		if (pg_strcasecmp(opts->catalog_type, "hive") == 0 || pg_strcasecmp(opts->catalog_type, "polaris") == 0)
 		{
 			List *locations = convert_iceberg_hudi_options(opts);
 			FDW_TableMeta *tableMeta = get_external_schema_or_create(relid, "iceberg", locations);

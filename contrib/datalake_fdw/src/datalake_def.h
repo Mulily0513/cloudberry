@@ -390,6 +390,15 @@ typedef struct IcebergFileIndexMap IcebergFileIndexMap;  /* Forward declaration 
 /* Global file index map for Iceberg update/delete operations */
 extern IcebergFileIndexMap *datalake_iceberg_file_index_map;
 
+/*
+ * Global reference to the full fragment list from BeginForeignScan.
+ * Used by BeginForeignModify to eagerly populate the file index map with
+ * ALL files across all segments, ensuring globally consistent file IDs.
+ * This is needed because Redistribute Motion can send rows from one segment
+ * to another, and the file ID encoded in ctid must be valid on any segment.
+ */
+extern List *datalake_iceberg_all_fragments;
+
 typedef struct datalakeFragmentData
 {
 	char* filePath;

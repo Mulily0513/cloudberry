@@ -54,13 +54,76 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
 
         Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
 
-        String warehouseLocation = String.format("%s/%s", configuration.get("fs.defaultFS"), catalogLocation);
+        // Use gopher:// URI when Gopher is enabled, otherwise use standard hdfs:// URI for HadoopFileIO
+        String warehouseLocation;
+        if (icebergUtilities.isGopherEnabled(this.configuration)) {
+            warehouseLocation = convertToGopherURI(configuration.get("fs.defaultFS"), catalogLocation);
+        } else {
+            warehouseLocation = buildStandardURI(configuration.get("fs.defaultFS"), catalogLocation);
+        }
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
 
         LOG.info("warehouse location of iceberg hadoop-table {}", warehouseLocation);
 
         hadoopCatalog.setConf(this.configuration);
         hadoopCatalog.initialize("", props);
+    }
+
+    /**
+     * Builds a standard hdfs:// URI for use with HadoopFileIO (non-Gopher mode).
+     */
+    private String buildStandardURI(String defaultFS, String catalogLocation) {
+        if (defaultFS != null && !defaultFS.isEmpty()) {
+            if (catalogLocation.startsWith("/")) {
+                return defaultFS + catalogLocation;
+            }
+            return defaultFS + "/" + catalogLocation;
+        }
+        return catalogLocation;
+    }
+
+    /**
+     * Converts legacy URI to gopher:// format.
+     *
+     * <p>Examples:
+     * <ul>
+     * <li>hdfs://namenode:9000/warehouse → gopher://warehouse</li>
+     * <li>s3a://bucket/path → gopher://bucket/path</li>
+     * <li>oss://bucket/path → gopher://bucket/path</li>
+     * </ul>
+     */
+    private String convertToGopherURI(String defaultFS, String catalogLocation) {
+        if (defaultFS == null || defaultFS.isEmpty()) {
+            // If no defaultFS, assume gopher format directly
+            return "gopher://" + catalogLocation;
+        }
+
+        // Parse the defaultFS to extract scheme and authority
+        // For HDFS: hdfs://namenode:port -> use gopher with namenode config
+        // For S3/OSS: s3a://bucket or oss://bucket -> use gopher://bucket
+        if (defaultFS.startsWith("hdfs://")) {
+            // HDFS: use gopher://hdfs<path> to avoid URI normalization issues
+            // GopherFileSystem is registered as fs.gopher.impl
+            return "gopher://hdfs" + (catalogLocation.startsWith("/") ? catalogLocation : "/" + catalogLocation);
+        } else if (defaultFS.startsWith("s3a://") || defaultFS.startsWith("s3://") ||
+                   defaultFS.startsWith("oss://")) {
+            // Object storage: extract bucket from defaultFS
+            int schemeEnd = defaultFS.indexOf("://");
+            String afterScheme = defaultFS.substring(schemeEnd + 3);
+            int slashPos = afterScheme.indexOf('/');
+            String bucket = (slashPos > 0) ? afterScheme.substring(0, slashPos) : afterScheme;
+
+            // Construct gopher URI
+            if (catalogLocation.startsWith("/")) {
+                return "gopher://" + bucket + catalogLocation;
+            } else {
+                return "gopher://" + bucket + "/" + catalogLocation;
+            }
+        } else {
+            // Unknown scheme, default to gopher
+            LOG.warn("Unknown defaultFS scheme: {}, using gopher://", defaultFS);
+            return "gopher://" + catalogLocation;
+        }
     }
 
     @Override
