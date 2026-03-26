@@ -623,3 +623,23 @@ DROP TABLE t_reorganize_false;
 CREATE TABLE atsdby_multiple(i int, j int);
 ALTER TABLE atsdby_multiple SET DISTRIBUTED BY(j), ADD COLUMN k int;
 ALTER TABLE atsdby_multiple SET WITH (reorganize=true), ADD COLUMN k int;
+
+-- Test LIKE INCLUDING INDEXES does not produce duplicated distribution keys
+-- Case 1: single UNIQUE index
+CREATE TABLE like_src (xx text DEFAULT 'text', yy int UNIQUE);
+CREATE TABLE like_dst (x text, LIKE like_src INCLUDING INDEXES);
+SELECT array_length(distkey, 1) FROM gp_distribution_policy
+WHERE localoid = 'like_dst'::regclass;
+DROP TABLE like_dst, like_src;
+-- Case 2: PK + UNIQUE sharing a column
+CREATE TABLE like_src2 (a int, b int, PRIMARY KEY (a, b), UNIQUE (a));
+CREATE TABLE like_dst2 (LIKE like_src2 INCLUDING INDEXES);
+SELECT array_length(distkey, 1) FROM gp_distribution_policy
+WHERE localoid = 'like_dst2'::regclass;
+DROP TABLE like_dst2, like_src2;
+-- Case 3: multiple UNIQUE indexes sharing a column
+CREATE TABLE like_src3 (a int, b int, c int, UNIQUE(a, b), UNIQUE(a, c));
+CREATE TABLE like_dst3 (LIKE like_src3 INCLUDING INDEXES);
+SELECT array_length(distkey, 1) FROM gp_distribution_policy
+WHERE localoid = 'like_dst3'::regclass;
+DROP TABLE like_dst3, like_src3;

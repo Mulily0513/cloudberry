@@ -2710,29 +2710,65 @@ transformDistributedBy(ParseState *pstate,
 					/* cur index is uk or pk */
 					has_primary_unique_idx = true;
 					ListCell *dkcell;
-					/* make a new distrkey */
-					IndexElem *distrkey = makeNode(IndexElem);
-					distrkey->opclass = NULL;
-					/* get attr name for index */
-					for (int parent_attno = 1; parent_attno <= tupleDesc->natts;
-						 parent_attno++)
+					/* iterate over index key columns */
+					for (int i = 0; i < idxrec->indnkeyatts; i++)
 					{
-						Form_pg_attribute attribute = TupleDescAttr(tupleDesc, parent_attno - 1);
-						char *name = NameStr(attribute->attname);
-						if (!name)
-						{
+						AttrNumber	attnum = idxrec->indkey.values[i];
+						Form_pg_attribute attribute;
+						char	   *name;
+						ListCell   *existing;
+						bool		already_in_merge = false;
+
+						/* skip expression columns in the index */
+						if (attnum == 0)
 							continue;
+
+						attribute = TupleDescAttr(tupleDesc, attnum - 1);
+						name = NameStr(attribute->attname);
+
+						/* skip if this column is already in merge_distrkeys */
+						foreach (existing, merge_distrkeys)
+						{
+							DistributionKeyElem *e = (DistributionKeyElem *) lfirst(existing);
+
+							if (strcmp(e->name, name) == 0)
+							{
+								already_in_merge = true;
+								break;
+							}
 						}
-						distrkey->name = pstrdup(name);
-						merge_distrkeys = lappend(merge_distrkeys, distrkey);
-						/* match index */
+						if (!already_in_merge)
+						{
+							DistributionKeyElem *distrkey = makeNode(DistributionKeyElem);
+
+							distrkey->opclass = NIL;
+							distrkey->location = -1;
+							distrkey->name = pstrdup(name);
+							merge_distrkeys = lappend(merge_distrkeys, distrkey);
+						}
+
+						/* match user-specified dist keys, skip duplicates */
 						foreach (dkcell, distrkeys)
 						{
-							DistributionKeyElem *dk = (DistributionKeyElem *)lfirst(dkcell);
-							/* match name and user defined dist keys contains pk or uk */
+							DistributionKeyElem *dk = (DistributionKeyElem *) lfirst(dkcell);
+
 							if (strcmp(dk->name, name) == 0)
 							{
-								new_distrkeys = lappend(new_distrkeys, dk);
+								bool	already_in_new = false;
+								ListCell *nc;
+
+								foreach (nc, new_distrkeys)
+								{
+									DistributionKeyElem *ndk = (DistributionKeyElem *) lfirst(nc);
+
+									if (strcmp(ndk->name, dk->name) == 0)
+									{
+										already_in_new = true;
+										break;
+									}
+								}
+								if (!already_in_new)
+									new_distrkeys = lappend(new_distrkeys, dk);
 								break;
 							}
 						}
