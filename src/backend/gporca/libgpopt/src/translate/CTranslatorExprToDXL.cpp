@@ -78,7 +78,6 @@
 #include "gpopt/operators/CPhysicalStreamAggDeduplicate.h"
 #include "gpopt/operators/CPhysicalTVF.h"
 #include "gpopt/operators/CPhysicalTableScan.h"
-#include "gpopt/operators/CPhysicalParallelDynamicTableScan.h"
 #include "gpopt/operators/CPhysicalParallelTableScan.h"
 #include "gpopt/operators/CPhysicalUnionAll.h"
 #include "gpopt/operators/CPhysicalParallelUnionAll.h"
@@ -153,7 +152,6 @@
 #include "naucrates/dxl/operators/CDXLPhysicalSplit.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTVF.h"
 #include "naucrates/dxl/operators/CDXLPhysicalTableScan.h"
-#include "naucrates/dxl/operators/CDXLPhysicalParallelDynamicTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalParallelTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalPartitionTopK.h"
 #include "naucrates/dxl/operators/CDXLPhysicalWindow.h"
@@ -527,7 +525,6 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalDynamicTableScan:
-		case COperator::EopPhysicalParallelDynamicTableScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnDynamicTableScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -1624,25 +1621,13 @@ CTranslatorExprToDXL::PdxlnDynamicTableScan(
 	GPOS_ASSERT(nullptr != pexprDTS);
 	GPOS_ASSERT_IFF(nullptr != pexprScalarCond, nullptr != dxl_properties);
 
-	if (GPOS_FTRACE(EopttraceDisableDynamicTableScan))
-	{
-		if (COperator::EopPhysicalParallelDynamicTableScan ==
-			pexprDTS->Pop()->Eopid())
-		{
-			return PdxlnDynamicScanToAppend<CPhysicalParallelDynamicTableScan>(
-				pexprDTS, colref_array, pdrgpdsBaseTables, pexprScalarCond,
-				dxl_properties);
-		}
-		return PdxlnDynamicScanToAppend<CPhysicalDynamicTableScan>(
-			pexprDTS, colref_array, pdrgpdsBaseTables, pexprScalarCond,
-			dxl_properties);
+	if (GPOS_FTRACE(EopttraceDisableDynamicTableScan)) {
+		return PdxlnDynamicScanToAppend<CPhysicalDynamicTableScan>(pexprDTS, colref_array, 
+			pdrgpdsBaseTables, pexprScalarCond, dxl_properties);
 	}
 
-	/* Use dynamic_cast instead of PopConvert to handle both
-	 * CPhysicalDynamicTableScan and CPhysicalParallelDynamicTableScan */
 	CPhysicalDynamicTableScan *popDTS =
-		dynamic_cast<CPhysicalDynamicTableScan *>(pexprDTS->Pop());
-	GPOS_ASSERT(nullptr != popDTS);
+		CPhysicalDynamicTableScan::PopConvert(pexprDTS->Pop());
 	CColRefArray *pdrgpcrOutput = popDTS->PdrgpcrOutput();
 
 	// translate table descriptor
@@ -1685,21 +1670,9 @@ CTranslatorExprToDXL::PdxlnDynamicTableScan(
 	}
 
 
-	CDXLPhysicalDynamicTableScan *pdxlopDTS = nullptr;
-	if (COperator::EopPhysicalParallelDynamicTableScan ==
-		pexprDTS->Pop()->Eopid())
-	{
-		CPhysicalParallelDynamicTableScan *popParallel =
-			CPhysicalParallelDynamicTableScan::PopConvert(pexprDTS->Pop());
-		pdxlopDTS = GPOS_NEW(m_mp) CDXLPhysicalParallelDynamicTableScan(
-			m_mp, table_descr, part_mdids, selector_ids,
-			popParallel->UlParallelWorkers());
-	}
-	else
-	{
-		pdxlopDTS = GPOS_NEW(m_mp) CDXLPhysicalDynamicTableScan(
-			m_mp, table_descr, part_mdids, selector_ids);
-	}
+	CDXLPhysicalDynamicTableScan *pdxlopDTS =
+		GPOS_NEW(m_mp) CDXLPhysicalDynamicTableScan(m_mp, table_descr,
+													part_mdids, selector_ids);
 
 	CDXLNode *pdxlnDTS = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopDTS);
 	pdxlnDTS->SetProperties(pdxlpropDTS);
@@ -3183,7 +3156,6 @@ CTranslatorExprToDXL::PdxlnFromFilter(CExpression *pexprFilter,
 				pdrgpdsBaseTables, pexprScalar, dxl_properties);
 		}
 		case COperator::EopPhysicalDynamicTableScan:
-		case COperator::EopPhysicalParallelDynamicTableScan:
 		{
 			dxl_properties->AddRef();
 

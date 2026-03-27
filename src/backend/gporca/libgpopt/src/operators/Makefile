@@ -137,7 +137,6 @@ OBJS        = CExpression.o \
               CPhysicalMotionRoutedDistribute.o \
               CPhysicalDynamicForeignScan.o \
               CPhysicalNLJoin.o \
-              CPhysicalParallelDynamicTableScan.o \
               CPhysicalParallelTableScan.o \
               CPhysicalParallelUnionAll.o \
               CPhysicalPartitionSelector.o \

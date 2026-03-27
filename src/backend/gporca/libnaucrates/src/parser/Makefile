@@ -36,7 +36,6 @@ OBJS        = CParseHandlerAgg.o \
               CParseHandlerDynamicIndexScan.o \
               CParseHandlerDynamicIndexOnlyScan.o \
               CParseHandlerDynamicTableScan.o \
-              CParseHandlerPhysicalParallelDynamicTableScan.o \
               CParseHandlerEnumeratorConfig.o \
               CParseHandlerForeignScan.o \
               CParseHandlerFactory.o \

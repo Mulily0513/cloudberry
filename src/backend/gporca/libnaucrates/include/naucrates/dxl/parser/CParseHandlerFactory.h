@@ -356,11 +356,6 @@ private:
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
 		CParseHandlerBase *parse_handler_root);
 
-	// construct a parallel dynamic table scan parse handler
-	static CParseHandlerBase *CreateParallelDTSParseHandler(
-		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,
-		CParseHandlerBase *parse_handler_root);
-
 	// construct a dynamic foreign scan parse handler
 	static CParseHandlerBase *CreateDFSParseHandler(
 		CMemoryPool *mp, CParseHandlerManager *parse_handler_mgr,

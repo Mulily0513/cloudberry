@@ -31,27 +31,10 @@
 #include "executor/execPartition.h"
 #include "executor/nodeDynamicSeqscan.h"
 #include "executor/nodeSeqscan.h"
-#include "storage/lwlock.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "access/table.h"
 #include "access/tableam.h"
-
-/*
- * Shared state for parallel-aware DynamicSeqScan.
- *
- * Workers atomically claim partitions via pdss_next_partition under the
- * pdss_lock.  The partition OID array is populated at DSM init time and
- * may be filtered in-place when dynamic pruning fires.
- */
-typedef struct ParallelDynamicSeqScanDesc
-{
-	LWLock		pdss_lock;				/* mutual exclusion for partition claiming */
-	int			pdss_npartitions;		/* partition count (updated after pruning) */
-	int			pdss_next_partition;	/* next partition index to claim */
-	bool		pdss_pruning_done;		/* dynamic pruning performed? */
-	Oid			pdss_partoids[FLEXIBLE_ARRAY_MEMBER]; /* partition OID array */
-} ParallelDynamicSeqScanDesc;
 
 static void CleanupOnePartition(DynamicSeqScanState *node);
 
@@ -106,7 +89,6 @@ ExecInitDynamicSeqScan(DynamicSeqScan *node, EState *estate, int eflags)
 	state->scanrelid = node->seqscan.scanrelid;
 
 	state->as_prune_state = NULL;
-	state->pdss = NULL;
 
 	/*
 	 * This context will be reset per-partition to free up per-partition
@@ -142,27 +124,10 @@ initNextTableToScan(DynamicSeqScanState *node)
 	Oid		   *pid;
 	Relation	currentRelation;
 
-	if (node->pdss != NULL)
-	{
-		/* Parallel mode: atomically claim next partition under lock */
-		int		idx;
-
-		LWLockAcquire(&node->pdss->pdss_lock, LW_EXCLUSIVE);
-		idx = node->pdss->pdss_next_partition++;
-		LWLockRelease(&node->pdss->pdss_lock);
-
-		if (idx >= node->nOids)
-			return false;
-		node->whichPart = idx;
-	}
+	if (++node->whichPart < node->nOids)
+		pid = &node->partOids[node->whichPart];
 	else
-	{
-		/* Serial mode: simple increment */
-		if (++node->whichPart >= node->nOids)
-			return false;
-	}
-
-	pid = &node->partOids[node->whichPart];
+		return false;
 
 	/* Collect number of partitions scanned in EXPLAIN ANALYZE */
 	if (NULL != scanState->ps.instrument)
@@ -208,50 +173,6 @@ initNextTableToScan(DynamicSeqScanState *node)
 	return true;
 }
 
-/*
- * doParallelPruning
- *		Coordinate dynamic pruning across parallel workers.  The first
- *		worker to arrive performs the pruning and writes the filtered
- *		partition list into shared state; others wait and then sync.
- */
-static void
-doParallelPruning(DynamicSeqScanState *node)
-{
-	ParallelDynamicSeqScanDesc *pdss = node->pdss;
-
-	/*
-	 * Hold EXCLUSIVE lock so only the first worker performs pruning.
-	 * All workers sync local state before releasing.
-	 */
-	LWLockAcquire(&pdss->pdss_lock, LW_EXCLUSIVE);
-	if (!pdss->pdss_pruning_done)
-	{
-		DynamicSeqScan *plan = (DynamicSeqScan *) node->ss.ps.plan;
-		int			i = 0;
-		int			partOidIdx = -1;
-		int			newCount = 0;
-
-		node->as_valid_subplans =
-			ExecFindMatchingSubPlans(node->as_prune_state,
-									 node->ss.ps.state,
-									 list_length(plan->partOids),
-									 plan->join_prune_paramids);
-
-		for (i = 0; i < bms_num_members(node->as_valid_subplans); i++)
-		{
-			partOidIdx = bms_next_member(node->as_valid_subplans, partOidIdx);
-			pdss->pdss_partoids[newCount++] = pdss->pdss_partoids[partOidIdx];
-		}
-		pdss->pdss_npartitions = newCount;
-		pdss->pdss_pruning_done = true;
-	}
-
-	/* Sync local state from the shared descriptor while holding the lock */
-	node->nOids = pdss->pdss_npartitions;
-	memcpy(node->partOids, pdss->pdss_partoids,
-		   sizeof(Oid) * node->nOids);
-	LWLockRelease(&pdss->pdss_lock);
-}
 
 TupleTableSlot *
 ExecDynamicSeqScan(PlanState *pstate)
@@ -263,36 +184,27 @@ ExecDynamicSeqScan(PlanState *pstate)
 	node->as_valid_subplans = NULL;
 	if (NULL != plan->join_prune_paramids && !node->did_pruning)
 	{
-		if (node->pdss != NULL)
-		{
-			doParallelPruning(node);
-		}
-		else
-		{
-			int			i = 0;
-			int			partOidIdx = -1;
-			List	   *newPartOids = NIL;
-			ListCell   *lc;
-
-			node->as_valid_subplans =
-				ExecFindMatchingSubPlans(node->as_prune_state,
-										 node->ss.ps.state,
-										 list_length(plan->partOids),
-										 plan->join_prune_paramids);
-
-			for (i = 0; i < bms_num_members(node->as_valid_subplans); i++)
-			{
-				partOidIdx = bms_next_member(node->as_valid_subplans, partOidIdx);
-				newPartOids = lappend_oid(newPartOids, node->partOids[partOidIdx]);
-			}
-
-			node->partOids = palloc(sizeof(Oid) * list_length(newPartOids));
-			foreach_with_count(lc, newPartOids, i)
-				node->partOids[i] = lfirst_oid(lc);
-			node->nOids = list_length(newPartOids);
-		}
-
 		node->did_pruning = true;
+		node->as_valid_subplans =
+			ExecFindMatchingSubPlans(node->as_prune_state,
+									 node->ss.ps.state,
+									 list_length(plan->partOids),
+									 plan->join_prune_paramids);
+
+		int i = 0;
+		int partOidIdx = -1;
+		List *newPartOids = NIL;
+		ListCell *lc;
+		for(i = 0; i < bms_num_members(node->as_valid_subplans); i++)
+		{
+			partOidIdx = bms_next_member(node->as_valid_subplans, partOidIdx);
+			newPartOids = lappend_oid(newPartOids, node->partOids[partOidIdx]);
+		}
+
+		node->partOids = palloc(sizeof(Oid) * list_length(newPartOids));
+		foreach_with_count(lc, newPartOids, i)
+			node->partOids[i] = lfirst_oid(lc);
+		node->nOids = list_length(newPartOids);
 	}
 
 	/*
@@ -381,6 +293,8 @@ ExecReScanDynamicSeqScan(DynamicSeqScanState *node)
 {
 	DynamicSeqScanEndCurrentScan(node);
 
+	// reset partition internal state
+
 	/*
 	 * If any PARAM_EXEC Params used in pruning expressions have changed, then
 	 * we'd better unset the valid subplans so that they are reselected for
@@ -394,149 +308,6 @@ ExecReScanDynamicSeqScan(DynamicSeqScanState *node)
 		node->as_valid_subplans = NULL;
 	}
 
-	/*
-	 * Parallel mode: reset shared state so workers start from partition 0.
-	 * If pruning params changed, we must also restore the original partition
-	 * list (both local and shared) because pruning compacts the arrays
-	 * in-place — re-pruning needs the full original indices.
-	 */
-	if (node->pdss != NULL)
-	{
-		LWLockAcquire(&node->pdss->pdss_lock, LW_EXCLUSIVE);
-		node->pdss->pdss_next_partition = 0;
-
-		if (node->as_valid_subplans == NULL && node->did_pruning)
-		{
-			DynamicSeqScan *plan = (DynamicSeqScan *) node->ss.ps.plan;
-			ListCell   *lc;
-			int			i;
-			int			origCount = list_length(plan->partOids);
-
-			node->pdss->pdss_npartitions = origCount;
-			node->pdss->pdss_pruning_done = false;
-			foreach_with_count(lc, plan->partOids, i)
-				node->pdss->pdss_partoids[i] = lfirst_oid(lc);
-
-			/* Restore leader's local state */
-			node->nOids = origCount;
-			pfree(node->partOids);
-			node->partOids = palloc(sizeof(Oid) * origCount);
-			memcpy(node->partOids, node->pdss->pdss_partoids,
-				   sizeof(Oid) * origCount);
-			node->did_pruning = false;
-		}
-
-		LWLockRelease(&node->pdss->pdss_lock);
-	}
 	node->whichPart = -1;
-}
 
-/* ----------------------------------------------------------------
- *					Parallel Dynamic Seq Scan Support
- * ----------------------------------------------------------------
- */
-
-/* ----------------------------------------------------------------
- *		ExecDynamicSeqScanEstimate
- *
- *		Compute the amount of space we'll need in the parallel
- *		query DSM, and inform pcxt->estimator about our needs.
- * ----------------------------------------------------------------
- */
-void
-ExecDynamicSeqScanEstimate(DynamicSeqScanState *node,
-						   ParallelContext *pcxt)
-{
-	node->pdss_len =
-		add_size(offsetof(ParallelDynamicSeqScanDesc, pdss_partoids),
-				 sizeof(Oid) * node->nOids);
-
-	shm_toc_estimate_chunk(&pcxt->estimator, node->pdss_len);
-	shm_toc_estimate_keys(&pcxt->estimator, 1);
-}
-
-/* ----------------------------------------------------------------
- *		ExecDynamicSeqScanInitializeDSM
- *
- *		Set up shared state for Parallel Dynamic Seq Scan.
- * ----------------------------------------------------------------
- */
-void
-ExecDynamicSeqScanInitializeDSM(DynamicSeqScanState *node,
-								ParallelContext *pcxt)
-{
-	ParallelDynamicSeqScanDesc *pdss;
-
-	pdss = shm_toc_allocate(pcxt->toc, node->pdss_len);
-	memset(pdss, 0, node->pdss_len);
-	LWLockInitialize(&pdss->pdss_lock, LWTRANCHE_PARALLEL_DYNAMIC_SEQSCAN);
-	pdss->pdss_npartitions = node->nOids;
-	pdss->pdss_next_partition = 0;
-	pdss->pdss_pruning_done = false;
-	memcpy(pdss->pdss_partoids, node->partOids, sizeof(Oid) * node->nOids);
-	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pdss);
-
-	node->pdss = pdss;
-}
-
-/* ----------------------------------------------------------------
- *		ExecDynamicSeqScanReInitializeDSM
- *
- *		Reset shared state before beginning a fresh scan.
- * ----------------------------------------------------------------
- */
-void
-ExecDynamicSeqScanReInitializeDSM(DynamicSeqScanState *node,
-								  ParallelContext *pcxt)
-{
-	DynamicSeqScan *plan = (DynamicSeqScan *) node->ss.ps.plan;
-	ParallelDynamicSeqScanDesc *pdss = node->pdss;
-	ListCell   *lc;
-	int			origCount = list_length(plan->partOids);
-	int			i;
-
-	/* Allocate local buffer before taking lock to minimize lock hold time */
-	node->nOids = origCount;
-	pfree(node->partOids);
-	node->partOids = palloc(sizeof(Oid) * origCount);
-
-	LWLockAcquire(&pdss->pdss_lock, LW_EXCLUSIVE);
-	pdss->pdss_next_partition = 0;
-
-	/*
-	 * Restore the full original partition list so that any subsequent
-	 * dynamic pruning pass can use the original indices correctly.
-	 */
-	pdss->pdss_npartitions = origCount;
-	pdss->pdss_pruning_done = false;
-	foreach_with_count(lc, plan->partOids, i)
-		pdss->pdss_partoids[i] = lfirst_oid(lc);
-
-	/* Sync leader's local state while still holding the lock */
-	memcpy(node->partOids, pdss->pdss_partoids, sizeof(Oid) * origCount);
-	LWLockRelease(&pdss->pdss_lock);
-	node->did_pruning = false;
-}
-
-/* ----------------------------------------------------------------
- *		ExecDynamicSeqScanInitializeWorker
- *
- *		Copy relevant information from TOC into planstate.
- * ----------------------------------------------------------------
- */
-void
-ExecDynamicSeqScanInitializeWorker(DynamicSeqScanState *node,
-								   ParallelWorkerContext *pwcxt)
-{
-	ParallelDynamicSeqScanDesc *pdss;
-
-	pdss = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
-	node->pdss = pdss;
-
-	/* Sync local partition list from shared state */
-	LWLockAcquire(&pdss->pdss_lock, LW_SHARED);
-	node->nOids = pdss->pdss_npartitions;
-	node->partOids = palloc(sizeof(Oid) * node->nOids);
-	memcpy(node->partOids, pdss->pdss_partoids, sizeof(Oid) * node->nOids);
-	LWLockRelease(&pdss->pdss_lock);
 }

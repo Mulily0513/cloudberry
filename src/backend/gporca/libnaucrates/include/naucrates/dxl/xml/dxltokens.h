@@ -127,7 +127,6 @@ enum Edxltoken
 	EdxltokenPhysicalDynamicForeignScan,
 	EdxltokenPhysicalSequence,
 	EdxltokenPhysicalDynamicTableScan,
-	EdxltokenPhysicalParallelDynamicTableScan,
 	EdxltokenPhysicalDynamicIndexScan,
 	EdxltokenPhysicalTVF,
 	EdxltokenPhysicalWindow,
