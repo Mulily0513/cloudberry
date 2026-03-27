@@ -23,14 +23,25 @@
 #include "commands/user.h"
 #include "fmgr.h"
 #include "libpq/crypt.h"
+#include "utils/guc.h"
 
 PG_MODULE_MAGIC;
 
 /* Saved hook value in case of unload */
 static check_password_hook_type prev_check_password_hook = NULL;
 
+/* GUC variable */
+static bool passwordcheck_strict_policy = false;
+
 /* passwords shorter than this will be rejected */
-#define MIN_PWD_LENGTH 8
+#define MIN_PWD_LENGTH			8
+
+/* strict policy thresholds */
+#define STRICT_MIN_PWD_LENGTH	9
+#define STRICT_MIN_UPPERCASE	2
+#define STRICT_MIN_LOWERCASE	2
+#define STRICT_MIN_DIGITS		2
+#define STRICT_MIN_SPECIAL		2
 
 extern void _PG_init(void);
 extern void _PG_fini(void);
@@ -89,42 +100,110 @@ check_password(const char *username,
 		const char *password = shadow_pass;
 		int			pwdlen = strlen(password);
 		int			i;
-		bool		pwd_has_letter,
-					pwd_has_nonletter;
 #ifdef USE_CRACKLIB
 		const char *reason;
 #endif
 
-		/* enforce minimum length */
-		if (pwdlen < MIN_PWD_LENGTH)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("password is too short")));
-
-		/* check if the password contains the username */
-		if (strstr(password, username))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("password must not contain user name")));
-
-		/* check if the password contains both letters and non-letters */
-		pwd_has_letter = false;
-		pwd_has_nonletter = false;
-		for (i = 0; i < pwdlen; i++)
+		if (passwordcheck_strict_policy)
 		{
 			/*
+			 * Strict policy: enforce minimum length, character type counts,
+			 * and username substring check.
+			 */
+			int			pwd_upper = 0;
+			int			pwd_lower = 0;
+			int			pwd_digit = 0;
+			int			pwd_special = 0;
+
+			if (pwdlen < STRICT_MIN_PWD_LENGTH)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password is too short, minimum is %d characters",
+								STRICT_MIN_PWD_LENGTH)));
+
+			/* check if the password contains the username */
+			if (strstr(password, username))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must not contain user name")));
+
+			/* count character types */
+			for (i = 0; i < pwdlen; i++)
+			{
+				unsigned char	c = (unsigned char) password[i];
+
+				if (isupper(c))
+					pwd_upper++;
+				else if (islower(c))
+					pwd_lower++;
+				else if (isdigit(c))
+					pwd_digit++;
+				else
+					pwd_special++;
+			}
+
+			if (pwd_upper < STRICT_MIN_UPPERCASE)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must contain at least %d uppercase letters",
+								STRICT_MIN_UPPERCASE)));
+
+			if (pwd_lower < STRICT_MIN_LOWERCASE)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must contain at least %d lowercase letters",
+								STRICT_MIN_LOWERCASE)));
+
+			if (pwd_digit < STRICT_MIN_DIGITS)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must contain at least %d digits",
+								STRICT_MIN_DIGITS)));
+
+			if (pwd_special < STRICT_MIN_SPECIAL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must contain at least %d special characters",
+								STRICT_MIN_SPECIAL)));
+		}
+		else
+		{
+			/*
+			 * Default policy: enforce minimum length, username substring
+			 * check, and require both letters and non-letters.
+			 */
+			bool		pwd_has_letter = false;
+			bool		pwd_has_nonletter = false;
+
+			if (pwdlen < MIN_PWD_LENGTH)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password is too short")));
+
+			/* check if the password contains the username */
+			if (strstr(password, username))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must not contain user name")));
+
+			/*
+			 * check if the password contains both letters and non-letters
+			 *
 			 * isalpha() does not work for multibyte encodings but let's
 			 * consider non-ASCII characters non-letters
 			 */
-			if (isalpha((unsigned char) password[i]))
-				pwd_has_letter = true;
-			else
-				pwd_has_nonletter = true;
+			for (i = 0; i < pwdlen; i++)
+			{
+				if (isalpha((unsigned char) password[i]))
+					pwd_has_letter = true;
+				else
+					pwd_has_nonletter = true;
+			}
+			if (!pwd_has_letter || !pwd_has_nonletter)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("password must contain both letters and nonletters")));
 		}
-		if (!pwd_has_letter || !pwd_has_nonletter)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("password must contain both letters and nonletters")));
 
 #ifdef USE_CRACKLIB
 		/* call cracklib to check password */
@@ -145,6 +224,17 @@ check_password(const char *username,
 void
 _PG_init(void)
 {
+	DefineCustomBoolVariable("passwordcheck.strict_policy",
+							 "Enforce strict password policy requiring uppercase, lowercase, digits, and special characters.",
+							 NULL,
+							 &passwordcheck_strict_policy,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
 	/* activate password checks when the module is loaded */
 	prev_check_password_hook = check_password_hook;
 	check_password_hook = check_password;
