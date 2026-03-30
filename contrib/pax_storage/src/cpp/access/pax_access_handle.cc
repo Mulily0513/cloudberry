@@ -953,7 +953,8 @@ static void paxProcessUtility(PlannedStmt *pstmt, const char *queryString,
                   (Node *)stmt,
                   DF_CANCEL_ON_ERROR | DF_WITH_SNAPSHOT | DF_NEED_TWO_PHASE,
                   GetAssignedOidsForDispatch(), NULL);
-            } else if (Gp_role == GP_ROLE_EXECUTE) {
+            } else if (Gp_role == GP_ROLE_EXECUTE ||
+                       Gp_role == GP_ROLE_UTILITY) {
               cluster_pax_rel(stmt, rel, GetActiveSnapshot());
             }
 
@@ -964,7 +965,7 @@ static void paxProcessUtility(PlannedStmt *pstmt, const char *queryString,
 
         table_close(rel, NoLock);
       } else {
-        if (Gp_role == GP_ROLE_DISPATCH) {
+        if (Gp_role == GP_ROLE_DISPATCH || Gp_role == GP_ROLE_UTILITY) {
           // only cluster pax zorder clustered table
           List *relids = NULL;
           SysScanDesc scan;
@@ -1019,15 +1020,19 @@ static void paxProcessUtility(PlannedStmt *pstmt, const char *queryString,
 
             Relation rel = table_open(pax_rel_id, RowExclusiveLock);
             if (relation_has_cluster_columns_options(rel)) {
-              stmt->relation = makeNode(RangeVar);
-              stmt->relation->schemaname =
-                  get_namespace_name(rel->rd_rel->relnamespace);
-              stmt->relation->relname = pstrdup(rel->rd_rel->relname.data);
-              CdbDispatchUtilityStatement((Node *)stmt,
-                                          DF_CANCEL_ON_ERROR | DF_WITH_SNAPSHOT,
-                                          GetAssignedOidsForDispatch(), NULL);
-              pfree(stmt->relation);
-              stmt->relation = NULL;
+              if (Gp_role == GP_ROLE_UTILITY) {
+                cluster_pax_rel(stmt, rel, GetActiveSnapshot());
+              } else {
+                stmt->relation = makeNode(RangeVar);
+                stmt->relation->schemaname =
+                    get_namespace_name(rel->rd_rel->relnamespace);
+                stmt->relation->relname = pstrdup(rel->rd_rel->relname.data);
+                CdbDispatchUtilityStatement((Node *)stmt,
+                                            DF_CANCEL_ON_ERROR | DF_WITH_SNAPSHOT,
+                                            GetAssignedOidsForDispatch(), NULL);
+                pfree(stmt->relation);
+                stmt->relation = NULL;
+              }
             }
             table_close(rel, RowExclusiveLock);
           }

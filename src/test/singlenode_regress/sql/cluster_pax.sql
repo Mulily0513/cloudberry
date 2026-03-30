@@ -1,0 +1,25 @@
+-- Test CLUSTER on PAX tables in singlenode (utility) mode.
+SET default_table_access_method = 'pax';
+
+-- Test 1: CLUSTER a single PAX table
+CREATE TABLE pax_cluster_t1(c1 int, c2 int)
+    WITH (minmax_columns='c1,c2', cluster_columns='c1,c2', cluster_type='lexical');
+INSERT INTO pax_cluster_t1 VALUES (5,50),(3,30),(8,80),(1,10),(9,90),(2,20),(7,70),(4,40),(10,100),(6,60);
+CLUSTER pax_cluster_t1;
+SELECT * FROM pax_cluster_t1;
+
+-- Test 2: bare CLUSTER (all PAX tables)
+CREATE TABLE pax_cluster_t2(c1 int, c2 int)
+    WITH (minmax_columns='c1,c2', cluster_columns='c1,c2', cluster_type='lexical');
+CREATE TABLE pax_cluster_t3(c1 int, c2 int)
+    WITH (minmax_columns='c1,c2', cluster_columns='c1,c2', cluster_type='lexical');
+INSERT INTO pax_cluster_t2 VALUES (4,40),(2,20),(5,50),(1,10),(3,30);
+INSERT INTO pax_cluster_t3 VALUES (3,30),(1,10),(5,50),(2,20),(4,40);
+CLUSTER;
+SELECT * FROM pax_cluster_t2;
+SELECT * FROM pax_cluster_t3;
+
+DROP TABLE pax_cluster_t1;
+DROP TABLE pax_cluster_t2;
+DROP TABLE pax_cluster_t3;
+RESET default_table_access_method;
