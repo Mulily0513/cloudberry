@@ -1732,7 +1732,7 @@ Optional Packages:
   --without-libcurl       do not use libcurl
   --with-apr-config=PATH  path to apr-1-config utility
   --with-gnu-ld           assume the C compiler uses GNU ld [default=no]
-  --without-mdblocales    build without MDB locales
+  --with-mdblocales       build with MDB locales
   --with-ssl=LIB          use LIB for SSL/TLS support (openssl)
   --with-openssl          obsolete spelling of --with-ssl=openssl
 
