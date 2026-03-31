@@ -1098,6 +1098,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_expr_groupby_reduction", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Removes GROUP BY expressions that are derived from other GROUP BY columns."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_expr_groupby_reduction,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_material", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of materialization."),
 			NULL,

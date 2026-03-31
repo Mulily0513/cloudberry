@@ -113,6 +113,7 @@
 		"enable_answer_query_using_materialized_views",
 		"enable_async_append",
 		"enable_bitmapscan",
+		"enable_expr_groupby_reduction",
 		"enable_gathermerge",
 		"enable_geqo",
 		"enable_groupagg",

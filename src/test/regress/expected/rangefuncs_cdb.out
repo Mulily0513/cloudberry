@@ -12,6 +12,7 @@ name not in ('enable_parallel',
 --------------------------------+---------
  enable_async_append            | on
  enable_bitmapscan              | on
+ enable_expr_groupby_reduction  | off
  enable_gathermerge             | on
  enable_groupagg                | on
  enable_hashagg                 | on
@@ -33,7 +34,7 @@ name not in ('enable_parallel',
  enable_seqscan                 | on
  enable_sort                    | on
  enable_tidscan                 | on
-(23 rows)
+(24 rows)
 
 -- start_ignore
 create schema rangefuncs_cdb;

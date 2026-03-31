@@ -3,6 +3,7 @@ SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%';
 --------------------------------+---------
  enable_async_append            | on
  enable_bitmapscan              | on
+ enable_expr_groupby_reduction  | off
  enable_gathermerge             | on
  enable_groupagg                | on
  enable_hashagg                 | on
@@ -22,7 +23,7 @@ SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%';
  enable_seqscan                 | on
  enable_sort                    | on
  enable_tidscan                 | on
-(21 rows)
+(22 rows)
 
 -- start_ignore
 create schema rangefuncs_cdb;

@@ -178,6 +178,7 @@ static double preprocess_limit(PlannerInfo *root,
 							   double tuple_fraction,
 							   int64 *offset_est, int64 *count_est);
 static void remove_useless_groupby_columns(PlannerInfo *root);
+static void remove_derived_groupby_exprs(Query *parse);
 static List *preprocess_groupclause(PlannerInfo *root, List *force);
 static List *extract_rollup_sets(List *groupingSets);
 static List *reorder_grouping_sets(List *groupingSets, List *sortclause);
@@ -390,6 +391,14 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	PlannerConfig *config;
 	instr_time		starttime;
 	instr_time		endtime;
+
+	/*
+	 * Remove GROUP BY expressions derived from other GROUP BY columns.
+	 * Done here (before the ORCA/PG optimizer fork) so both optimizer
+	 * paths benefit from the optimization.  This only inspects/modifies
+	 * the Query tree and has no dependency on PlannerInfo.
+	 */
+	remove_derived_groupby_exprs(parse);
 
 	/*
 	 * Use ORCA only if it is enabled and we are in a master QD process.
@@ -3527,6 +3536,252 @@ remove_useless_groupby_columns(PlannerInfo *root)
 
 		parse->groupClause = new_groupby;
 	}
+}
+
+/*
+ * contain_sublinks
+ *		Return true if the expression contains any SubLink node.
+ *
+ * pull_var_clause() does not recurse into a SubLink's subselect (the generic
+ * expression_tree_walker stops at T_Query), so any correlated Var inside a
+ * sub-select is invisible to the Var-coverage check used by
+ * remove_derived_groupby_exprs().  We use this helper to conservatively
+ * keep any GROUP BY expression that contains a sub-select.
+ */
+static bool
+contain_sublinks_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, SubLink))
+		return true;
+	return expression_tree_walker(node, contain_sublinks_walker, context);
+}
+
+static bool
+contain_sublinks(Node *clause)
+{
+	return contain_sublinks_walker(clause, NULL);
+}
+
+/*
+ * remove_derived_groupby_exprs
+ *		Remove GROUP BY expressions that are functionally derived from
+ *		other simple-Var GROUP BY columns via immutable functions.
+ *
+ * If a GROUP BY expression is not a simple Var but all Vars it references
+ * are already present as simple-Var GROUP BY items (from the same query
+ * level), and the expression contains only immutable functions/operators,
+ * then the expression is deterministically derived and redundant as a
+ * grouping key.
+ *
+ * Theoretical basis: if f(X) is a deterministic (immutable) function
+ * depending only on column X, then GROUP BY X, f(X) ≡ GROUP BY X,
+ * because identical X values always produce identical f(X) values.
+ * This generalizes to multi-column: GROUP BY a, b, f(a, b) ≡ GROUP BY a, b.
+ *
+ * Example: GROUP BY x, x-1, x-2  =>  GROUP BY x
+ * since (x-1) and (x-2) are immutable functions of x alone.
+ *
+ * We conservatively require that the "representative" for each base column
+ * be a bare Var (not an expression).  This avoids incorrectness with
+ * non-injective functions: e.g., GROUP BY abs(x), x+1 cannot safely
+ * eliminate x+1 because abs is not injective (abs(-1) = abs(1) but
+ * -1+1 ≠ 1+1).  StarRocks allows expressions as representatives but
+ * has this theoretical gap; ClickHouse also requires leaf columns to be
+ * present in the key set.
+ *
+ * Constant (Var-free) immutable expressions are also removable: they
+ * produce the same value for every row, so they never affect grouping.
+ * However, volatile functions like random() must NOT be removed even
+ * though they have no Var references.
+ *
+ * Safety constraints (following StarRocks C1-C5, ClickHouse constraints):
+ * - GROUPING SETS / ROLLUP / CUBE: skipped (groupingSets check)
+ * - Non-immutable functions: kept (contain_mutable_functions check)
+ * - Outer Vars (varlevelsup > 0): not counted as base vars
+ * - PlaceHolderVars: expression kept unconditionally
+ * - At least one group key always preserved (bare Vars never removed)
+ *
+ * In PostgreSQL's executor model, removed expressions do NOT need an
+ * explicit post-aggregation projection: the Agg node evaluates targetList
+ * expressions from the representative tuple of each group.  Since all
+ * tuples in a group share the same base Var values, derived expressions
+ * compute correctly from any representative.
+ *
+ * Controlled by the enable_expr_groupby_reduction GUC.
+ */
+static void
+remove_derived_groupby_exprs(Query *parse)
+{
+	Bitmapset  *base_vars = NULL;
+	List	   *new_groupby;
+	ListCell   *lc;
+	bool		found_removable = false;
+
+	if (!enable_expr_groupby_reduction)
+		return;
+
+	/* Need at least 2 GROUP BY items to have anything to remove */
+	if (list_length(parse->groupClause) < 2)
+		return;
+
+	/*
+	 * Don't touch GROUPING SETS / ROLLUP / CUBE.  These constructs generate
+	 * multiple grouping levels; removing a key would change the set of
+	 * aggregation levels and break semantics.
+	 */
+	if (parse->groupingSets)
+		return;
+
+	/*
+	 * First pass: collect all simple Var GROUP BY columns into base_vars.
+	 *
+	 * We encode each Var as (varno, varattno) packed into a single int.
+	 * We offset varattno by FirstLowInvalidHeapAttributeNumber (which is
+	 * negative) to ensure the encoded value is always non-negative, since
+	 * system columns can have negative varattno values.
+	 */
+	foreach(lc, parse->groupClause)
+	{
+		SortGroupClause *sgc = lfirst_node(SortGroupClause, lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, parse->targetList);
+		Node	   *expr = (Node *) tle->expr;
+
+		if (IsA(expr, Var))
+		{
+			Var	   *var = (Var *) expr;
+
+			if (var->varlevelsup == 0)
+			{
+				int		encoded = var->varno *
+					(MaxHeapAttributeNumber - FirstLowInvalidHeapAttributeNumber + 1) +
+					(var->varattno - FirstLowInvalidHeapAttributeNumber);
+
+				base_vars = bms_add_member(base_vars, encoded);
+			}
+		}
+	}
+
+	/* If no simple Var GROUP BY items, nothing can be removed */
+	if (bms_is_empty(base_vars))
+		return;
+
+	/*
+	 * Second pass: check each non-Var expression for removability.
+	 *
+	 * An expression is removable if:
+	 * (a) it contains only immutable functions/operators, AND
+	 * (b) either it references no Vars (pure constant), or all referenced
+	 *     Vars are present as simple-Var GROUP BY items in base_vars.
+	 *
+	 * We check immutability first as a quick rejection filter: most
+	 * expressions in practice are immutable, but it avoids the more
+	 * expensive pull_var_clause call for volatile expressions.
+	 */
+	new_groupby = NIL;
+	foreach(lc, parse->groupClause)
+	{
+		SortGroupClause *sgc = lfirst_node(SortGroupClause, lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, parse->targetList);
+		Node	   *expr = (Node *) tle->expr;
+
+		if (!IsA(expr, Var))
+		{
+			List	   *vars;
+			ListCell   *lc2;
+			bool		all_covered = true;
+
+			/*
+			 * Reject expressions containing non-immutable (STABLE or
+			 * VOLATILE) functions.  This is stricter than necessary for
+			 * STABLE functions (which are deterministic within a query),
+			 * but matches PostgreSQL's convention and is safe.
+			 */
+			if (contain_mutable_functions(expr))
+			{
+				new_groupby = lappend(new_groupby, sgc);
+				continue;
+			}
+
+			/*
+			 * Conservatively keep expressions containing sub-selects.
+			 * pull_var_clause() does not recurse into SubLink subselects, so
+			 * correlated Vars inside — including references to outer columns
+			 * that are not group keys — are invisible to the coverage check
+			 * below.  We cannot safely determine whether the expression is a
+			 * pure function of the base GROUP BY Vars.
+			 */
+			if (contain_sublinks(expr))
+			{
+				new_groupby = lappend(new_groupby, sgc);
+				continue;
+			}
+
+			/* Extract all Vars from this expression */
+			vars = pull_var_clause(expr, PVC_RECURSE_AGGREGATES |
+								  PVC_RECURSE_WINDOWFUNCS |
+								  PVC_INCLUDE_PLACEHOLDERS);
+
+			/*
+			 * If expression has no Vars, it's an immutable constant
+			 * expression (we already checked immutability above).
+			 * Constants produce the same value for every row, so they
+			 * never contribute to grouping distinctions — removable.
+			 */
+			if (vars == NIL)
+			{
+				found_removable = true;
+				continue;	/* skip adding to new_groupby */
+			}
+
+			/* Check that every referenced Var is a base group key */
+			foreach(lc2, vars)
+			{
+				Node   *node = (Node *) lfirst(lc2);
+				Var	   *v;
+				int		encoded;
+
+				if (!IsA(node, Var))
+				{
+					/* PlaceHolderVar or something unexpected — keep it */
+					all_covered = false;
+					break;
+				}
+
+				v = (Var *) node;
+
+				if (v->varlevelsup != 0)
+				{
+					all_covered = false;
+					break;
+				}
+
+				encoded = v->varno *
+					(MaxHeapAttributeNumber - FirstLowInvalidHeapAttributeNumber + 1) +
+					(v->varattno - FirstLowInvalidHeapAttributeNumber);
+
+				if (!bms_is_member(encoded, base_vars))
+				{
+					all_covered = false;
+					break;
+				}
+			}
+
+			list_free(vars);
+
+			if (all_covered)
+			{
+				found_removable = true;
+				continue;	/* skip adding to new_groupby */
+			}
+		}
+
+		new_groupby = lappend(new_groupby, sgc);
+	}
+
+	if (found_removable)
+		parse->groupClause = new_groupby;
 }
 
 /*

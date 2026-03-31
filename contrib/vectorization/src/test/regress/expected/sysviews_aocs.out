@@ -111,6 +111,7 @@ name not in ('enable_parallel',
 --------------------------------+---------
  enable_async_append            | on
  enable_bitmapscan              | on
+ enable_expr_groupby_reduction  | off
  enable_gathermerge             | on
  enable_groupagg                | on
  enable_hashagg                 | on
@@ -132,7 +133,7 @@ name not in ('enable_parallel',
  enable_seqscan                 | on
  enable_sort                    | on
  enable_tidscan                 | on
-(23 rows)
+(24 rows)
 
 -- Test that the pg_timezone_names and pg_timezone_abbrevs views are
 -- more-or-less working.  We can't test their contents in any great detail

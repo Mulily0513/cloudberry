@@ -146,6 +146,7 @@ bool		enable_tidscan = true;
 bool		enable_sort = true;
 bool		enable_incremental_sort = true;
 bool		enable_hashagg = true;
+bool		enable_expr_groupby_reduction = false;
 bool		enable_groupagg = true;
 bool		enable_hashagg_disk = true;
 bool		enable_nestloop = false;

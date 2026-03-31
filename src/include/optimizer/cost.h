@@ -73,6 +73,7 @@ extern PGDLLIMPORT bool enable_tidscan;
 extern PGDLLIMPORT bool enable_sort;
 extern PGDLLIMPORT bool enable_incremental_sort;
 extern PGDLLIMPORT bool enable_hashagg;
+extern PGDLLIMPORT bool enable_expr_groupby_reduction;
 
 extern PGDLLIMPORT bool enable_groupagg;
 extern PGDLLIMPORT bool enable_hashagg_disk;
