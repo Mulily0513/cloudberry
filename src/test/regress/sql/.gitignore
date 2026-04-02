@@ -65,3 +65,4 @@
 /bfv_copy.sql
 /vacuum_fsm_nondefault_tablespace.sql
 /copy_encoding_error.sql
+/vacuum_fsm_nondefault_tablespace.sql

@@ -71,3 +71,4 @@
 /bfv_copy.out
 /vacuum_fsm_nondefault_tablespace.out
 /copy_encoding_error.out
+/vacuum_fsm_nondefault_tablespace.out
