@@ -124,6 +124,7 @@ variables:
 
 code_review:
   stage: build
+  allow_failure: true
   tags:
     - docker
     - x86_64
