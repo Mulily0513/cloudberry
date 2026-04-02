@@ -63,3 +63,4 @@
 /tag.sql
 /ao_unique_index_partition.sql
 /bfv_copy.sql
+/vacuum_fsm_nondefault_tablespace.sql

@@ -69,3 +69,4 @@
 /tag.out
 /ao_unique_index_partition.out
 /bfv_copy.out
+/vacuum_fsm_nondefault_tablespace.out
