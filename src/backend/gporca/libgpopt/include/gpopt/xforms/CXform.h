@@ -242,6 +242,7 @@ public:
 		ExfLeftSemiJoin2ParallelHashJoin,
 		ExfLeftAntiSemiJoin2ParallelHashJoin,
 		ExfLeftAntiSemiJoinNotIn2ParallelHashJoin,
+		ExfRightOuterJoin2ParallelHashJoin,
 		ExfDynamicForeignGet2DynamicForeignScan,
 		ExfExpandDynamicGetWithForeignPartitions,
 		ExfPushJoinBelowLeftUnionAll,

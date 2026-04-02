@@ -499,6 +499,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 		case COperator::EopPhysicalParallelLeftSemiHashJoin:
 		case COperator::EopPhysicalParallelLeftAntiSemiHashJoinNotIn:
 		case COperator::EopPhysicalParallelLeftAntiSemiHashJoin:
+		case COperator::EopPhysicalParallelRightOuterHashJoin:
 			dxlnode = CTranslatorExprToDXL::PdxlnParallelHashJoin(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
@@ -5886,6 +5887,7 @@ CTranslatorExprToDXL::EdxljtHashJoin(CPhysicalHashJoin *popHJ)
 		case COperator::EopPhysicalParallelLeftOuterHashJoin:
 			return EdxljtLeft;
 
+		case COperator::EopPhysicalParallelRightOuterHashJoin:
 		case COperator::EopPhysicalRightOuterHashJoin:
 			return EdxljtRight;
 

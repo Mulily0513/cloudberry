@@ -509,7 +509,8 @@ CPhysicalHashJoin::PdsDeriveForOuterJoin(CMemoryPool *mp,
 {
 	GPOS_ASSERT(EopPhysicalLeftOuterHashJoin == Eopid() ||
 				EopPhysicalRightOuterHashJoin == Eopid() ||
-				EopPhysicalParallelLeftOuterHashJoin == Eopid());
+				EopPhysicalParallelLeftOuterHashJoin == Eopid() ||
+				EopPhysicalParallelRightOuterHashJoin == Eopid());
 
 	CDistributionSpec *pdsOuter = exprhdl.Pdpplan(0 /*child_index*/)->Pds();
 	CDistributionSpec *pdsInner = exprhdl.Pdpplan(1 /*child_index*/)->Pds();
@@ -517,7 +518,8 @@ CPhysicalHashJoin::PdsDeriveForOuterJoin(CMemoryPool *mp,
 	// We must use the non-nullable side for the distribution spec for outer joins.
 	// For right join, the hash side is the non-nullable side, so we swap the inner/outer
 	// distribution specs for the logic below
-	if (exprhdl.Pop()->Eopid() == EopPhysicalRightOuterHashJoin)
+	if (exprhdl.Pop()->Eopid() == EopPhysicalRightOuterHashJoin ||
+		exprhdl.Pop()->Eopid() == EopPhysicalParallelRightOuterHashJoin)
 	{
 		pdsOuter = exprhdl.Pdpplan(1 /*child_index*/)->Pds();
 		pdsInner = exprhdl.Pdpplan(0 /*child_index*/)->Pds();

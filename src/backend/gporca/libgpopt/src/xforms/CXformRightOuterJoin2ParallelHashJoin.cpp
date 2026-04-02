@@ -19,20 +19,23 @@
 
 //---------------------------------------------------------------------------
 //	@filename:
-//		CXformLeftOuterJoin2ParallelHashJoin.cpp
+//		CXformRightOuterJoin2ParallelHashJoin.cpp
 //
 //	@doc:
-//		Transform left outer join to parallel hash join
+//		Transform right outer join to parallel hash join
 //---------------------------------------------------------------------------
 
-#include "gpopt/xforms/CXformLeftOuterJoin2ParallelHashJoin.h"
+#include "gpopt/xforms/CXformRightOuterJoin2ParallelHashJoin.h"
 
 #include "gpos/base.h"
 
 #include "gpopt/base/CUtils.h"
-#include "gpopt/operators/CLogicalLeftOuterJoin.h"
+#include "gpopt/hints/CPlanHint.h"
+#include "gpopt/operators/CLogicalRightOuterJoin.h"
 #include "gpopt/operators/CPatternLeaf.h"
-#include "gpopt/operators/CPhysicalParallelLeftOuterHashJoin.h"
+#include "gpopt/operators/CPhysicalParallelRightOuterHashJoin.h"
+#include "gpopt/operators/CPredicateUtils.h"
+#include "gpopt/optimizer/COptimizerConfig.h"
 #include "gpopt/xforms/CXformUtils.h"
 
 // Forward declarations for gpdbwrappers functions
@@ -45,17 +48,17 @@ using namespace gpopt;
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CXformLeftOuterJoin2ParallelHashJoin::CXformLeftOuterJoin2ParallelHashJoin
+//		CXformRightOuterJoin2ParallelHashJoin::CXformRightOuterJoin2ParallelHashJoin
 //
 //	@doc:
 //		Ctor
 //
 //---------------------------------------------------------------------------
-CXformLeftOuterJoin2ParallelHashJoin::CXformLeftOuterJoin2ParallelHashJoin(
+CXformRightOuterJoin2ParallelHashJoin::CXformRightOuterJoin2ParallelHashJoin(
 	CMemoryPool *mp)
 	:  // pattern
 	  CXformImplementation(GPOS_NEW(mp) CExpression(
-		  mp, GPOS_NEW(mp) CLogicalLeftOuterJoin(mp),
+		  mp, GPOS_NEW(mp) CLogicalRightOuterJoin(mp),
 		  GPOS_NEW(mp)
 			  CExpression(mp, GPOS_NEW(mp) CPatternLeaf(mp)),  // left child
 		  GPOS_NEW(mp)
@@ -69,17 +72,16 @@ CXformLeftOuterJoin2ParallelHashJoin::CXformLeftOuterJoin2ParallelHashJoin(
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CXformLeftOuterJoin2ParallelHashJoin::Exfp
+//		CXformRightOuterJoin2ParallelHashJoin::Exfp
 //
 //	@doc:
 //		Compute xform promise for a given expression handle
 //
 //---------------------------------------------------------------------------
 CXform::EXformPromise
-CXformLeftOuterJoin2ParallelHashJoin::Exfp(CExpressionHandle &exprhdl) const
+CXformRightOuterJoin2ParallelHashJoin::Exfp(CExpressionHandle &exprhdl) const
 {
 	// Check if parallel execution is enabled
-	// Uses gpdb::IsParallelModeOK() which checks max_parallel_workers_per_gather > 0
 	if (!gpdb::IsParallelModeOK())
 	{
 		return CXform::ExfpNone;
@@ -90,7 +92,6 @@ CXformLeftOuterJoin2ParallelHashJoin::Exfp(CExpressionHandle &exprhdl) const
 		return CXform::ExfpNone;
 	}
 
-	// Check if the query has any parallel operators
 	// Parallel hash join is only beneficial when parallel table scans exist
 	if (!COptCtxt::PoctxtFromTLS()->HasParallelOperators())
 	{
@@ -104,14 +105,17 @@ CXformLeftOuterJoin2ParallelHashJoin::Exfp(CExpressionHandle &exprhdl) const
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CXformLeftOuterJoin2ParallelHashJoin::Transform
+//		CXformRightOuterJoin2ParallelHashJoin::Transform
 //
 //	@doc:
 //		Actual transformation
 //
+//		Mirrors CXformRightOuterJoin2HashJoin::Transform with its
+//		stats-based heuristic to skip ROJ when inner >> outer.
+//
 //---------------------------------------------------------------------------
 void
-CXformLeftOuterJoin2ParallelHashJoin::Transform(CXformContext *pxfctxt,
+CXformRightOuterJoin2ParallelHashJoin::Transform(CXformContext *pxfctxt,
 												CXformResult *pxfres,
 												CExpression *pexpr) const
 {
@@ -120,11 +124,45 @@ CXformLeftOuterJoin2ParallelHashJoin::Transform(CXformContext *pxfctxt,
 	GPOS_ASSERT(FCheckPattern(pexpr));
 
 	// Only generate parallel hash join if not explicitly disabled
-	if (!GPOS_FTRACE(EopttraceDisableParallelHashJoin))
+	if (GPOS_FTRACE(EopttraceDisableParallelHashJoin))
 	{
-		CXformUtils::ImplementHashJoin<CPhysicalParallelLeftOuterHashJoin>(
-			pxfctxt, pxfres, pexpr);
+		return;
 	}
+
+	// If the ROJ is being considered because of a join order hint, then add
+	// the right outer hash join alternative regardless of the stats.
+	CPlanHint *planhint =
+		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig()->GetPlanHint();
+	if (nullptr != planhint && planhint->WasCreatedViaDirectedHint(pexpr))
+	{
+		CXformUtils::ImplementHashJoin<CPhysicalParallelRightOuterHashJoin>(
+			pxfctxt, pxfres, pexpr);
+		return;
+	}
+
+	const IStatistics *outerStats = (*pexpr)[0]->Pstats();
+	const IStatistics *innerStats = (*pexpr)[1]->Pstats();
+
+	if (nullptr == outerStats || nullptr == innerStats)
+	{
+		return;
+	}
+
+	// If the inner row estimate is an arbitary factor larger than the outer,
+	// don't generate a ROJ alternative (same heuristic as non-parallel ROJ).
+	CDouble outerRows = outerStats->Rows();
+	CDouble outerWidth = outerStats->Width();
+	CDouble innerRows = innerStats->Rows();
+	CDouble innerWidth = innerStats->Width();
+
+	CDouble confidenceFactor = 2 * (*pexpr)[1]->DeriveJoinDepth();
+	if (innerRows * innerWidth * confidenceFactor > outerRows * outerWidth)
+	{
+		return;
+	}
+
+	CXformUtils::ImplementHashJoin<CPhysicalParallelRightOuterHashJoin>(
+		pxfctxt, pxfres, pexpr);
 }
 
 // EOF

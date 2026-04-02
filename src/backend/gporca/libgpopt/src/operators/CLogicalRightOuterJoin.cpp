@@ -75,6 +75,7 @@ CLogicalRightOuterJoin::PxfsCandidates(CMemoryPool *mp) const
 	CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 
 	(void) xform_set->ExchangeSet(CXform::ExfRightOuterJoin2HashJoin);
+	(void) xform_set->ExchangeSet(CXform::ExfRightOuterJoin2ParallelHashJoin);
 
 	return xform_set;
 }

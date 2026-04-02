@@ -239,6 +239,7 @@ public:
 		EopPhysicalParallelLeftSemiHashJoin,
 		EopPhysicalParallelLeftAntiSemiHashJoin,
 		EopPhysicalParallelLeftAntiSemiHashJoinNotIn,
+		EopPhysicalParallelRightOuterHashJoin,
 
 		EopPhysicalMotionGather,
 		EopPhysicalMotionBroadcast,
