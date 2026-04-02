@@ -120,12 +120,57 @@ create table t_zorder_unsupport_type(c1 int, c2 numeric(10,2),c3 varchar(128), c
 -- error, because numeric is unsupport type
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c2');
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c3');
--- error, because timestamp is unsupport type
+-- timestamp is now supported (DeltaDelta encoding uses int64 representation)
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c4');
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c5');
 
 drop table t_zorder_unsupport_type;
 
+-- test zorder cluster with timestamp/timestamptz columns
+create table t_zorder_timestamp(
+    ts timestamp not null,
+    device int not null,
+    value float8
+) with (minmax_columns='ts,device');
+
+insert into t_zorder_timestamp
+select '2024-01-01'::timestamp + (i * '1 second'::interval),
+       (i % 100) + 1,
+       random() * 100
+from generate_series(1, 100000) i;
+
+alter table t_zorder_timestamp set(cluster_columns='ts,device');
+cluster t_zorder_timestamp;
+
+-- verify data is readable and correct after zorder cluster
+select count(*) from t_zorder_timestamp;
+select count(distinct device) from t_zorder_timestamp;
+select min(ts), max(ts) from t_zorder_timestamp;
+
+drop table t_zorder_timestamp;
+
+-- test zorder cluster with timestamptz
+create table t_zorder_timestamptz(
+    ts timestamptz not null,
+    device int not null,
+    value float8
+) with (minmax_columns='ts,device');
+
+insert into t_zorder_timestamptz
+select '2024-01-01 00:00:00+00'::timestamptz + (i * '1 second'::interval),
+       (i % 100) + 1,
+       random() * 100
+from generate_series(1, 100000) i;
+
+alter table t_zorder_timestamptz set(cluster_columns='ts,device');
+cluster t_zorder_timestamptz;
+
+-- verify data is readable and correct after zorder cluster
+select count(*) from t_zorder_timestamptz;
+select count(distinct device) from t_zorder_timestamptz;
+select min(ts) AT TIME ZONE 'UTC', max(ts) AT TIME ZONE 'UTC' from t_zorder_timestamptz;
+
+drop table t_zorder_timestamptz;
 
 -- lexical cluster
 create table t_lexical_cluster(c1 text, c2 int) with (minmax_columns='c1,c2');

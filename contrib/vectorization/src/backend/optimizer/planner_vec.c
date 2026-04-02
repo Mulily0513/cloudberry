@@ -1142,26 +1142,44 @@ is_relation_vectorable(Scan* seqscan, List *rtable, bool isForeign)
 					    plan->qual, columnmap);
 
 
-	opts = RelationGetAttributeOptions(rel);
-	relation_close(rel, AccessShareLock);
-	if (!opts)
-		return false;
-	for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+	/*
+	 * RelationGetAttributeOptions() parses attoptions using AO's reloption
+	 * kind, which only recognizes AO/AOCS compression types.  For AOCS tables
+	 * we need to check whether rle_type is used (unsupported by vectorization).
+	 * PAX and FDW tables manage their own column encoding, so skip this check.
+	 */
+	if (RelationIsAoCols(rel))
 	{
-		Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
-		if (!is_scan_type_vectorable(attr))
+		opts = RelationGetAttributeOptions(rel);
+		relation_close(rel, AccessShareLock);
+		if (!opts)
 			return false;
-
-		/* no opts for pax and fdw, skip compresstype checking */
-		if(!opts[columnmap[attnum - 1]])
-			continue;
-		compresstype = opts[columnmap[attnum - 1]]->compresstype;
-
-		/* FIXME: fix this bug to support rle_type */
-		if (strcmp(compresstype, "rle_type") == 0)
+		for (attnum = 1; attnum <= tupdesc->natts; attnum++)
 		{
-			FALLBACK_LOG("relation is rel_type compressed.");
-			return false;
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+			if (!is_scan_type_vectorable(attr))
+				return false;
+
+			if(!opts[columnmap[attnum - 1]])
+				continue;
+			compresstype = opts[columnmap[attnum - 1]]->compresstype;
+
+			/* FIXME: fix this bug to support rle_type */
+			if (strcmp(compresstype, "rle_type") == 0)
+			{
+				FALLBACK_LOG("relation is rel_type compressed.");
+				return false;
+			}
+		}
+	}
+	else
+	{
+		relation_close(rel, AccessShareLock);
+		for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+		{
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+			if (!is_scan_type_vectorable(attr))
+				return false;
 		}
 	}
 

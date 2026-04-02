@@ -31,9 +31,12 @@
 
 #include "comm/fmt.h"
 #include "comm/pax_memory.h"
-#include "storage/columns/pax_dict_encoding.h"
-#include "storage/columns/pax_rlev2_encoding.h"
+#include "storage/columns/pax_bool_encoding.h"
 #include "storage/columns/pax_delta_encoding.h"
+#include "storage/columns/pax_deltadelta_encoding.h"
+#include "storage/columns/pax_dict_encoding.h"
+#include "storage/columns/pax_gorilla_encoding.h"
+#include "storage/columns/pax_rlev2_encoding.h"
 
 namespace pax {
 
@@ -67,6 +70,18 @@ std::shared_ptr<PaxEncoder> PaxEncoder::CreateStreamingEncoder(
     }
     case ColumnEncoding_Kind::ColumnEncoding_Kind_DICTIONARY: {
       encoder = std::make_shared<PaxDictEncoder>(encoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_DELTA_DELTA: {
+      encoder = std::make_shared<PaxDeltaDeltaEncoder>(encoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_GORILLA: {
+      encoder = std::make_shared<PaxGorillaEncoder>(encoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_BOOL_COMPRESS: {
+      encoder = std::make_shared<PaxBoolEncoder>(encoder_options);
       break;
     }
     // two cases here:

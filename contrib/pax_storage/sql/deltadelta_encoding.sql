@@ -1,0 +1,321 @@
+-- Test DeltaDelta column encoding for PAX storage
+-- DeltaDelta: delta-of-deltas + zigzag encoding + Simple8b-RLE.
+-- Optimal for monotonic integer/timestamp sequences.
+-- Note: Tests use single INSERT statements and moderate row counts
+-- to avoid pre-existing PAX issues with multi-INSERT and large tables.
+
+-- ============================================================
+-- Basic type tests
+-- ============================================================
+
+-- int4 DeltaDelta encoding with porc format
+create table t_dd_int4(a int, b int encoding(compresstype=deltadelta)) using pax with(storage_format=porc);
+insert into t_dd_int4 select i, i from generate_series(1, 1000) i;
+select count(*) from t_dd_int4;
+select min(b), max(b), sum(b) from t_dd_int4;
+-- Verify specific rows
+select b from t_dd_int4 where a = 1;
+select b from t_dd_int4 where a = 500;
+select b from t_dd_int4 where a = 1000;
+drop table t_dd_int4;
+
+-- int8 DeltaDelta encoding
+create table t_dd_int8(a int, b bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_int8 select i, i * 1000000::bigint from generate_series(1, 1000) i;
+select count(*) from t_dd_int8;
+select min(b), max(b) from t_dd_int8;
+select b from t_dd_int8 where a = 1;
+select b from t_dd_int8 where a = 1000;
+drop table t_dd_int8;
+
+-- int2 DeltaDelta encoding
+create table t_dd_int2(a int, b smallint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_int2 select i, (i % 100)::smallint from generate_series(1, 500) i;
+select count(*) from t_dd_int2;
+select min(b), max(b) from t_dd_int2;
+drop table t_dd_int2;
+
+-- timestamp DeltaDelta encoding (simulates time-series data)
+create table t_dd_ts(a int, ts timestamp encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_ts select i, '2024-01-01 00:00:00'::timestamp + (i || ' seconds')::interval
+  from generate_series(1, 10000) i;
+select count(*) from t_dd_ts;
+select min(ts), max(ts) from t_dd_ts;
+-- Verify equi-spaced timestamps roundtrip correctly
+select ts from t_dd_ts where a = 1;
+select ts from t_dd_ts where a = 10000;
+-- Check ordering preserved
+select count(*) from (
+  select ts, lead(ts) over (order by a) as next_ts from t_dd_ts
+) sub where next_ts <= ts;
+drop table t_dd_ts;
+
+-- timestamptz DeltaDelta encoding
+create table t_dd_tstz(a int, ts timestamptz encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_tstz select i, '2024-01-01 00:00:00+00'::timestamptz + (i || ' seconds')::interval
+  from generate_series(1, 1000) i;
+select count(*) from t_dd_tstz;
+select min(ts) AT TIME ZONE 'UTC', max(ts) AT TIME ZONE 'UTC' from t_dd_tstz;
+drop table t_dd_tstz;
+
+-- ============================================================
+-- Value pattern tests
+-- ============================================================
+
+-- Negative values
+create table t_dd_neg(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_neg select i, i - 500 from generate_series(1, 1000) i;
+select count(*) from t_dd_neg;
+select min(b), max(b) from t_dd_neg;
+select b from t_dd_neg where a = 1;
+select b from t_dd_neg where a = 500;
+select b from t_dd_neg where a = 1000;
+drop table t_dd_neg;
+
+-- Constant values (delta-of-delta = 0, best-case for compression)
+create table t_dd_const(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_const select i, 42 from generate_series(1, 1000) i;
+select count(*) from t_dd_const;
+select min(b), max(b), count(distinct b) from t_dd_const;
+drop table t_dd_const;
+
+-- Descending sequence (negative deltas)
+create table t_dd_desc(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_desc select i, 1000 - i from generate_series(1, 1000) i;
+select count(*) from t_dd_desc;
+select min(b), max(b) from t_dd_desc;
+select b from t_dd_desc where a = 1;
+select b from t_dd_desc where a = 1000;
+drop table t_dd_desc;
+
+-- Non-uniform deltas (alternating step sizes)
+create table t_dd_altdelta(a int, val bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_altdelta select i,
+  case when i % 2 = 0 then i * 2 else i end
+from generate_series(1, 1000) i;
+select count(*) from t_dd_altdelta;
+select val from t_dd_altdelta where a = 1;
+select val from t_dd_altdelta where a = 2;
+select val from t_dd_altdelta where a = 999;
+select val from t_dd_altdelta where a = 1000;
+drop table t_dd_altdelta;
+
+-- ============================================================
+-- NULL position tests (P0: null bitmap + delta encoding interaction)
+-- 4 patterns: first position, last position, consecutive, scattered
+-- ============================================================
+
+-- NULL at first position (first_value is NULL, affects delta base)
+create table t_dd_null_first(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_null_first select i, case when i = 1 then null else i * 10 end from generate_series(1, 100) i;
+select count(*) from t_dd_null_first;
+select count(b) from t_dd_null_first;
+select b from t_dd_null_first where a = 1;
+select b from t_dd_null_first where a = 2;
+select b from t_dd_null_first where a = 100;
+drop table t_dd_null_first;
+
+-- NULL at last position (affects tail packing)
+create table t_dd_null_last(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_null_last select i, case when i = 100 then null else i end from generate_series(1, 100) i;
+select count(*) from t_dd_null_last;
+select count(b) from t_dd_null_last;
+select b from t_dd_null_last where a = 99;
+select b from t_dd_null_last where a = 100;
+drop table t_dd_null_last;
+
+-- Consecutive NULLs (block of NULLs in the middle)
+create table t_dd_null_consec(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_null_consec select i, case when i between 40 and 60 then null else i end from generate_series(1, 100) i;
+select count(*) from t_dd_null_consec;
+select count(b) from t_dd_null_consec;
+select count(*) from t_dd_null_consec where b is null;
+select b from t_dd_null_consec where a = 39;
+select b from t_dd_null_consec where a = 40;
+select b from t_dd_null_consec where a = 61;
+drop table t_dd_null_consec;
+
+-- High-density scattered NULLs (every other value is NULL)
+create table t_dd_null_scatter(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_null_scatter select i, case when i % 2 = 0 then null else i end from generate_series(1, 200) i;
+select count(*) from t_dd_null_scatter;
+select count(b) from t_dd_null_scatter;
+select count(*) from t_dd_null_scatter where b is null;
+-- Verify non-null values are correct
+select b from t_dd_null_scatter where a = 1;
+select b from t_dd_null_scatter where a = 3;
+select b from t_dd_null_scatter where a = 199;
+drop table t_dd_null_scatter;
+
+-- ============================================================
+-- Extreme value / overflow tests
+-- ============================================================
+
+-- Big deltas: INT64_MAX <-> INT64_MIN jumps
+-- (from TSDB compression_algos.sql "really big deltas" test)
+create table t_dd_bigdelta(a int, val bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_bigdelta
+  select * from (values
+    (1, 0::bigint),
+    (2, 9223372036854775807::bigint),              -- INT64_MAX
+    (3, (-9223372036854775807 - 1)::bigint),       -- INT64_MIN
+    (4, 9223372036854775807::bigint),
+    (5, (-9223372036854775807 - 1)::bigint),
+    (6, 0::bigint),
+    (7, 32::bigint),
+    (8, 1000::bigint)
+  ) as v(a, val);
+select count(*) from t_dd_bigdelta;
+select a, val from t_dd_bigdelta order by a;
+drop table t_dd_bigdelta;
+
+-- INT32 boundary values
+create table t_dd_int4_boundary(a int, val int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_int4_boundary
+  select * from (values
+    (1, 0),
+    (2, 2147483647),          -- INT32_MAX
+    (3, -2147483648),         -- INT32_MIN
+    (4, 2147483647),
+    (5, -2147483648),
+    (6, 0),
+    (7, 1),
+    (8, -1)
+  ) as v(a, val);
+select a, val from t_dd_int4_boundary order by a;
+drop table t_dd_int4_boundary;
+
+-- INT16 boundary values
+create table t_dd_int2_boundary(a int, val smallint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_int2_boundary
+  select * from (values
+    (1, 0::smallint),
+    (2, 32767::smallint),          -- INT16_MAX
+    (3, (-32768)::smallint),       -- INT16_MIN
+    (4, 32767::smallint),
+    (5, (-32768)::smallint)
+  ) as v(a, val);
+select a, val from t_dd_int2_boundary order by a;
+drop table t_dd_int2_boundary;
+
+-- ============================================================
+-- Order-preserving verification (P0: critical for time-series)
+-- ============================================================
+
+-- Verify int8 sequence order is preserved after DeltaDelta roundtrip
+create table t_dd_order_int8(a int, b bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_order_int8 select i, i * 1000000::bigint from generate_series(1, 10000) i;
+-- count rows where order is violated (should be 0)
+select count(*) as order_violations from (
+  select b, lead(b) over (order by a) as next_b from t_dd_order_int8
+) sub where next_b <= b;
+drop table t_dd_order_int8;
+
+-- Verify DeltaDelta correctly preserves non-monotonic timestamp values.
+-- Expression i*(1+i%7) creates backward jumps (e.g. i=6→42, i=7→7),
+-- so order_violations > 0 is expected. This tests that DeltaDelta roundtrips
+-- non-monotonic sequences exactly, which is stronger than monotonic-only.
+create table t_dd_order_ts(a int, ts timestamp encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_order_ts select i,
+  '2024-01-01'::timestamp + (i * (1 + i % 7) || ' seconds')::interval
+from generate_series(1, 5000) i;
+select count(*) as backward_jumps from (
+  select ts, lead(ts) over (order by a) as next_ts from t_dd_order_ts
+) sub where next_ts <= ts;
+drop table t_dd_order_ts;
+
+-- ============================================================
+-- Boundary tests
+-- ============================================================
+
+-- Single row (only first_value stored, no deltas)
+create table t_dd_single(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_single values (1, 42);
+select * from t_dd_single;
+drop table t_dd_single;
+
+-- Two rows (only one delta, no delta-of-delta)
+create table t_dd_two(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_two select * from (values (1, 100), (2, 200)) as v(a, b);
+select a, b from t_dd_two order by a;
+drop table t_dd_two;
+
+-- ============================================================
+-- porc_vec format test
+-- ============================================================
+
+create table t_dd_vec(a int, b int encoding(compresstype=deltadelta)) using pax with(storage_format=porc_vec);
+insert into t_dd_vec select i, i from generate_series(1, 1000) i;
+select count(*) from t_dd_vec;
+select min(b), max(b), sum(b) from t_dd_vec;
+drop table t_dd_vec;
+
+-- ============================================================
+-- Cross-validation: heap → PAX EXCEPT (independent oracle)
+-- Catches symmetric encoder/decoder bugs that self-tests miss
+-- ============================================================
+
+-- int8 cross-validation with non-trivial delta pattern
+create table t_dd_xval_heap(a int, b bigint);
+insert into t_dd_xval_heap select i, i * 1000000::bigint + (i % 7) - 3
+  from generate_series(1, 10000) i;
+create table t_dd_xval_pax(a int, b bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_xval_pax select * from t_dd_xval_heap;
+select count(*) as missing_rows from (
+  select * from t_dd_xval_heap except select * from t_dd_xval_pax) sub;
+select count(*) as extra_rows from (
+  select * from t_dd_xval_pax except select * from t_dd_xval_heap) sub;
+drop table t_dd_xval_heap;
+drop table t_dd_xval_pax;
+
+-- timestamp cross-validation (non-monotonic pattern with backward jumps)
+create table t_dd_xval_ts_heap(a int, ts timestamp);
+insert into t_dd_xval_ts_heap select i,
+  '2024-01-01'::timestamp + (i * (1 + i % 7) || ' seconds')::interval
+  from generate_series(1, 5000) i;
+create table t_dd_xval_ts_pax(a int, ts timestamp encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_xval_ts_pax select * from t_dd_xval_ts_heap;
+select count(*) as missing_rows from (
+  select * from t_dd_xval_ts_heap except select * from t_dd_xval_ts_pax) sub;
+select count(*) as extra_rows from (
+  select * from t_dd_xval_ts_pax except select * from t_dd_xval_ts_heap) sub;
+drop table t_dd_xval_ts_heap;
+drop table t_dd_xval_ts_pax;
+
+-- ============================================================
+-- Compression ratio test
+-- ============================================================
+
+create table t_dd_unencoded(a int, b bigint) using pax;
+insert into t_dd_unencoded select i, i * 1000000::bigint from generate_series(1, 100000) i;
+create table t_dd_encoded(a int, b bigint encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_encoded select * from t_dd_unencoded;
+
+-- Verify data integrity
+select count(*) as data_mismatches from (
+  select * from t_dd_unencoded except select * from t_dd_encoded) sub;
+
+-- Check compression ratio
+select pg_relation_size('t_dd_encoded') < pg_relation_size('t_dd_unencoded') as compressed;
+
+drop table t_dd_unencoded;
+drop table t_dd_encoded;
+
+-- ============================================================
+-- All-NULL column test (0 values to encoder, edge case)
+-- ============================================================
+
+create table t_dd_allnull(a int, b int encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_allnull select i, null from generate_series(1, 100) i;
+select count(*) from t_dd_allnull;
+select count(b) as non_null from t_dd_allnull;
+drop table t_dd_allnull;
+
+-- ============================================================
+-- Error case tests
+-- ============================================================
+
+-- DeltaDelta on text column should fail on INSERT (validation is at write time)
+create table t_dd_text_err(a int, b text encoding(compresstype=deltadelta)) using pax;
+insert into t_dd_text_err values (1, 'hello');
+drop table t_dd_text_err;

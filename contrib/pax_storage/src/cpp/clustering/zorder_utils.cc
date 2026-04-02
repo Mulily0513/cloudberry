@@ -49,6 +49,8 @@ bool support_zorder_type(Oid type) {
     case TEXTOID:
     case BYTEAOID:
     case DATEOID:
+    case TIMESTAMPOID:
+    case TIMESTAMPTZOID:
       return true;
     default:
       return false;
@@ -122,6 +124,8 @@ void datum_to_bytes(Datum datum, Oid type, bool isnull, char *result) {
       int8_to_bytes((int64)cbdb::DatumToInt32(datum), result);
       break;
     case INT8OID:
+    case TIMESTAMPOID:
+    case TIMESTAMPTZOID:
       int8_to_bytes(cbdb::DatumToInt64(datum), result);
       break;
     case FLOAT4OID:

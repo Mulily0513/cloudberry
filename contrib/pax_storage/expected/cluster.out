@@ -2,8 +2,11 @@ set pax.max_tuples_per_file to 131072;
 -- cluster table using index
 -- start_ignore
 drop table if EXISTS t_index_cluster;
+NOTICE:  table "t_index_cluster" does not exist, skipping
 -- end_ignore
 create table t_index_cluster(c1 int, c2 int) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into t_index_cluster select i,i from generate_series(1,100000) i;
 insert into t_index_cluster select i,i from generate_series(1,100000) i;
 insert into t_index_cluster select i,i from generate_series(1,100000) i;
@@ -12,11 +15,6 @@ insert into t_index_cluster select i,i from generate_series(1,100000) i;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_index_cluster');
  ptblockname |                                          ptstatistics                                           | ptisclustered 
 -------------+-------------------------------------------------------------------------------------------------+---------------
-           0 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           1 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           2 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           3 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           4 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
            0 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
            1 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
            2 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
@@ -27,6 +25,11 @@ select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_index_cl
            2 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            3 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            4 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
+           0 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           1 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           2 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           3 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           4 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
 (15 rows)
 
 -- error, becuase no cluster index or cluster_columns is defined
@@ -36,12 +39,12 @@ cluster t_index_cluster using t_index_cluster_c1_idx;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_index_cluster');
  ptblockname |                                              ptstatistics                                               | ptisclustered 
 -------------+---------------------------------------------------------------------------------------------------------+---------------
+           0 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
+           1 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
            0 | [(false,false),(131072),(5,79072),(5187913809)],[(false,false),(131072),(5,79072),(5187913809)]         | t
            1 | [(false,false),(34983),(79072,100000),(3132737841)],[(false,false),(34983),(79072,100000),(3132737841)] | t
            0 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
            1 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
-           0 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
-           1 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
 (6 rows)
 
 drop table t_index_cluster;
@@ -49,8 +52,11 @@ drop table t_index_cluster;
 -- zorder cluster
 -- start_ignore
 drop table if EXISTS t_zorder_cluster;
+NOTICE:  table "t_zorder_cluster" does not exist, skipping
 -- end_ignore
 create table t_zorder_cluster(c1 int, c2 int) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 \d+ t_zorder_cluster;
                              Table "public.t_zorder_cluster"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
@@ -68,21 +74,21 @@ insert into t_zorder_cluster select i,i from generate_series(1,100000) i;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_zorder_cluster');
  ptblockname |                                          ptstatistics                                           | ptisclustered 
 -------------+-------------------------------------------------------------------------------------------------+---------------
-           0 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           1 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           2 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           3 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           4 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           0 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           1 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           2 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           3 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
-           4 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
            0 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            1 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            2 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            3 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            4 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
+           0 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           1 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           2 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           3 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           4 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
+           0 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           1 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           2 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           3 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           4 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
 (15 rows)
 
 -- error, becuase no cluster index or cluster_columns is defined
@@ -103,12 +109,12 @@ cluster t_zorder_cluster;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_zorder_cluster');
  ptblockname |                                              ptstatistics                                               | ptisclustered 
 -------------+---------------------------------------------------------------------------------------------------------+---------------
-           5 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
-           6 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
            5 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
            6 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
            5 | [(false,false),(131072),(5,79072),(5187913809)],[(false,false),(131072),(5,79072),(5187913809)]         | t
            6 | [(false,false),(34983),(79072,100000),(3132737841)],[(false,false),(34983),(79072,100000),(3132737841)] | t
+           5 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
+           6 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
 (6 rows)
 
 drop table t_zorder_cluster;
@@ -125,19 +131,22 @@ cluster t_zorder_cluster;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_zorder_cluster');
  ptblockname |                                              ptstatistics                                               | ptisclustered 
 -------------+---------------------------------------------------------------------------------------------------------+---------------
+           5 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
+           6 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
            5 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
            6 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
            5 | [(false,false),(131072),(5,79072),(5187913809)],[(false,false),(131072),(5,79072),(5187913809)]         | t
            6 | [(false,false),(34983),(79072,100000),(3132737841)],[(false,false),(34983),(79072,100000),(3132737841)] | t
-           5 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
-           6 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
 (6 rows)
 
 drop table t_zorder_cluster;
 -- test cluster index
 set pax.max_tuples_per_file to 131072;
 drop table if EXISTS t_index_cluster;
+NOTICE:  table "t_index_cluster" does not exist, skipping
 create table t_index_cluster(c1 int, c2 int) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 \d+ t_index_cluster;
                               Table "public.t_index_cluster"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
@@ -155,16 +164,16 @@ insert into t_index_cluster select i,i from generate_series(1,100000) i;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_index_cluster');
  ptblockname |                                          ptstatistics                                           | ptisclustered 
 -------------+-------------------------------------------------------------------------------------------------+---------------
-           0 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           1 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           2 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           3 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
-           4 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
            0 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            1 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            2 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            3 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
            4 | [(false,false),(33327),(1,99996),(1661118941)],[(false,false),(33327),(1,99996),(1661118941)]   | f
+           0 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           1 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           2 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           3 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
+           4 | [(false,false),(33211),(5,100000),(1664130330)],[(false,false),(33211),(5,100000),(1664130330)] | f
            0 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
            1 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
            2 | [(false,false),(33462),(2,99999),(1674800729)],[(false,false),(33462),(2,99999),(1674800729)]   | f
@@ -194,20 +203,22 @@ select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_index_cl
 -------------+---------------------------------------------------------------------------------------------------------+---------------
            0 | [(false,false),(131072),(2,78230),(5147801190)],[(false,false),(131072),(2,78230),(5147801190)]         | t
            1 | [(false,false),(36238),(78230,99999),(3226202455)],[(false,false),(36238),(78230,99999),(3226202455)]   | t
-           0 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
-           1 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
            0 | [(false,false),(131072),(5,79072),(5187913809)],[(false,false),(131072),(5,79072),(5187913809)]         | t
            1 | [(false,false),(34983),(79072,100000),(3132737841)],[(false,false),(34983),(79072,100000),(3132737841)] | t
+           0 | [(false,false),(131072),(1,78633),(5126644321)],[(false,false),(131072),(1,78633),(5126644321)]         | t
+           1 | [(false,false),(35563),(78633,99996),(3178950384)],[(false,false),(35563),(78633,99996),(3178950384)]   | t
 (6 rows)
 
 drop table t_index_cluster;
 -- test both cluster index and cluster columns
 create table t_both_zorder_and_index_cluster(c1 int, c2 int) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 alter table t_both_zorder_and_index_cluster set(cluster_columns='c1,c2');
 create index idx_t_both_zorder_and_index_cluster on t_both_zorder_and_index_cluster(c1);
 -- error, because zorder cluster and index cluster can not be used together
 cluster t_both_zorder_and_index_cluster using idx_t_both_zorder_and_index_cluster;
-ERROR:  cannot using index to cluster table which has cluster-columns (pax_access_handle.cc:1310)
+ERROR:  cannot using index to cluster table which has cluster-columns (pax_access_handle.cc:945)
 -- success
 cluster t_both_zorder_and_index_cluster;
 alter table t_both_zorder_and_index_cluster set(cluster_columns='');
@@ -218,7 +229,7 @@ ERROR:  there is no previously clustered index or cluster_columns reloptions for
 cluster t_both_zorder_and_index_cluster using idx_t_both_zorder_and_index_cluster;
 -- error
 alter table t_both_zorder_and_index_cluster set(cluster_columns='c1,c2');
-ERROR:  pax table has previously clustered index, can't set cluster_columns reloptions (pax_access_handle.cc:1423)
+ERROR:  pax table has previously clustered index, can't set cluster_columns reloptions (pax_access_handle.cc:1080)
 drop index idx_t_both_zorder_and_index_cluster;
 -- error
 cluster t_both_zorder_and_index_cluster;
@@ -230,17 +241,90 @@ cluster t_both_zorder_and_index_cluster;
 drop table t_both_zorder_and_index_cluster;
 -- test unsupport type
 create table t_zorder_unsupport_type(c1 int, c2 numeric(10,2),c3 varchar(128), c4 timestamp, c5 bpchar(64) ) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- error, because numeric is unsupport type
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c2');
-ERROR:  the type of column c2 does not support zorder cluster (pax_access_handle.cc:1434)
+ERROR:  the type of column c2 does not support zorder cluster (pax_access_handle.cc:1091)
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c3');
--- error, because timestamp is unsupport type
+-- timestamp is now supported (DeltaDelta encoding uses int64 representation)
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c4');
-ERROR:  the type of column c4 does not support zorder cluster (pax_access_handle.cc:1434)
 alter table t_zorder_unsupport_type set(cluster_columns='c1,c5');
 drop table t_zorder_unsupport_type;
+-- test zorder cluster with timestamp/timestamptz columns
+create table t_zorder_timestamp(
+    ts timestamp not null,
+    device int not null,
+    value float8
+) with (minmax_columns='ts,device');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_zorder_timestamp
+select '2024-01-01'::timestamp + (i * '1 second'::interval),
+       (i % 100) + 1,
+       random() * 100
+from generate_series(1, 100000) i;
+alter table t_zorder_timestamp set(cluster_columns='ts,device');
+cluster t_zorder_timestamp;
+-- verify data is readable and correct after zorder cluster
+select count(*) from t_zorder_timestamp;
+ count  
+--------
+ 100000
+(1 row)
+
+select count(distinct device) from t_zorder_timestamp;
+ count 
+-------
+   100
+(1 row)
+
+select min(ts), max(ts) from t_zorder_timestamp;
+           min            |           max            
+--------------------------+--------------------------
+ Mon Jan 01 00:00:01 2024 | Tue Jan 02 03:46:40 2024
+(1 row)
+
+drop table t_zorder_timestamp;
+-- test zorder cluster with timestamptz
+create table t_zorder_timestamptz(
+    ts timestamptz not null,
+    device int not null,
+    value float8
+) with (minmax_columns='ts,device');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_zorder_timestamptz
+select '2024-01-01 00:00:00+00'::timestamptz + (i * '1 second'::interval),
+       (i % 100) + 1,
+       random() * 100
+from generate_series(1, 100000) i;
+alter table t_zorder_timestamptz set(cluster_columns='ts,device');
+cluster t_zorder_timestamptz;
+-- verify data is readable and correct after zorder cluster
+select count(*) from t_zorder_timestamptz;
+ count  
+--------
+ 100000
+(1 row)
+
+select count(distinct device) from t_zorder_timestamptz;
+ count 
+-------
+   100
+(1 row)
+
+select min(ts) AT TIME ZONE 'UTC', max(ts) AT TIME ZONE 'UTC' from t_zorder_timestamptz;
+         timezone         |         timezone         
+--------------------------+--------------------------
+ Mon Jan 01 00:00:01 2024 | Tue Jan 02 03:46:40 2024
+(1 row)
+
+drop table t_zorder_timestamptz;
 -- lexical cluster
 create table t_lexical_cluster(c1 text, c2 int) with (minmax_columns='c1,c2');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO t_lexical_cluster (c1, c2) SELECT CONCAT('xxxxxxxx', i::text), i FROM generate_series(1, 100000) i;
 INSERT INTO t_lexical_cluster (c1, c2) SELECT CONCAT('xxxxxxxx', i::text), i FROM generate_series(1, 100000) i;
 INSERT INTO t_lexical_cluster (c1, c2) SELECT CONCAT('xxxxxxxx', i::text), i FROM generate_series(1, 100000) i;
@@ -254,16 +338,16 @@ select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_lexical_
            2 | [(false,false),(33221),(xxxxxxxx1,xxxxxxxx99997),None],[(false,false),(33221),(1,99997),(1662682392)]      | f
            3 | [(false,false),(33221),(xxxxxxxx1,xxxxxxxx99997),None],[(false,false),(33221),(1,99997),(1662682392)]      | f
            4 | [(false,false),(33221),(xxxxxxxx1,xxxxxxxx99997),None],[(false,false),(33221),(1,99997),(1662682392)]      | f
-           0 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
-           1 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
-           2 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
-           3 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
-           4 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
            0 | [(false,false),(33291),(xxxxxxxx10001,xxxxxxxx99998),None],[(false,false),(33291),(11,99998),(1667405216)] | f
            1 | [(false,false),(33291),(xxxxxxxx10001,xxxxxxxx99998),None],[(false,false),(33291),(11,99998),(1667405216)] | f
            2 | [(false,false),(33291),(xxxxxxxx10001,xxxxxxxx99998),None],[(false,false),(33291),(11,99998),(1667405216)] | f
            3 | [(false,false),(33291),(xxxxxxxx10001,xxxxxxxx99998),None],[(false,false),(33291),(11,99998),(1667405216)] | f
            4 | [(false,false),(33291),(xxxxxxxx10001,xxxxxxxx99998),None],[(false,false),(33291),(11,99998),(1667405216)] | f
+           0 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
+           1 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
+           2 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
+           3 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
+           4 | [(false,false),(33488),(xxxxxxxx10,xxxxxxxx99999),None],[(false,false),(33488),(2,100000),(1669962392)]    | f
 (15 rows)
 
 -- set zorder cluster
@@ -286,12 +370,12 @@ cluster t_lexical_cluster;
 select ptblockname,ptstatistics,ptisclustered from get_pax_aux_table('t_lexical_cluster');
  ptblockname |                                                 ptstatistics                                                 | ptisclustered 
 -------------+--------------------------------------------------------------------------------------------------------------+---------------
-           7 | [(false,false),(131072),(xxxxxxxx1,xxxxxxxx8058),None],[(false,false),(131072),(1,80578),(5425285866)]       | t
-           8 | [(false,false),(35033),(xxxxxxxx8058,xxxxxxxx99997),None],[(false,false),(35033),(9,99997),(2888126094)]     | t
            7 | [(false,false),(131072),(xxxxxxxx10001,xxxxxxxx81150),None],[(false,false),(131072),(11,81150),(5430623690)] | t
            8 | [(false,false),(35383),(xxxxxxxx81150,xxxxxxxx99998),None],[(false,false),(35383),(82,99998),(2906402390)]   | t
            7 | [(false,false),(131072),(xxxxxxxx10,xxxxxxxx80572),None],[(false,false),(131072),(2,100000),(5366436984)]    | t
            8 | [(false,false),(36368),(xxxxxxxx80572,xxxxxxxx99999),None],[(false,false),(36368),(83,99999),(2983374976)]   | t
+           7 | [(false,false),(131072),(xxxxxxxx1,xxxxxxxx8058),None],[(false,false),(131072),(1,80578),(5425285866)]       | t
+           8 | [(false,false),(35033),(xxxxxxxx8058,xxxxxxxx99997),None],[(false,false),(35033),(9,99997),(2888126094)]     | t
 (6 rows)
 
 drop table t_lexical_cluster;

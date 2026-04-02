@@ -54,6 +54,12 @@ static const relopt_compress_type_mapping kSelfRelCompressMap[] = {
     {ColumnEncoding_Kind_COMPRESS_LZ4_STR,
      pax::ColumnEncoding_Kind::ColumnEncoding_Kind_COMPRESS_LZ4},
 #endif
+    {ColumnEncoding_Kind_GORILLA_STR,
+     pax::ColumnEncoding_Kind::ColumnEncoding_Kind_GORILLA},
+    {ColumnEncoding_Kind_DELTA_DELTA_STR,
+     pax::ColumnEncoding_Kind::ColumnEncoding_Kind_DELTA_DELTA},
+    {ColumnEncoding_Kind_BOOL_COMPRESS_STR,
+     pax::ColumnEncoding_Kind::ColumnEncoding_Kind_BOOL_COMPRESS},
 };
 
 typedef struct {
@@ -137,7 +143,10 @@ static void paxc_validate_rel_option(PaxOptions *options) {
       strcmp(ColumnEncoding_Kind_RLE_V2_STR, options->compress_type) == 0 ||
       strcmp(ColumnEncoding_Kind_DIRECT_DELTA_STR, options->compress_type) ==
           0 ||
-      strcmp(ColumnEncoding_Kind_DICTIONARY_STR, options->compress_type) == 0) {
+      strcmp(ColumnEncoding_Kind_DICTIONARY_STR, options->compress_type) == 0 ||
+      strcmp(ColumnEncoding_Kind_GORILLA_STR, options->compress_type) == 0 ||
+      strcmp(ColumnEncoding_Kind_DELTA_DELTA_STR, options->compress_type) == 0 ||
+      strcmp(ColumnEncoding_Kind_BOOL_COMPRESS_STR, options->compress_type) == 0) {
     if (options->compress_level != 0) {
       ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                       errmsg("compresslevel=%d should setting is not work for "

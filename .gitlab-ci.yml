@@ -83,6 +83,7 @@ variables:
     - ${CI_PROJECT_DIR}/**/results/*
     - ${CI_PROJECT_DIR}/build/test/out/
     - ${CI_PROJECT_DIR}/build/test/failure/
+    - ${CI_PROJECT_DIR}/build/pax_gtest/
     - ${CI_PROJECT_DIR}/build/test/postgis/*diff
     - ${CI_PROJECT_DIR}/**/gpMgmt/**/*.out
     - ${CI_PROJECT_DIR}/**/gpMgmt/**/*.diff
@@ -248,6 +249,18 @@ test_pax:
     set -euxo pipefail
 
     export ENV=devel
+
+    # Run PAX C++ unit tests (gtest) if test_main was built
+    PAX_TEST_MAIN="${CI_PROJECT_DIR}/database/contrib/pax_storage/build/src/cpp/test_main"
+    if [ -x "$PAX_TEST_MAIN" ]; then
+      echo "Running PAX C++ unit tests..."
+      export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/dist/database/lib:${CI_PROJECT_DIR}/database/src/backend:${CI_PROJECT_DIR}/database/contrib/apache-arrow/dist/lib:${LD_LIBRARY_PATH:-}"
+      mkdir -p "${CI_PROJECT_DIR}/build/pax_gtest"
+      chmod a+w "${CI_PROJECT_DIR}/build"
+      "$PAX_TEST_MAIN" \
+        --gtest_output=xml:${CI_PROJECT_DIR}/build/pax_gtest/pax_unit_test_results.xml
+    fi
+
     export MAKE_TEST_COMMAND="-c default_table_access_method=pax -c optimizer=off -c enable_parallel=off -c force_parallel_mode=1"
     make test-pax
   rules:

@@ -29,9 +29,12 @@
 
 #include "comm/fmt.h"
 #include "comm/pax_memory.h"
-#include "storage/columns/pax_dict_encoding.h"
-#include "storage/columns/pax_rlev2_decoding.h"
 #include "storage/columns/pax_delta_encoding.h"
+#include "storage/columns/pax_deltadelta_encoding.h"
+#include "storage/columns/pax_dict_encoding.h"
+#include "storage/columns/pax_bool_encoding.h"
+#include "storage/columns/pax_gorilla_encoding.h"
+#include "storage/columns/pax_rlev2_decoding.h"
 
 namespace pax {
 
@@ -53,6 +56,18 @@ std::shared_ptr<PaxDecoder> PaxDecoder::CreateDecoder(const DecodingOption &deco
     }
     case ColumnEncoding_Kind::ColumnEncoding_Kind_DICTIONARY: {
       decoder = std::make_shared<PaxDictDecoder>(decoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_DELTA_DELTA: {
+      decoder = std::make_shared<PaxDeltaDeltaDecoder<T>>(decoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_GORILLA: {
+      decoder = std::make_shared<PaxGorillaDecoder<T>>(decoder_options);
+      break;
+    }
+    case ColumnEncoding_Kind::ColumnEncoding_Kind_BOOL_COMPRESS: {
+      decoder = std::make_shared<PaxBoolDecoder>(decoder_options);
       break;
     }
     case ColumnEncoding_Kind::ColumnEncoding_Kind_DEF_ENCODED: {

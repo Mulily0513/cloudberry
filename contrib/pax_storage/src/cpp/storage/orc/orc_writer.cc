@@ -100,6 +100,56 @@ static std::unique_ptr<PaxColumn> CreateCommColumn(
       DEFAULT_CAPACITY, opts);
 }
 
+/* Validate encoding-type compatibility before creating any C++ objects.
+ * Must use ereport(ERROR) here because CBDB_RAISE causes SIGSEGV during
+ * stack unwinding in the OrcWriter constructor context.  Calling ereport
+ * before any C++ objects with non-trivial destructors exist is safe.
+ *
+ * DDL-time validation is the primary check (paxc_validate_column_encoding_clauses
+ * in paxc_rel_options.cc).  This INSERT-time check is a safety net for cases
+ * the DDL path did not cover (e.g., ALTER TABLE ADD COLUMN with ENCODING). */
+static void ValidateEncodingCompatibility(
+    const TupleDesc desc,
+    const std::vector<std::tuple<ColumnEncoding_Kind, int>>
+        &column_encoding_types,
+    const PaxStorageFormat &storage_format) {
+  for (size_t i = 0; i < column_encoding_types.size(); i++) {
+    auto enc_type = std::get<0>(column_encoding_types[i]);
+    auto attr = &desc->attrs[i];
+
+    if (enc_type == ColumnEncoding_Kind_DELTA_DELTA ||
+        enc_type == ColumnEncoding_Kind_GORILLA) {
+      if (!attr->attbyval || (attr->attlen != 1 && attr->attlen != 2 &&
+                              attr->attlen != 4 && attr->attlen != 8)) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("%s encoding requires a fixed-width type "
+                        "(1/2/4/8 byte pass-by-value), column \"%s\" has "
+                        "attlen=%d",
+                        enc_type == ColumnEncoding_Kind_DELTA_DELTA
+                            ? "deltadelta"
+                            : "gorilla",
+                        NameStr(attr->attname), attr->attlen)));
+      }
+    }
+    if (enc_type == ColumnEncoding_Kind_BOOL_COMPRESS) {
+      if (attr->atttypid != BOOLOID) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("bool encoding requires boolean column type, "
+                        "column \"%s\" has type OID %u",
+                        NameStr(attr->attname), attr->atttypid)));
+      }
+      if (storage_format == PaxStorageFormat::kTypeStoragePorcVec) {
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("bool encoding is not compatible with "
+                        "porc_vec storage format")));
+      }
+    }
+  }
+}
+
 static std::unique_ptr<PaxColumns> BuildColumns(
     const std::vector<pax::porc::proto::Type_Kind> &types, const TupleDesc desc,
     const std::vector<std::tuple<ColumnEncoding_Kind, int>>
@@ -232,6 +282,13 @@ OrcWriter::OrcWriter(
   Assert(writer_options.rel_tuple_desc);
   Assert(writer_options.rel_tuple_desc->natts ==
          static_cast<int>(column_types.size()));
+
+  /* Validate before creating any C++ objects in BuildColumns.
+   * ereport(ERROR) is safe here — no C++ objects with non-trivial
+   * destructors need unwinding at this point. */
+  ValidateEncodingCompatibility(writer_options.rel_tuple_desc,
+                                writer_options.encoding_opts,
+                                writer_options.storage_format);
 
   pax_columns_ =
       BuildColumns(column_types_, writer_options.rel_tuple_desc,

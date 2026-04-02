@@ -1,0 +1,627 @@
+-- Test Gorilla column encoding for PAX storage
+-- Gorilla: XOR-based float compression (Pelkonen et al., VLDB 2015).
+-- Optimal for slowly-changing float metric sequences.
+-- Note: Tests use single INSERT statements and moderate row counts
+-- to avoid pre-existing PAX issues with multi-INSERT and large tables.
+-- ============================================================
+-- Basic type tests
+-- ============================================================
+-- float8 Gorilla encoding (deterministic data for reproducible tests)
+create table t_gor_f8(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_f8 select i, sin(i::float8 / 10.0) * 50.0 + 50.0 from generate_series(1, 1000) i;
+select count(*) from t_gor_f8;
+ count 
+-------
+  1000
+(1 row)
+
+-- Verify specific values roundtrip correctly
+select round(val::numeric, 4) from t_gor_f8 where a = 1;
+  round  
+---------
+ 54.9917
+(1 row)
+
+select round(val::numeric, 4) from t_gor_f8 where a = 500;
+  round  
+---------
+ 36.8813
+(1 row)
+
+drop table t_gor_f8;
+-- float4 Gorilla encoding
+create table t_gor_f4(a int, val float4 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_f4 select i, (i * 0.1)::float4 from generate_series(1, 500) i;
+select count(*) from t_gor_f4;
+ count 
+-------
+   500
+(1 row)
+
+select val from t_gor_f4 where a = 1;
+ val 
+-----
+ 0.1
+(1 row)
+
+select val from t_gor_f4 where a = 500;
+ val 
+-----
+  50
+(1 row)
+
+drop table t_gor_f4;
+-- Gorilla on integer column (positive test: XOR on bit patterns works for any fixed-width type)
+create table t_gor_int(a int, b int encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_int select i, i * 100 from generate_series(1, 100) i;
+select count(*) from t_gor_int;
+ count 
+-------
+   100
+(1 row)
+
+select min(b), max(b) from t_gor_int;
+ min |  max  
+-----+-------
+ 100 | 10000
+(1 row)
+
+drop table t_gor_int;
+-- ============================================================
+-- Value pattern tests
+-- ============================================================
+-- Similar adjacent values (CPU metric simulation, good for Gorilla)
+-- Deterministic: slow sine wave ± small perturbation
+create table t_gor_cpu(a int, usage float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_cpu select i, 55.0 + sin(i::float8 / 50.0) * 2.0 from generate_series(1, 10000) i;
+select count(*) from t_gor_cpu;
+ count 
+-------
+ 10000
+(1 row)
+
+-- Verify exact values at known points
+select round(usage::numeric, 4) from t_gor_cpu where a = 1;
+  round  
+---------
+ 55.0400
+(1 row)
+
+select round(usage::numeric, 4) from t_gor_cpu where a = 5000;
+  round  
+---------
+ 53.9873
+(1 row)
+
+drop table t_gor_cpu;
+-- All same values (XOR = 0 for all, best-case compression)
+create table t_gor_same(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_same select i, 42.0 from generate_series(1, 1000) i;
+select count(*) from t_gor_same;
+ count 
+-------
+  1000
+(1 row)
+
+select min(val), max(val), count(distinct val) from t_gor_same;
+ min | max | count 
+-----+-----+-------
+  42 |  42 |     1
+(1 row)
+
+drop table t_gor_same;
+-- ============================================================
+-- NULL position tests (P0: null bitmap + XOR encoding interaction)
+-- 4 patterns: first position, last position, consecutive, scattered
+-- ============================================================
+-- NULL at first position (first_value is NULL, affects XOR base)
+create table t_gor_null_first(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_null_first select i, case when i = 1 then null else i * 1.1 end from generate_series(1, 100) i;
+select count(*) from t_gor_null_first;
+ count 
+-------
+   100
+(1 row)
+
+select count(val) from t_gor_null_first;
+ count 
+-------
+    99
+(1 row)
+
+select val from t_gor_null_first where a = 1;
+ val 
+-----
+    
+(1 row)
+
+select val from t_gor_null_first where a = 2;
+ val 
+-----
+ 2.2
+(1 row)
+
+select val from t_gor_null_first where a = 100;
+ val 
+-----
+ 110
+(1 row)
+
+drop table t_gor_null_first;
+-- NULL at last position
+create table t_gor_null_last(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_null_last select i, case when i = 100 then null else i * 1.1 end from generate_series(1, 100) i;
+select count(*) from t_gor_null_last;
+ count 
+-------
+   100
+(1 row)
+
+select count(val) from t_gor_null_last;
+ count 
+-------
+    99
+(1 row)
+
+select val from t_gor_null_last where a = 99;
+  val  
+-------
+ 108.9
+(1 row)
+
+select val from t_gor_null_last where a = 100;
+ val 
+-----
+    
+(1 row)
+
+drop table t_gor_null_last;
+-- Consecutive NULLs in the middle
+create table t_gor_null_consec(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_null_consec select i, case when i between 40 and 60 then null else sin(i::float8) * 100 end from generate_series(1, 100) i;
+select count(*) from t_gor_null_consec;
+ count 
+-------
+   100
+(1 row)
+
+select count(val) from t_gor_null_consec;
+ count 
+-------
+    79
+(1 row)
+
+select count(*) from t_gor_null_consec where val is null;
+ count 
+-------
+    21
+(1 row)
+
+drop table t_gor_null_consec;
+-- High-density scattered NULLs (every other value)
+create table t_gor_null_scatter(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_null_scatter select i, case when i % 2 = 0 then null else i * 1.1 end from generate_series(1, 200) i;
+select count(*) from t_gor_null_scatter;
+ count 
+-------
+   200
+(1 row)
+
+select count(val) from t_gor_null_scatter;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from t_gor_null_scatter where val is null;
+ count 
+-------
+   100
+(1 row)
+
+-- Verify non-null values are correct
+select val from t_gor_null_scatter where a = 1;
+ val 
+-----
+ 1.1
+(1 row)
+
+select val from t_gor_null_scatter where a = 3;
+ val 
+-----
+ 3.3
+(1 row)
+
+select val from t_gor_null_scatter where a = 199;
+  val  
+-------
+ 218.9
+(1 row)
+
+drop table t_gor_null_scatter;
+-- ============================================================
+-- Bit-exact roundtrip tests (no randomness)
+-- ============================================================
+-- Exact float8 values: verify bit-exact roundtrip
+create table t_gor_exact(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_exact
+  select * from (values
+    (1, 3.14159265358979),
+    (2, 2.71828182845905),
+    (3, 1.41421356237310),
+    (4, 0.0),
+    (5, -0.0::float8),
+    (6, 1e308),
+    (7, -1e308),
+    (8, 5e-324)
+  ) as v(a, val);
+select a, val from t_gor_exact order by a;
+ a |       val        
+---+------------------
+ 1 | 3.14159265358979
+ 2 | 2.71828182845905
+ 3 |  1.4142135623731
+ 4 |                0
+ 5 |               -0
+ 6 |           1e+308
+ 7 |          -1e+308
+ 8 |           5e-324
+(8 rows)
+
+drop table t_gor_exact;
+-- Subnormal float8 values (near smallest representable, tests XOR edge cases)
+create table t_gor_subnormal(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_subnormal
+  select * from (values
+    (1, 5e-324),               -- smallest positive subnormal
+    (2, 2.2250738585072014e-308), -- smallest positive normal
+    (3, 1e-300),
+    (4, -5e-324),
+    (5, -2.2250738585072014e-308),
+    (6, 1.7976931348623157e+308)  -- largest finite float8
+  ) as v(a, val);
+select a, val from t_gor_subnormal order by a;
+ a |           val            
+---+--------------------------
+ 1 |                   5e-324
+ 2 |  2.2250738585072014e-308
+ 3 |                   1e-300
+ 4 |                  -5e-324
+ 5 | -2.2250738585072014e-308
+ 6 |  1.7976931348623157e+308
+(6 rows)
+
+drop table t_gor_subnormal;
+-- ============================================================
+-- IEEE 754 special values (NaN, Infinity)
+-- ============================================================
+-- float8 special values: NaN, Infinity, -Infinity
+-- (from TSDB compression_algos.sql FLOAT8 special values test)
+create table t_gor_special(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_special
+  select * from (values
+    (1, 'NaN'::float8),
+    (2, 'Infinity'::float8),
+    (3, '-Infinity'::float8),
+    (4, 0::float8),
+    (5, 1.0::float8),
+    (6, -1.0::float8)
+  ) as v(a, val);
+select count(*) from t_gor_special;
+ count 
+-------
+     6
+(1 row)
+
+-- NaN != NaN in SQL, so use val::text to verify
+select a, val::text from t_gor_special order by a;
+ a |    val    
+---+-----------
+ 1 | NaN
+ 2 | Infinity
+ 3 | -Infinity
+ 4 | 0
+ 5 | 1
+ 6 | -1
+(6 rows)
+
+drop table t_gor_special;
+-- float4 special values
+-- (from TSDB compression_algos.sql FLOAT4 special values test)
+create table t_gor_f4_special(a int, val float4 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_f4_special
+  select * from (values
+    (1, 'NaN'::float4),
+    (2, 'Infinity'::float4),
+    (3, '-Infinity'::float4),
+    (4, 0::float4),
+    (5, 1.0::float4)
+  ) as v(a, val);
+select count(*) from t_gor_f4_special;
+ count 
+-------
+     5
+(1 row)
+
+select a, val::text from t_gor_f4_special order by a;
+ a |    val    
+---+-----------
+ 1 | NaN
+ 2 | Infinity
+ 3 | -Infinity
+ 4 | 0
+ 5 | 1
+(5 rows)
+
+drop table t_gor_f4_special;
+-- Mixed NaN and normal values in larger dataset
+-- (ensures NaN doesn't corrupt subsequent XOR decoding)
+create table t_gor_nan_mix(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_nan_mix
+select i, case
+  when i % 100 = 0 then 'NaN'::float8
+  when i % 200 = 50 then 'Infinity'::float8
+  else sin(i::float8 / 10.0) * 100.0
+end
+from generate_series(1, 1000) i;
+select count(*) from t_gor_nan_mix;
+ count 
+-------
+  1000
+(1 row)
+
+select count(*) filter (where val::text = 'NaN') as nan_count,
+       count(*) filter (where val = 'Infinity'::float8) as inf_count,
+       count(*) filter (where val::text != 'NaN' and val != 'Infinity'::float8) as normal_count
+from t_gor_nan_mix;
+ nan_count | inf_count | normal_count 
+-----------+-----------+--------------
+        10 |         5 |          985
+(1 row)
+
+drop table t_gor_nan_mix;
+-- ============================================================
+-- Order-preserving verification (P0: critical for time-series)
+-- ============================================================
+-- Verify float8 ordering is preserved after Gorilla roundtrip
+-- Uses deterministic sin() pattern, not random
+create table t_gor_order(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_order select i, i * 1.1 from generate_series(1, 10000) i;
+-- count rows where monotonic order is violated (should be 0)
+select count(*) as order_violations from (
+  select val, lead(val) over (order by a) as next_val from t_gor_order
+) sub where next_val <= val;
+ order_violations 
+------------------
+                0
+(1 row)
+
+drop table t_gor_order;
+-- ============================================================
+-- Boundary tests
+-- ============================================================
+-- Single row (only first_value stored, no XOR)
+create table t_gor_single(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_single values (1, 3.14);
+select * from t_gor_single;
+ a | val  
+---+------
+ 1 | 3.14
+(1 row)
+
+drop table t_gor_single;
+-- Two rows (only one XOR, no window reuse)
+create table t_gor_two(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_two select * from (values (1, 3.14), (2, 2.72)) as v(a, val);
+select a, val from t_gor_two order by a;
+ a | val  
+---+------
+ 1 | 3.14
+ 2 | 2.72
+(2 rows)
+
+drop table t_gor_two;
+-- ============================================================
+-- porc_vec format test
+-- ============================================================
+create table t_gor_vec(a int, val float8 encoding(compresstype=gorilla)) using pax with(storage_format=porc_vec);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_vec select i, i * 1.1 from generate_series(1, 1000) i;
+select count(*) from t_gor_vec;
+ count 
+-------
+  1000
+(1 row)
+
+select val from t_gor_vec where a = 1;
+ val 
+-----
+ 1.1
+(1 row)
+
+select val from t_gor_vec where a = 1000;
+ val  
+------
+ 1100
+(1 row)
+
+drop table t_gor_vec;
+-- ============================================================
+-- Combined DeltaDelta + Gorilla (time-series table pattern)
+-- Using 2-column tables to avoid pre-existing PAX 3-column issue
+-- ============================================================
+create table t_ts_dg(
+  ts    timestamp encoding(compresstype=deltadelta),
+  val   float8    encoding(compresstype=gorilla)
+) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_ts_dg
+select '2024-01-01'::timestamp + (i || ' seconds')::interval,
+       50.0 + sin(i::float8 / 100.0) * 5.0
+from generate_series(1, 10000) i;
+select count(*) from t_ts_dg;
+ count 
+-------
+ 10000
+(1 row)
+
+select min(ts), max(ts) from t_ts_dg;
+           min            |           max            
+--------------------------+--------------------------
+ Mon Jan 01 00:00:01 2024 | Mon Jan 01 02:46:40 2024
+(1 row)
+
+select round(avg(val)::numeric, 1) between 49 and 51 as avg_in_range from t_ts_dg;
+ avg_in_range 
+--------------
+ t
+(1 row)
+
+drop table t_ts_dg;
+-- ============================================================
+-- Compression ratio test (sorted data, optimal for DeltaDelta+Gorilla)
+-- ============================================================
+-- Create uncompressed reference table
+create table t_ratio_unencoded(
+  ts    timestamp,
+  val   float8
+) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_ratio_unencoded
+select '2024-01-01'::timestamp + (i || ' seconds')::interval,
+       50.0 + sin(i::float8 / 100.0) * 5.0
+from generate_series(1, 100000) i;
+-- Create encoded table with same data (deterministic, no random)
+create table t_ratio_encoded(
+  ts    timestamp encoding(compresstype=deltadelta),
+  val   float8    encoding(compresstype=gorilla)
+) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_ratio_encoded
+select * from t_ratio_unencoded;
+-- Verify data integrity
+select count(*) as heap_count from t_ratio_unencoded;
+ heap_count 
+------------
+     100000
+(1 row)
+
+select count(*) as encoded_count from t_ratio_encoded;
+ encoded_count 
+---------------
+        100000
+(1 row)
+
+-- Bit-exact EXCEPT comparison (no tolerance needed for deterministic data)
+select count(*) as data_mismatches from (
+  select * from t_ratio_unencoded except select * from t_ratio_encoded) sub;
+ data_mismatches 
+-----------------
+               0
+(1 row)
+
+-- Check compression ratio (use inequality to avoid fragile hardcoded sizes)
+select pg_relation_size('t_ratio_encoded') < pg_relation_size('t_ratio_unencoded') as compressed;
+ compressed 
+------------
+ t
+(1 row)
+
+drop table t_ratio_unencoded;
+drop table t_ratio_encoded;
+-- ============================================================
+-- Cross-validation: heap → PAX EXCEPT (independent oracle)
+-- ============================================================
+create table t_gor_xval_heap(a int, val float8);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_xval_heap select i, sin(i::float8 / 100.0) * 1000.0
+  from generate_series(1, 10000) i;
+create table t_gor_xval_pax(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_xval_pax select * from t_gor_xval_heap;
+select count(*) as missing_rows from (
+  select * from t_gor_xval_heap except select * from t_gor_xval_pax) sub;
+ missing_rows 
+--------------
+            0
+(1 row)
+
+select count(*) as extra_rows from (
+  select * from t_gor_xval_pax except select * from t_gor_xval_heap) sub;
+ extra_rows 
+------------
+          0
+(1 row)
+
+drop table t_gor_xval_heap;
+drop table t_gor_xval_pax;
+-- ============================================================
+-- All-NULL column test (0 values to encoder, edge case)
+-- ============================================================
+create table t_gor_allnull(a int, val float8 encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_allnull select i, null from generate_series(1, 100) i;
+select count(*) from t_gor_allnull;
+ count 
+-------
+   100
+(1 row)
+
+select count(val) as non_null from t_gor_allnull;
+ non_null 
+----------
+        0
+(1 row)
+
+drop table t_gor_allnull;
+-- ============================================================
+-- Error case tests
+-- ============================================================
+-- Gorilla on text column should fail on INSERT
+create table t_gor_text_err(a int, b text encoding(compresstype=gorilla)) using pax;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_gor_text_err values (1, 'hello');
+ERROR:  gorilla encoding requires a fixed-width type (1/2/4/8 byte pass-by-value), column "b" has attlen=-1
+drop table t_gor_text_err;
