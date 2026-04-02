@@ -183,15 +183,15 @@ explain (verbose, costs off) select * from t1 left join t2  on t1.a = t2.c;
 --------------------------------------------------------------------------------
  Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
-   ->  Parallel Hash Left Join
+   ->  Parallel Hash Right Join
          Output: t1.a, t1.b, t2.c, t2.d
-         Hash Cond: (t1.a = t2.c)
-         ->  Parallel Seq Scan on orca_parallel.t1
-               Output: t1.a, t1.b
-         ->  Parallel Hash
+         Hash Cond: (t2.c = t1.a)
+         ->  Parallel Seq Scan on orca_parallel.t2
                Output: t2.c, t2.d
-               ->  Parallel Seq Scan on orca_parallel.t2
-                     Output: t2.c, t2.d
+         ->  Parallel Hash
+               Output: t1.a, t1.b
+               ->  Parallel Seq Scan on orca_parallel.t1
+                     Output: t1.a, t1.b
  Settings: enable_parallel = 'on', optimizer = 'off', parallel_setup_cost = '0'
  Optimizer: Postgres query optimizer
 (13 rows)
@@ -219,16 +219,16 @@ explain (verbose, costs off) select * from t1 right join t2 on t1.a = t2.c;
 explain (verbose, costs off) select * from t1 full join t2  on t1.a = t2.c;
                                    QUERY PLAN                                   
 --------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
+ Gather Motion 6:1  (slice1; segments: 6)
    Output: t1.a, t1.b, t2.c, t2.d
-   ->  Hash Full Join
+   ->  Parallel Hash Full Join
          Output: t1.a, t1.b, t2.c, t2.d
          Hash Cond: (t2.c = t1.a)
-         ->  Seq Scan on orca_parallel.t2
+         ->  Parallel Seq Scan on orca_parallel.t2
                Output: t2.c, t2.d
-         ->  Hash
+         ->  Parallel Hash
                Output: t1.a, t1.b
-               ->  Seq Scan on orca_parallel.t1
+               ->  Parallel Seq Scan on orca_parallel.t1
                      Output: t1.a, t1.b
  Settings: enable_parallel = 'on', optimizer = 'off', parallel_setup_cost = '0'
  Optimizer: Postgres query optimizer
