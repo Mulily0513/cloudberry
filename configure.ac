@@ -3395,10 +3395,17 @@ fi
 # The configure args contain '-Wl,-rpath,\$$ORIGIN`, when it falls
 # as a C literal string, it's invalid, so converting `\` to `\\`
 # to be correct for C program.
-sed -i '/define CONFIGURE_ARGS/s,\([[^\\]]\)\\\$\$,\1\\\\$$,g' src/include/pg_config.h
+case $build_os in
+darwin*)
+  sed -i '' '/define CONFIGURE_ARGS/s,\([[^\\]]\)\\\$\$,\1\\\\$$,g' src/include/pg_config.h
+  ;;
+*)
+  sed -i '/define CONFIGURE_ARGS/s,\([[^\\]]\)\\\$\$,\1\\\\$$,g' src/include/pg_config.h
+  ;;
+esac
 
 #
-# vbf 
+# vbf
 #
 PGAC_ARG_BOOL(enable, vbf, no,
               [enable VBF support],
