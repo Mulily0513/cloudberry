@@ -90,6 +90,7 @@ OBJS        = CDecorrelator.o \
               CXformLeftAntiSemiJoin2ParallelHashJoin.o \
               CXformLeftAntiSemiJoinNotIn2ParallelHashJoin.o \
               CXformRightOuterJoin2ParallelHashJoin.o \
+              CXformFullOuterJoin2ParallelHashJoin.o \
               CXformInsert2DML.o \
               CXformIntersect2Join.o \
               CXformIntersectAll2LeftSemiJoin.o \

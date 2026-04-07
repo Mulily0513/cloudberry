@@ -82,6 +82,7 @@ CLogicalFullOuterJoin::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfImplementFullOuterMergeJoin);
 	(void) xform_set->ExchangeSet(CXform::ExfFullJoinCommutativity);
 	(void) xform_set->ExchangeSet(CXform::ExfFullOuterJoin2HashJoin);
+	(void) xform_set->ExchangeSet(CXform::ExfFullOuterJoin2ParallelHashJoin);
 	return xform_set;
 }
 
