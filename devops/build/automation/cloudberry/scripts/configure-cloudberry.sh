@@ -163,6 +163,7 @@ execute_cmd ./configure --prefix=${BUILD_DESTINATION} \
             --enable-tap-tests \
             --enable-time-series \
             ${CONFIGURE_DEBUG_OPTS} \
+            --with-diskquota \
             --with-gp-stats-collector \
             --with-gssapi \
             --with-ldap \
