@@ -3911,7 +3911,7 @@ BuildHashjoin(PlanBuildContext *pcontext, GArrowExecuteNode *left, GArrowExecute
 
 		snprintf(spill_dir, MAXPGPATH, "%s/base/%s", DataDir, PG_TEMP_FILES_DIR);
 		snprintf(spill_file_prefix, sizeof(spill_file_prefix),
-				 "%s_%s_%d", PG_TEMP_FILE_PREFIX, VEC_SPILL_FILE_PREFIX, MyProcPid);
+				 "%s_%s_%d_%d", PG_TEMP_FILE_PREFIX, VEC_SPILL_FILE_PREFIX, MyProcPid, node->js.ps.plan->plan_node_id);
 
 		hashjoin_options =
 			garrow_hash_join_node_options_new(type, pcontext->left_hashkeys, pcontext->right_hashkeys, keycmps, filter_expr,
