@@ -1,0 +1,17 @@
+-- Global patterns for time_series isolation2 tests
+
+-- start_matchignore
+m/^NOTICE:/
+m/^DETAIL:/
+m/^psql:/
+-- end_matchignore
+
+-- start_matchsubs
+-- Match segment PIDs which vary between runs
+m/\(seg\d+ [\d\.]+:\d+ pid=\d+\)/
+s/\(seg\d+ [\d\.]+:\d+ pid=\d+\)/(seg0 IP:PORT pid=PID)/
+
+-- Match timestamps in watermark values
+m/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\+\d{2}/
+s/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\+\d{2}/YYYY-MM-DD HH:MM:SS.ffffff+TZ/
+-- end_matchsubs

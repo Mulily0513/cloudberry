@@ -1,0 +1,20 @@
+# time_series CAGG isolation2 tests
+# Aligned with TimescaleDB tsl/test/isolation/specs/cagg_*.spec
+
+# INSERT + SELECT during REFRESH
+test: cagg_insert
+
+# Concurrent REFRESH serialization via advisory lock
+test: cagg_concurrent_refresh
+
+# Two CAGGs on same source: concurrent INSERT/UPDATE/REFRESH
+
+# Concurrent invalidation threshold updates
+test: cagg_concurrent_invalidation
+
+# Watermark visibility across sessions
+test: cagg_watermark_concurrent_update
+
+# Concurrent L1→L2 migration: two CAGGs on same source, TX1 overlap via fault injection
+# Verifies CBDB 2PC prepared-state visibility prevents L1 row conflicts
+test: cagg_concurrent_l1_migration

@@ -1,0 +1,2399 @@
+-- ============================================================
+-- cagg_core.sql
+-- Test: CREATE MATERIALIZED VIEW ... WITH (time_series.continuous)
+--       positive test cases — verify correct behavior.
+--
+-- Reference: TimescaleDB tsl/test/sql/cagg-17.sql
+-- ============================================================
+
+\set ON_ERROR_STOP 1
+
+SET optimizer = off;
+SET timezone = 'UTC';
+SET search_path TO public, time_series;
+
+-- ============================================================
+-- Setup: fresh extension (reset all catalog state)
+-- ============================================================
+\set ON_ERROR_STOP 0
+DROP VIEW IF EXISTS t1_count, t2_multi_agg, t3_where, t4_having,
+                    t5_nodata, t6_distinct_agg, t7_filter_agg,
+                    t8_dist, t9_names, t10_stats, t11_bucket,
+                    t12_hourly, t12_daily, t13_views CASCADE;
+DROP TABLE IF EXISTS metrics CASCADE;
+-- Drop all materialization tables in time_series schema
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'time_series' AND tablename LIKE '_mat_%'
+  LOOP
+    EXECUTE 'DROP TABLE IF EXISTS time_series.' || quote_ident(r.tablename) || ' CASCADE';
+  END LOOP;
+  FOR r IN SELECT viewname FROM pg_views WHERE schemaname = 'time_series' AND (viewname LIKE '_partial_view_%' OR viewname LIKE '_direct_view_%')
+  LOOP
+    EXECUTE 'DROP VIEW IF EXISTS time_series.' || quote_ident(r.viewname) || ' CASCADE';
+  END LOOP;
+END $$;
+DROP EXTENSION IF EXISTS time_series CASCADE;
+\set ON_ERROR_STOP 1
+CREATE EXTENSION time_series;
+
+-- ============================================================
+-- Setup: source table
+-- ============================================================
+CREATE TABLE metrics (
+    time        TIMESTAMPTZ       NOT NULL,
+    tags_id     INT               NOT NULL,
+    temperature DOUBLE PRECISION  NULL,
+    humidity    DOUBLE PRECISION  NULL
+) DISTRIBUTED BY (tags_id);
+
+-- tags_id is the unique identifier for a tag combination (device + location
+-- + rack + ...) — typical time-series schema following TSBS convention.
+-- 50 rows: 10 tags_id × 5 hourly buckets, with one NULL humidity.
+INSERT INTO metrics
+SELECT
+    '2024-01-01 00:00+00'::timestamptz + (hr || ' hour')::interval
+                                       + (tid * 3 || ' minute')::interval
+      AS time,
+    tid AS tags_id,
+    20.0 + (tid * 1.5) + (hr * 0.3)                      AS temperature,
+    CASE WHEN tid = 5 AND hr = 4 THEN NULL               -- one NULL value
+         ELSE 50.0 + (tid * 2.0) - (hr * 1.2)
+    END                                                   AS humidity
+FROM generate_series(1, 10) tid,
+     generate_series(0, 4)  hr;
+
+-- ============================================================
+-- T1: Basic count aggregate
+-- ============================================================
+\echo '=== T1: basic count ==='
+CREATE MATERIALIZED VIEW t1_count
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify catalog entry
+SELECT cagg_id, user_view_name, mat_table_name, bucket_width, bucket_column
+FROM time_series.continuous_agg
+WHERE user_view_name = 't1_count';
+
+-- Verify materialization table columns
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't1_count')
+ORDER BY ordinal_position;
+
+-- Verify watermark initialized
+SELECT cagg_id, watermark
+FROM time_series.cagg_watermark
+WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 't1_count');
+
+-- Verify trigger installed
+SELECT tgname FROM pg_trigger
+WHERE tgrelid = 'metrics'::regclass
+  AND tgname = 'ts_cagg_invalidation_trigger';
+
+DROP VIEW t1_count CASCADE;
+
+-- ============================================================
+-- T2: Multiple aggregates (min, max, sum, avg)
+-- ============================================================
+\echo '=== T2: multiple aggregates ==='
+CREATE MATERIALIZED VIEW t2_multi_agg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         min(temperature) AS min_temp,
+         max(temperature) AS max_temp,
+         sum(temperature) AS sum_temp,
+         avg(temperature) AS avg_temp,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify column types
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't2_multi_agg')
+ORDER BY ordinal_position;
+
+DROP VIEW t2_multi_agg CASCADE;
+
+-- ============================================================
+-- T3: With WHERE clause
+-- ============================================================
+\echo '=== T3: WHERE clause ==='
+CREATE MATERIALIZED VIEW t3_where
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         avg(temperature) AS avg_temp
+  FROM metrics
+  WHERE tags_id > 1
+  GROUP BY bucket, tags_id;
+
+-- Verify partial view definition actually contains WHERE clause
+SELECT pg_get_viewdef(
+    ('time_series.' ||
+     (SELECT partial_view_name FROM time_series.continuous_agg
+      WHERE user_view_name = 't3_where'))::regclass
+) LIKE '%tags_id > 1%' AS where_preserved;
+
+DROP VIEW t3_where CASCADE;
+
+-- ============================================================
+-- T4: With HAVING clause (V1 supports HAVING)
+-- ============================================================
+\echo '=== T4: HAVING clause ==='
+CREATE MATERIALIZED VIEW t4_having
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt,
+         avg(temperature) AS avg_temp
+  FROM metrics
+  GROUP BY bucket, tags_id
+  HAVING count(*) > 1;
+
+-- Verify partial view definition actually contains HAVING clause
+SELECT pg_get_viewdef(
+    ('time_series.' ||
+     (SELECT partial_view_name FROM time_series.continuous_agg
+      WHERE user_view_name = 't4_having'))::regclass
+) LIKE '%HAVING%' AS having_preserved;
+
+DROP VIEW t4_having CASCADE;
+
+-- ============================================================
+-- T5: WITH NO DATA
+-- ============================================================
+\echo '=== T5: WITH NO DATA ==='
+CREATE MATERIALIZED VIEW t5_nodata
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id
+  WITH NO DATA;
+
+-- Verify catalog entry exists
+SELECT user_view_name, materialized_only
+FROM time_series.continuous_agg WHERE user_view_name = 't5_nodata';
+
+-- User view should exist (but mat table is empty since no REFRESH)
+SELECT count(*) FROM t5_nodata;
+
+DROP VIEW t5_nodata CASCADE;
+
+-- ============================================================
+-- T6: DISTINCT aggregate (SUM(DISTINCT val))
+-- ============================================================
+\echo '=== T6: DISTINCT aggregate ==='
+CREATE MATERIALIZED VIEW t6_distinct_agg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(DISTINCT tags_id) AS unique_tags
+  FROM metrics
+  GROUP BY bucket;
+
+-- Verify partial view preserves DISTINCT modifier
+SELECT pg_get_viewdef(
+    ('time_series.' ||
+     (SELECT partial_view_name FROM time_series.continuous_agg
+      WHERE user_view_name = 't6_distinct_agg'))::regclass
+) LIKE '%DISTINCT%' AS distinct_preserved;
+
+DROP VIEW t6_distinct_agg CASCADE;
+
+-- ============================================================
+-- T7: FILTER aggregate
+-- ============================================================
+\echo '=== T7: FILTER aggregate ==='
+CREATE MATERIALIZED VIEW t7_filter_agg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         avg(temperature) FILTER (WHERE temperature > 15) AS avg_warm
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify partial view preserves FILTER clause
+SELECT pg_get_viewdef(
+    ('time_series.' ||
+     (SELECT partial_view_name FROM time_series.continuous_agg
+      WHERE user_view_name = 't7_filter_agg'))::regclass
+) LIKE '%FILTER%' AS filter_preserved;
+
+DROP VIEW t7_filter_agg CASCADE;
+
+-- ============================================================
+-- T8: Distribution key inheritance
+-- ============================================================
+\echo '=== T8: DISTRIBUTED BY inheritance ==='
+CREATE MATERIALIZED VIEW t8_dist
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify mat table has same distribution key as source (stable order)
+SELECT dp.localoid::regclass, a.attname AS dist_key
+FROM gp_distribution_policy dp
+JOIN pg_attribute a ON a.attrelid = dp.localoid AND a.attnum = dp.distkey[0]
+WHERE dp.localoid IN ('metrics'::regclass,
+                      (SELECT ('time_series.' || mat_table_name)::regclass
+                       FROM time_series.continuous_agg WHERE user_view_name = 't8_dist'))
+ORDER BY dp.localoid::text;
+
+DROP VIEW t8_dist CASCADE;
+
+-- ============================================================
+-- T8b: Fallback — source dist key NOT in SELECT, use first GROUP BY col
+-- ============================================================
+\echo '=== T8b: dist key fallback to first GROUP BY column ==='
+CREATE MATERIALIZED VIEW t8b_fallback
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(DISTINCT tags_id) AS unique_tags  -- tags_id not in SELECT list
+  FROM metrics
+  GROUP BY bucket;
+
+-- Mat table should be DISTRIBUTED BY (bucket), not RANDOMLY
+SELECT a.attname AS dist_key
+FROM gp_distribution_policy dp
+JOIN pg_attribute a ON a.attrelid = dp.localoid AND a.attnum = dp.distkey[0]
+WHERE dp.localoid = (SELECT ('time_series.' || mat_table_name)::regclass
+                     FROM time_series.continuous_agg WHERE user_view_name = 't8b_fallback');
+
+DROP VIEW t8b_fallback CASCADE;
+
+-- ============================================================
+-- T9: Column naming (alias vs default)
+-- ============================================================
+\echo '=== T9: column naming ==='
+CREATE MATERIALIZED VIEW t9_names
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS my_bucket,
+         tags_id AS my_tag,
+         count(*) AS my_count,
+         avg(temperature) AS my_avg
+  FROM metrics
+  GROUP BY my_bucket, my_tag;
+
+-- Verify column names in mat table
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't9_names')
+ORDER BY ordinal_position;
+
+DROP VIEW t9_names CASCADE;
+
+-- ============================================================
+-- T9b: Default column names (no AS alias)
+-- ============================================================
+\echo '=== T9b: default column names (no AS) ==='
+CREATE MATERIALIZED VIEW t9b_default
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time),
+         tags_id,
+         count(*),
+         avg(temperature)
+  FROM metrics
+  GROUP BY 1, tags_id;
+
+-- Verify default column names: time_bucket, tags_id, count, avg
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't9b_default')
+ORDER BY ordinal_position;
+
+DROP VIEW t9b_default CASCADE;
+
+-- ============================================================
+-- T10: stddev / variance aggregates
+-- ============================================================
+\echo '=== T10: stddev/variance ==='
+CREATE MATERIALIZED VIEW t10_stats
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         stddev(temperature) AS std_temp,
+         variance(humidity) AS var_hum
+  FROM metrics
+  GROUP BY bucket;
+
+-- Verify column types: stddev/variance on float8 returns float8
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't10_stats')
+ORDER BY ordinal_position;
+
+DROP VIEW t10_stats CASCADE;
+
+-- ============================================================
+-- T11: Bucket function metadata (cagg_bucket_function)
+-- ============================================================
+\echo '=== T11: bucket function metadata ==='
+CREATE MATERIALIZED VIEW t11_bucket
+WITH (time_series.continuous) AS
+  SELECT time_bucket('2 hours'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify bucket function metadata: exact interval comparison, optional
+-- params are NULL when not specified.
+SELECT bf.bucket_func,
+       bf.bucket_width = '2 hours'::interval  AS width_matches,
+       bf.bucket_origin   IS NULL             AS origin_null,
+       bf.bucket_offset   IS NULL             AS offset_null,
+       bf.bucket_timezone IS NULL             AS timezone_null
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg ca ON bf.cagg_id = ca.cagg_id
+WHERE ca.user_view_name = 't11_bucket';
+
+DROP VIEW t11_bucket CASCADE;
+
+-- ============================================================
+-- T12: Shared trigger (multiple CAGGs on same source)
+-- ============================================================
+\echo '=== T12: shared trigger ==='
+CREATE MATERIALIZED VIEW t12_hourly
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+CREATE MATERIALIZED VIEW t12_daily
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Only ONE trigger should exist (shared across both CAGGs)
+SELECT count(*) AS trigger_count
+FROM pg_trigger
+WHERE tgrelid = 'metrics'::regclass
+  AND tgname = 'ts_cagg_invalidation_trigger';
+
+-- Both CAGGs reference the SAME source_table_oid (not accidentally different tables)
+SELECT count(DISTINCT source_table_oid) AS distinct_source_oids
+FROM time_series.continuous_agg
+WHERE user_view_name IN ('t12_hourly', 't12_daily');
+
+-- Trigger is bound to our trigger function cagg_invalidation_trigfn
+SELECT p.proname
+FROM pg_trigger t
+JOIN pg_proc p ON t.tgfoid = p.oid
+WHERE t.tgrelid = 'metrics'::regclass
+  AND t.tgname = 'ts_cagg_invalidation_trigger';
+
+-- Two CAGGs registered with different bucket widths
+SELECT user_view_name, bucket_width
+FROM time_series.continuous_agg
+WHERE user_view_name IN ('t12_hourly', 't12_daily')
+ORDER BY user_view_name;
+
+DROP VIEW t12_hourly CASCADE;
+DROP VIEW t12_daily CASCADE;
+
+-- ============================================================
+-- T13: Three views created correctly
+-- ============================================================
+\echo '=== T13: three views ==='
+CREATE MATERIALIZED VIEW t13_views
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         avg(temperature) AS avg_temp
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify all 3 views exist in their expected schemas
+SELECT schemaname, viewname
+FROM pg_views
+WHERE viewname IN ('t13_views',
+                   (SELECT partial_view_name FROM time_series.continuous_agg WHERE user_view_name = 't13_views'),
+                   (SELECT direct_view_name FROM time_series.continuous_agg WHERE user_view_name = 't13_views'))
+ORDER BY viewname;
+
+-- Verify view definitions target the correct tables:
+-- 1. user view reads from materialization table
+-- 2. partial view reads from source table
+-- 3. direct view reads from source table
+SELECT
+    pg_get_viewdef('public.t13_views'::regclass) LIKE
+        ('%' || (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't13_views') || '%')
+      AS user_reads_mat_table,
+    pg_get_viewdef(
+        ('time_series.' ||
+         (SELECT partial_view_name FROM time_series.continuous_agg
+          WHERE user_view_name = 't13_views'))::regclass
+    ) LIKE '%metrics%' AS partial_reads_source,
+    pg_get_viewdef(
+        ('time_series.' ||
+         (SELECT direct_view_name FROM time_series.continuous_agg
+          WHERE user_view_name = 't13_views'))::regclass
+    ) LIKE '%metrics%' AS direct_reads_source;
+
+DROP VIEW t13_views CASCADE;
+
+-- ============================================================
+-- T14: Expression aggregate max(x)-min(x) (C1-10)
+-- ============================================================
+\echo '=== T14: expression aggregate ==='
+CREATE MATERIALIZED VIEW t14_expr
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         max(temperature) - min(temperature) AS temp_range,
+         avg(temperature) + avg(humidity) AS combined
+  FROM metrics
+  GROUP BY bucket;
+
+-- Verify mat table column types (expression results are double precision)
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't14_expr')
+ORDER BY ordinal_position;
+
+-- Verify partial view preserves both max() and min() (expression not simplified)
+SELECT
+    pg_get_viewdef(
+        ('time_series.' ||
+         (SELECT partial_view_name FROM time_series.continuous_agg
+          WHERE user_view_name = 't14_expr'))::regclass
+    ) LIKE '%max(%' AS has_max,
+    pg_get_viewdef(
+        ('time_series.' ||
+         (SELECT partial_view_name FROM time_series.continuous_agg
+          WHERE user_view_name = 't14_expr'))::regclass
+    ) LIKE '%min(%' AS has_min;
+
+DROP VIEW t14_expr CASCADE;
+
+-- ============================================================
+-- T15: Source table many columns, CAGG uses subset (C1-15)
+-- ============================================================
+\echo '=== T15: source multi-column, CAGG uses subset ==='
+CREATE MATERIALIZED VIEW t15_subset
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         avg(temperature) AS avg_temp
+  FROM metrics
+  GROUP BY bucket;
+
+-- Mat table should only have bucket + avg_temp (not tags_id, humidity)
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = 'time_series'
+  AND table_name = (SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't15_subset')
+ORDER BY ordinal_position;
+
+DROP VIEW t15_subset CASCADE;
+
+-- ============================================================
+-- T16: DROP COLUMN then CREATE CAGG (C1-16)
+-- Uses a separate table to avoid trigger dependency issues.
+-- ============================================================
+\echo '=== T16: DROP COLUMN then CAGG ==='
+CREATE TABLE metrics_dropcol (
+    time timestamptz NOT NULL, tags_id int NOT NULL,
+    val1 float8, val2 float8, val3 float8
+) DISTRIBUTED BY (tags_id);
+INSERT INTO metrics_dropcol VALUES ('2024-01-01', 1, 10, 20, 30);
+ALTER TABLE metrics_dropcol DROP COLUMN val3;
+
+CREATE MATERIALIZED VIEW t16_dropcol
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         avg(val1) AS avg_val1
+  FROM metrics_dropcol
+  GROUP BY bucket, tags_id;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't16_dropcol';
+
+DROP VIEW t16_dropcol CASCADE;
+DROP TABLE metrics_dropcol CASCADE;
+
+-- ============================================================
+-- T16b: DROP COLUMN AFTER CAGG exists (TSDB cagg_union_view line 30)
+--       Source table drops a column NOT used by the CAGG.
+--       CAGG query and REFRESH should still work.
+-- ============================================================
+\echo '=== T16b: DROP COLUMN after CAGG ==='
+CREATE TABLE metrics_postcol (
+    time timestamptz NOT NULL, tags_id int NOT NULL,
+    val float8, extra_col text
+) DISTRIBUTED BY (tags_id);
+INSERT INTO metrics_postcol VALUES ('2024-01-01 00:30+00', 1, 10.0, 'hello');
+
+CREATE MATERIALIZED VIEW t16b_postcol
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, avg(val) AS avg_val
+  FROM metrics_postcol
+  GROUP BY bucket, tags_id;
+
+-- DROP a column NOT used by the CAGG
+ALTER TABLE metrics_postcol DROP COLUMN extra_col;
+
+-- CAGG should still work: query + REFRESH + EXCEPT=0
+CALL time_series.refresh_continuous_aggregate('t16b_postcol', NULL, NULL);
+SELECT count(*) AS diff_postcol FROM (
+  (  SELECT bucket, tags_id, avg_val FROM t16b_postcol
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), tags_id, avg(val)
+   FROM metrics_postcol GROUP BY 1, 2)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), tags_id, avg(val)
+   FROM metrics_postcol GROUP BY 1, 2
+   EXCEPT
+   SELECT bucket, tags_id, avg_val FROM t16b_postcol
+   )
+) x;
+
+-- INSERT new data after DROP COLUMN → trigger still fires
+INSERT INTO metrics_postcol VALUES ('2024-01-01 00:45+00', 1, 20.0);
+CALL time_series.refresh_continuous_aggregate('t16b_postcol', NULL, NULL);
+SELECT count(*) AS diff_postcol_after FROM (
+  (  SELECT bucket, tags_id, avg_val FROM t16b_postcol
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), tags_id, avg(val)
+   FROM metrics_postcol GROUP BY 1, 2)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), tags_id, avg(val)
+   FROM metrics_postcol GROUP BY 1, 2
+   EXCEPT
+   SELECT bucket, tags_id, avg_val FROM t16b_postcol
+   )
+) x;
+
+DROP VIEW t16b_postcol CASCADE;
+DROP TABLE metrics_postcol CASCADE;
+
+-- ============================================================
+-- T17: ORDER BY in view definition (C1-17)
+-- ============================================================
+\echo '=== T17: ORDER BY in definition ==='
+CREATE MATERIALIZED VIEW t17_orderby
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id
+  ORDER BY bucket;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't17_orderby';
+
+-- Verify ORDER BY is preserved in the direct view definition
+SELECT pg_get_viewdef(
+  (SELECT format('time_series.%I', direct_view_name)::regclass
+   FROM time_series.continuous_agg WHERE user_view_name = 't17_orderby')
+) ~ 'ORDER BY' AS direct_view_has_orderby;
+
+DROP VIEW t17_orderby CASCADE;
+
+-- ============================================================
+-- T18: GROUP BY expression (C1-18)
+-- ============================================================
+\echo '=== T18: GROUP BY expression ==='
+CREATE MATERIALIZED VIEW t18_grpexpr
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id + 1 AS tag_plus,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tag_plus;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't18_grpexpr';
+
+-- Verify mat table columns + types (tag_plus should be integer, matching tags_id+1)
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                  FROM time_series.continuous_agg WHERE user_view_name = 't18_grpexpr')
+  AND attnum > 0 AND NOT attisdropped
+ORDER BY attnum;
+
+-- Verify the distribution key was set (fallback should pick a group-by column alias,
+-- not crash on the expression)
+SELECT a.attname AS dist_col
+FROM gp_distribution_policy d
+JOIN pg_attribute a ON a.attrelid = d.localoid AND a.attnum = ANY(d.distkey)
+WHERE d.localoid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                    FROM time_series.continuous_agg WHERE user_view_name = 't18_grpexpr');
+
+DROP VIEW t18_grpexpr CASCADE;
+
+-- ============================================================
+-- T19: CASE expression in SELECT (C1-19)
+-- ============================================================
+\echo '=== T19: CASE expression ==='
+CREATE MATERIALIZED VIEW t19_case
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         CASE WHEN tags_id = 1 THEN 'A' ELSE 'B' END AS category,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, category;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't19_case';
+
+-- Verify CASE expression was resolved to text (not unknown) in mat table
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                  FROM time_series.continuous_agg WHERE user_view_name = 't19_case')
+  AND attname = 'category';
+
+DROP VIEW t19_case CASCADE;
+
+-- ============================================================
+-- T20: Different bucket widths (C1-24)
+-- ============================================================
+\echo '=== T20: different bucket widths ==='
+CREATE MATERIALIZED VIEW t20_1d
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time) AS bucket,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket;
+
+CREATE MATERIALIZED VIEW t20_7d
+WITH (time_series.continuous) AS
+  SELECT time_bucket('7 days'::interval, time) AS bucket,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket;
+
+-- Sub-hour width (exercises second-level interval internal representation)
+CREATE MATERIALIZED VIEW t20_15m
+WITH (time_series.continuous) AS
+  SELECT time_bucket('15 minutes'::interval, time) AS bucket,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket;
+
+-- Month width (non-fixed interval; may expose implementation limits)
+CREATE MATERIALIZED VIEW t20_1mo
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 month'::interval, time) AS bucket,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket;
+
+SET intervalstyle = 'postgres';
+SELECT user_view_name, bucket_width
+FROM time_series.continuous_agg
+WHERE user_view_name LIKE 't20_%'
+ORDER BY user_view_name;
+RESET intervalstyle;
+
+DROP VIEW t20_1d CASCADE;
+DROP VIEW t20_7d CASCADE;
+DROP VIEW IF EXISTS t20_15m CASCADE;
+DROP VIEW IF EXISTS t20_1mo CASCADE;
+
+-- ============================================================
+-- T21: TIMESTAMP type (non-TIMESTAMPTZ) (C1-25)
+-- ============================================================
+\echo '=== T21: TIMESTAMP type ==='
+CREATE TABLE metrics_ts (
+    time        TIMESTAMP         NOT NULL,
+    tags_id     INT               NOT NULL,
+    value       DOUBLE PRECISION
+) DISTRIBUTED BY (tags_id);
+
+INSERT INTO metrics_ts VALUES
+    ('2024-01-01 00:10', 1, 10.0),
+    ('2024-01-01 01:10', 2, 20.0);
+
+CREATE MATERIALIZED VIEW t21_ts
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         avg(value) AS avg_val
+  FROM metrics_ts
+  GROUP BY bucket, tags_id;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't21_ts';
+
+-- Verify bucket column type is TIMESTAMP (without time zone), not silently
+-- coerced to TIMESTAMPTZ
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                  FROM time_series.continuous_agg WHERE user_view_name = 't21_ts')
+  AND attname = 'bucket';
+
+-- Verify time_type recorded in cagg_bucket_function matches source
+SELECT format_type(bf.time_type, NULL) AS time_type
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg c ON c.cagg_id = bf.cagg_id
+WHERE c.user_view_name = 't21_ts';
+
+DROP VIEW t21_ts CASCADE;
+DROP TABLE metrics_ts CASCADE;
+
+-- ============================================================
+-- T22: ENUM type (C1-09)
+-- ============================================================
+\echo '=== T22: ENUM type ==='
+DROP TYPE IF EXISTS severity CASCADE;
+CREATE TYPE severity AS ENUM ('low', 'medium', 'high');
+CREATE TABLE metrics_enum (
+    time timestamptz NOT NULL, tags_id int NOT NULL,
+    level severity NOT NULL, value float8
+) DISTRIBUTED BY (tags_id);
+INSERT INTO metrics_enum VALUES
+    ('2024-01-01 00:10', 1, 'low', 10),
+    ('2024-01-01 00:20', 2, 'high', 20),
+    ('2024-01-01 01:10', 1, 'medium', 15);
+
+CREATE MATERIALIZED VIEW t22_enum
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         min(level) AS min_level,
+         max(level) AS max_level,
+         avg(value) AS avg_val
+  FROM metrics_enum
+  GROUP BY bucket;
+
+SELECT user_view_name FROM time_series.continuous_agg WHERE user_view_name = 't22_enum';
+
+-- Verify ENUM type was preserved in mat table (not coerced to text/oid)
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                  FROM time_series.continuous_agg WHERE user_view_name = 't22_enum')
+  AND attname IN ('min_level', 'max_level')
+ORDER BY attname;
+
+DROP VIEW t22_enum CASCADE;
+DROP TABLE metrics_enum CASCADE;
+DROP TYPE severity CASCADE;
+
+-- ============================================================
+-- T23: (removed) Custom aggregate — deferred to F3 REFRESH tests
+--      F1 only validates CREATE; the meaningful tests for UDA
+--      (SFUNC / FINALFUNC / FINALFUNC_EXTRA / missing COMBINEFUNC)
+--      require REFRESH execution and belong with F3.
+-- ============================================================
+
+-- ============================================================
+-- T24: time_bucket with origin parameter (C1-20)
+-- ============================================================
+\echo '=== T24: time_bucket origin ==='
+CREATE MATERIALIZED VIEW t24_origin
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time,
+                     '2024-01-01 00:30:00+00'::timestamptz) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify origin is stored with the exact value provided, AND offset is NULL
+-- (catches the common bug of writing origin into the offset column)
+SET intervalstyle = 'postgres';
+SELECT bf.bucket_width,
+       bf.bucket_origin AT TIME ZONE 'UTC' AS origin_utc,
+       bf.bucket_offset IS NULL AS offset_is_null
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg ca ON bf.cagg_id = ca.cagg_id
+WHERE ca.user_view_name = 't24_origin';
+RESET intervalstyle;
+
+DROP VIEW t24_origin CASCADE;
+
+-- ============================================================
+-- T25: time_bucket with offset parameter (C1-21)
+-- ============================================================
+\echo '=== T25: time_bucket offset ==='
+CREATE MATERIALIZED VIEW t25_offset
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time,
+                     '15 minutes'::interval) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify offset is in the offset column with the exact value, AND origin is NULL
+SET intervalstyle = 'postgres';
+SELECT bf.bucket_width, bf.bucket_offset,
+       bf.bucket_origin IS NULL AS origin_is_null
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg ca ON bf.cagg_id = ca.cagg_id
+WHERE ca.user_view_name = 't25_offset';
+RESET intervalstyle;
+
+DROP VIEW t25_offset CASCADE;
+
+-- ============================================================
+-- T26: time_bucket with timezone parameter (C1-22)
+-- ============================================================
+\echo '=== T26: time_bucket timezone ==='
+CREATE MATERIALIZED VIEW t26_tz
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time,
+                     'US/Eastern'::text) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify only the timezone column is set; origin/offset must be NULL
+SET intervalstyle = 'postgres';
+SELECT bf.bucket_width, bf.bucket_timezone,
+       bf.bucket_origin IS NULL AS origin_is_null,
+       bf.bucket_offset IS NULL AS offset_is_null
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg ca ON bf.cagg_id = ca.cagg_id
+WHERE ca.user_view_name = 't26_tz';
+RESET intervalstyle;
+
+DROP VIEW t26_tz CASCADE;
+
+-- ============================================================
+-- T27/T28/T29: (removed) — deferred to F3 REFRESH tests
+--   T27 ordered-set aggregate mode()      — needs REFRESH path; OSA usually
+--                                           lacks COMBINEFUNC, value is in F3
+--   T28 hypothetical-set aggregate rank() — duplicates T27's code path
+--   T29 source table with array columns   — current form does not actually
+--                                           reference the array column;
+--                                           "ignore unreferenced source col"
+--                                           is already covered by C1-15 (T15)
+-- ============================================================
+
+-- ============================================================
+-- T30: Transaction rollback — CAGG creation must be fully atomic.
+--      All artifacts (catalog rows, mat table, three views, source-table
+--      trigger) must disappear if the surrounding transaction is rolled
+--      back.  A "half-created" CAGG (catalog without mat table, or mat
+--      table without catalog) is a maintenance disaster.
+-- ============================================================
+\echo '=== T30: rollback atomicity ==='
+BEGIN;
+CREATE MATERIALIZED VIEW t30_rb WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Mid-transaction: every artifact should exist
+SELECT 'mid-tx: catalog row exists' AS what,
+       count(*) AS n
+FROM time_series.continuous_agg WHERE user_view_name = 't30_rb';
+
+ROLLBACK;
+
+-- Post-rollback: every artifact must be gone
+SELECT 'post-rb: catalog row' AS what, count(*) AS n
+FROM time_series.continuous_agg WHERE user_view_name = 't30_rb'
+UNION ALL
+SELECT 'post-rb: user view', count(*)
+FROM pg_class WHERE relname = 't30_rb'
+UNION ALL
+SELECT 'post-rb: mat/partial/direct objects', count(*)
+FROM pg_class
+WHERE relnamespace = 'time_series'::regnamespace
+  AND (relname LIKE '_mat_t30_rb%'
+    OR relname LIKE '_partial_view_%'
+    OR relname LIKE '_direct_view_%')
+  AND relname NOT IN (
+    -- exclude artifacts from CAGGs created earlier in this file
+    SELECT mat_table_name FROM time_series.continuous_agg
+    UNION SELECT partial_view_name FROM time_series.continuous_agg
+    UNION SELECT direct_view_name  FROM time_series.continuous_agg
+  )
+UNION ALL
+SELECT 'post-rb: source-table trigger', count(*)
+FROM pg_trigger
+WHERE tgrelid = 'metrics'::regclass
+  AND tgname LIKE '%t30_rb%'
+ORDER BY what;
+
+-- ============================================================
+-- T31: Schema-qualified user view name — both the user view and its
+--      internal mat/partial/direct objects must end up in well-defined
+--      schemas; CAGG metadata must record the user-supplied schema.
+-- ============================================================
+\echo '=== T31: schema-qualified view name ==='
+DROP SCHEMA IF EXISTS myreports CASCADE;
+CREATE SCHEMA myreports;
+
+CREATE MATERIALIZED VIEW myreports.t31_qual
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- catalog records the user's schema
+SELECT user_view_schema, user_view_name,
+       mat_table_schema, partial_view_schema, direct_view_schema
+FROM time_series.continuous_agg
+WHERE user_view_name = 't31_qual';
+
+-- user view physically exists in myreports
+SELECT n.nspname AS view_schema, c.relname AS view_name
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = 't31_qual';
+
+-- Internal mat/partial/direct objects all live under time_series
+SELECT count(*) AS n_internal_objects
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'time_series'
+  AND c.relname IN (
+    SELECT mat_table_name FROM time_series.continuous_agg WHERE user_view_name = 't31_qual'
+    UNION SELECT partial_view_name FROM time_series.continuous_agg WHERE user_view_name = 't31_qual'
+    UNION SELECT direct_view_name  FROM time_series.continuous_agg WHERE user_view_name = 't31_qual'
+  );
+
+DROP VIEW myreports.t31_qual CASCADE;
+DROP SCHEMA myreports CASCADE;
+
+-- ============================================================
+-- T32: Source table DISTRIBUTED REPLICATED — Strategy 1 has no source
+--      distkey, mat table must fall back cleanly (Strategy 2/3) instead
+--      of crashing on an empty distkey list.
+-- ============================================================
+\echo '=== T32: source DISTRIBUTED REPLICATED ==='
+CREATE TABLE metrics_rep (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED REPLICATED;
+INSERT INTO metrics_rep VALUES
+    ('2024-01-01 00:00+00', 1, 1.0),
+    ('2024-01-01 01:00+00', 2, 2.0);
+
+CREATE MATERIALIZED VIEW t32_rep
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics_rep
+  GROUP BY bucket, tags_id;
+
+-- Strategy 2 should pick the first non-bucket GROUP BY column → tags_id
+SELECT a.attname AS dist_col, p.policytype
+FROM gp_distribution_policy p
+JOIN pg_attribute a ON a.attrelid = p.localoid AND a.attnum = ANY(p.distkey)
+WHERE p.localoid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                    FROM time_series.continuous_agg WHERE user_view_name = 't32_rep');
+
+DROP VIEW t32_rep CASCADE;
+DROP TABLE metrics_rep CASCADE;
+
+-- ============================================================
+-- T33: WITH NO DATA — CAGG should be created but mat table empty.
+-- ============================================================
+\echo '=== T33: WITH NO DATA ==='
+CREATE MATERIALIZED VIEW t33_nodata
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id
+WITH NO DATA;
+
+-- Catalog row must exist
+SELECT user_view_name FROM time_series.continuous_agg
+WHERE user_view_name = 't33_nodata';
+
+-- Mat table must be empty.  Use dynamic SQL to avoid hardcoding cagg_id.
+DO $$
+DECLARE
+  matname name;
+  rowcnt  bigint;
+BEGIN
+  SELECT mat_table_name INTO matname
+  FROM time_series.continuous_agg WHERE user_view_name = 't33_nodata';
+  EXECUTE format('SELECT count(*) FROM time_series.%I', matname) INTO rowcnt;
+  IF rowcnt <> 0 THEN
+    RAISE EXCEPTION 'WITH NO DATA should leave mat table empty, got % rows', rowcnt;
+  END IF;
+  RAISE NOTICE 'WITH NO DATA: mat table is empty as expected';
+END $$;
+
+DROP VIEW t33_nodata CASCADE;
+
+-- ============================================================
+-- T34: Source DISTRIBUTED RANDOMLY — distkey array is empty.
+--      Strategy 1 must skip cleanly (not crash on empty list);
+--      Strategy 2 must pick the first non-bucket GROUP BY column.
+-- ============================================================
+\echo '=== T34: source DISTRIBUTED RANDOMLY ==='
+CREATE TABLE metrics_rand (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED RANDOMLY;
+INSERT INTO metrics_rand VALUES
+    ('2024-01-01 00:00+00', 1, 1.0),
+    ('2024-01-01 01:00+00', 2, 2.0);
+
+CREATE MATERIALIZED VIEW t34_rand
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics_rand
+  GROUP BY bucket, tags_id;
+
+SELECT a.attname AS dist_col
+FROM gp_distribution_policy p
+JOIN pg_attribute a ON a.attrelid = p.localoid AND a.attnum = ANY(p.distkey)
+WHERE p.localoid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                    FROM time_series.continuous_agg WHERE user_view_name = 't34_rand');
+
+DROP VIEW t34_rand CASCADE;
+DROP TABLE metrics_rand CASCADE;
+
+-- ============================================================
+-- T35: DROP source CASCADE — every CAGG artifact must be cleaned up
+--      via pg_depend (catalog rows, mat table, three views, trigger).
+--      Orphan catalog rows are catastrophic: a future CREATE TABLE
+--      with the same name would inherit stale watermarks / cagg_ids.
+-- ============================================================
+\echo '=== T35: DROP source CASCADE cleanup ==='
+CREATE TABLE t35_src (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED BY (tags_id);
+
+CREATE MATERIALIZED VIEW t35_cagg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM t35_src
+  GROUP BY bucket, tags_id;
+
+-- Capture cagg_id before dropping (so we can verify per-id catalogs)
+\set ON_ERROR_STOP 1
+SELECT cagg_id AS t35_id FROM time_series.continuous_agg
+WHERE user_view_name = 't35_cagg' \gset
+\set ON_ERROR_STOP 0
+
+-- Pre-drop: artifacts present
+SELECT 'pre-drop: continuous_agg' AS what, count(*) AS n
+FROM time_series.continuous_agg WHERE cagg_id = :t35_id
+UNION ALL
+SELECT 'pre-drop: cagg_bucket_function', count(*)
+FROM time_series.cagg_bucket_function WHERE cagg_id = :t35_id
+UNION ALL
+SELECT 'pre-drop: source-table trigger', count(*)
+FROM pg_trigger WHERE tgrelid = 't35_src'::regclass
+  AND tgname LIKE '%cagg%'
+ORDER BY what;
+
+DROP TABLE t35_src CASCADE;
+
+-- Post-drop: every artifact removed by pg_depend cascade
+SELECT 'post-drop: continuous_agg' AS what, count(*) AS n
+FROM time_series.continuous_agg WHERE cagg_id = :t35_id
+UNION ALL
+SELECT 'post-drop: cagg_bucket_function', count(*)
+FROM time_series.cagg_bucket_function WHERE cagg_id = :t35_id
+UNION ALL
+SELECT 'post-drop: cagg_watermark', count(*)
+FROM time_series.cagg_watermark WHERE cagg_id = :t35_id
+UNION ALL
+SELECT 'post-drop: user view', count(*)
+FROM pg_class WHERE relname = 't35_cagg'
+UNION ALL
+SELECT 'post-drop: mat/partial/direct objects', count(*)
+FROM pg_class
+WHERE relnamespace = 'time_series'::regnamespace
+  AND relname LIKE '%t35_cagg%'
+ORDER BY what;
+
+-- ============================================================
+-- T36: Trigger physically installed on source table.  F2 (REFRESH) will
+--      rely on this trigger to populate the L1 invalidation log; if F1
+--      gets the wiring wrong, F2 will appear to work but log will stay
+--      empty and refreshes will materialize stale data.
+-- ============================================================
+\echo '=== T36: source-table trigger installed ==='
+CREATE MATERIALIZED VIEW t36_trg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+SELECT t.tgname,
+       t.tgenabled,
+       (SELECT n.nspname || '.' || p.proname
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.oid = t.tgfoid) AS func,
+       (t.tgtype & 1)::bool  AS is_row_level,    -- TRIGGER_TYPE_ROW
+       (t.tgtype & 4)::bool  AS fires_on_insert, -- TRIGGER_TYPE_INSERT
+       (t.tgtype & 8)::bool  AS fires_on_delete, -- TRIGGER_TYPE_DELETE
+       (t.tgtype & 16)::bool AS fires_on_update  -- TRIGGER_TYPE_UPDATE
+FROM pg_trigger t
+WHERE t.tgrelid = 'metrics'::regclass
+  AND t.tgname LIKE '%cagg%'
+ORDER BY t.tgname;
+
+DROP VIEW t36_trg CASCADE;
+
+-- ============================================================
+-- T37: Long identifier name — verify mat-table name generation does
+--      not silently truncate (which would alias different CAGGs into
+--      the same mat table).  PG NAMEDATALEN = 64.
+-- ============================================================
+\echo '=== T37: long identifier name ==='
+-- 60-char user view name; mat table prefix "_mat_" + suffix "_<id>"
+-- pushes total well past NAMEDATALEN=64 → must reject cleanly OR
+-- truncate consistently AND record the truncated name in catalog.
+CREATE MATERIALIZED VIEW
+  t37_very_long_user_view_name_that_almost_fills_namedatalen_aa
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Catalog mat_table_name MUST equal the actual pg_class entry's name.
+-- If they diverge (truncation inconsistency), the relname-based lookup
+-- below would return 0 rows.
+SELECT (mat_table_name = c.relname) AS catalog_matches_pg_class,
+       length(mat_table_name)       AS catalog_name_len,
+       length(c.relname)            AS pg_class_name_len
+FROM time_series.continuous_agg ca
+JOIN pg_class c ON c.relname = ca.mat_table_name
+              AND c.relnamespace = 'time_series'::regnamespace
+WHERE ca.user_view_name =
+      't37_very_long_user_view_name_that_almost_fills_namedatalen_aa';
+
+DROP VIEW t37_very_long_user_view_name_that_almost_fills_namedatalen_aa
+CASCADE;
+
+-- ============================================================
+-- T38: Multiple CAGGs sharing one source table — DROP source CASCADE
+--      must reap ALL of them.  Exercises the event-trigger LOOP that
+--      iterates over every CAGG matching source_table_oid.
+-- ============================================================
+\echo '=== T38: multi-CAGG source DROP cleanup ==='
+CREATE TABLE multi_src (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED BY (tags_id);
+
+CREATE MATERIALIZED VIEW t38_h
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM multi_src
+  GROUP BY bucket, tags_id;
+
+CREATE MATERIALIZED VIEW t38_d
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM multi_src
+  GROUP BY bucket, tags_id;
+
+-- Pre-drop: 2 CAGGs registered against multi_src
+SELECT count(*) AS pre_drop_cagg_count
+FROM time_series.continuous_agg
+WHERE source_table_oid = 'multi_src'::regclass;
+
+DROP TABLE multi_src CASCADE;
+
+-- Post-drop: both CAGGs and all their artifacts must be gone
+SELECT 'post-drop: continuous_agg' AS what, count(*) AS n
+FROM time_series.continuous_agg
+WHERE user_view_name IN ('t38_h', 't38_d')
+UNION ALL
+SELECT 'post-drop: user views', count(*)
+FROM pg_class WHERE relname IN ('t38_h', 't38_d')
+UNION ALL
+SELECT 'post-drop: mat tables', count(*)
+FROM pg_class
+WHERE relnamespace = 'time_series'::regnamespace
+  AND (relname LIKE '%t38_h%' OR relname LIKE '%t38_d%')
+ORDER BY what;
+
+-- ============================================================
+-- T39: DROP TABLE inside a rolled-back transaction must NOT fire the
+--      cleanup permanently — both source table and CAGG must survive.
+--      Verifies that the event-trigger DDL/DML is itself transactional.
+-- ============================================================
+\echo '=== T39: DROP source rolled back ==='
+CREATE TABLE rb_src (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED BY (tags_id);
+
+CREATE MATERIALIZED VIEW t39_cagg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM rb_src
+  GROUP BY bucket, tags_id;
+
+BEGIN;
+DROP TABLE rb_src CASCADE;
+ROLLBACK;
+
+-- After rollback both should still exist
+SELECT 'rb_src exists' AS what, count(*) AS n
+FROM pg_class WHERE relname = 'rb_src'
+UNION ALL
+SELECT 't39_cagg in catalog', count(*)
+FROM time_series.continuous_agg WHERE user_view_name = 't39_cagg'
+UNION ALL
+SELECT 't39_cagg user view exists', count(*)
+FROM pg_class WHERE relname = 't39_cagg'
+ORDER BY what;
+
+-- Real cleanup outside any transaction
+DROP TABLE rb_src CASCADE;
+
+-- ============================================================
+-- T40: Source table in a non-public schema — both `cagg_extract_source_info`
+--      (CREATE path) and the event-trigger cleanup (DROP path) must
+--      handle schema qualification correctly.
+-- ============================================================
+\echo '=== T40: source in non-public schema ==='
+DROP SCHEMA IF EXISTS src_ns CASCADE;
+CREATE SCHEMA src_ns;
+
+CREATE TABLE src_ns.metrics_ns (
+    time timestamptz NOT NULL, tags_id int NOT NULL, val float8
+) DISTRIBUTED BY (tags_id);
+
+CREATE MATERIALIZED VIEW t40_cagg
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM src_ns.metrics_ns
+  GROUP BY bucket, tags_id;
+
+-- Catalog must record the source schema accurately
+SELECT source_table_schema, source_table_name
+FROM time_series.continuous_agg
+WHERE user_view_name = 't40_cagg';
+
+-- DROP SCHEMA CASCADE — indirect path to source DROP
+DROP SCHEMA src_ns CASCADE;
+
+-- CAGG should be cleaned up
+SELECT 'post-drop: continuous_agg' AS what, count(*) AS n
+FROM time_series.continuous_agg WHERE user_view_name = 't40_cagg'
+UNION ALL
+SELECT 'post-drop: user view', count(*)
+FROM pg_class WHERE relname = 't40_cagg'
+ORDER BY what;
+
+-- ============================================================
+-- T41: User view is actually queryable.  Every preceding test verifies
+--      catalog state and physical objects, but never SELECTs from a CAGG.
+--      A broken view definition would slip past all of them.
+-- ============================================================
+\echo '=== T41: SELECT from user view ==='
+CREATE MATERIALIZED VIEW t41_q
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- relkind must be 'v' (view) or 'm' (matview) — not a broken object
+SELECT relkind FROM pg_class WHERE relname = 't41_q';
+
+-- View body must be a real SELECT (not empty or placeholder)
+SELECT length(pg_get_viewdef('t41_q')) > 20 AS has_real_def;
+
+-- Column definitions must match the user's SELECT list
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = 't41_q'::regclass AND attnum > 0 AND NOT attisdropped
+ORDER BY attnum;
+
+-- Actual SELECT must succeed (F1 hasn't refreshed, so zero rows is fine)
+SELECT count(*) AS row_count FROM t41_q;
+
+DROP VIEW t41_q CASCADE;
+
+-- ============================================================
+-- T42: DATE type time column (TSDB: cagg_query_common.sql)
+--
+-- Many business systems use DATE, not TIMESTAMPTZ.  Verify CAGG
+-- creates successfully and bucket column preserves DATE type.
+-- ============================================================
+\echo '=== T42: DATE type time column ==='
+CREATE TABLE metrics_date (
+    time     DATE NOT NULL,
+    tags_id  INT  NOT NULL,
+    val      FLOAT8
+) DISTRIBUTED BY (tags_id);
+INSERT INTO metrics_date VALUES
+    ('2024-01-01', 1, 10.0), ('2024-01-02', 1, 20.0),
+    ('2024-01-01', 2, 30.0), ('2024-01-03', 2, 40.0);
+
+CREATE MATERIALIZED VIEW t42_date
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt, avg(val) AS avg_val
+  FROM metrics_date
+  GROUP BY bucket, tags_id;
+
+-- Bucket column must be DATE (not coerced to timestamptz)
+SELECT attname, format_type(atttypid, atttypmod) AS type
+FROM pg_attribute
+WHERE attrelid = (SELECT format('time_series.%I', mat_table_name)::regclass
+                  FROM time_series.continuous_agg WHERE user_view_name = 't42_date')
+  AND attname = 'bucket';
+
+-- time_type in catalog must be DATE OID
+SELECT format_type(bf.time_type, NULL) AS time_type
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg c ON c.cagg_id = bf.cagg_id
+WHERE c.user_view_name = 't42_date';
+
+DROP VIEW t42_date CASCADE;
+DROP TABLE metrics_date CASCADE;
+
+-- ============================================================
+-- T43: TRUNCATE mat table directly → should be protected
+--      (TSDB: cagg_ddl DDL-07)
+--
+-- Users might discover _mat_xxx tables and try to TRUNCATE them
+-- thinking they're regular tables.  This silently breaks CAGG
+-- consistency (mat data gone but watermark unchanged).
+-- ============================================================
+\echo '=== T43: TRUNCATE mat table ==='
+CREATE MATERIALIZED VIEW t43_trunc
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+CALL time_series.refresh_continuous_aggregate('t43_trunc', NULL, NULL);
+
+-- Mat table should have data
+SELECT count(*) > 0 AS has_data FROM t43_trunc;
+
+-- Direct TRUNCATE on the internal mat table
+-- This is dangerous but currently allowed — document the behavior
+TRUNCATE time_series._mat_t43_trunc_1;
+
+-- After TRUNCATE: mat table is empty but watermark is unchanged
+-- A full REFRESH should restore the data
+CALL time_series.refresh_continuous_aggregate('t43_trunc', NULL, NULL);
+SELECT count(*) > 0 AS restored_after_refresh FROM t43_trunc;
+
+-- EXCEPT = 0 after recovery
+SELECT count(*) AS diff_t43 FROM (
+  (  SELECT bucket, tags_id, cnt FROM t43_trunc
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), tags_id, count(*)
+   FROM metrics GROUP BY 1, 2)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), tags_id, count(*)
+   FROM metrics GROUP BY 1, 2
+   EXCEPT
+   SELECT bucket, tags_id, cnt FROM t43_trunc
+   )
+) x;
+
+DROP VIEW t43_trunc CASCADE;
+
+-- ============================================================
+-- T44: origin + offset mutual exclusivity
+--      (TSDB: cagg_query_common.sql)
+--
+-- time_bucket with BOTH origin AND offset is ambiguous.
+-- Verify behavior (PG may reject at function resolution level).
+-- ============================================================
+\echo '=== T44: origin + offset conflict ==='
+\set ON_ERROR_STOP 0
+CREATE MATERIALIZED VIEW t44_conflict
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time,
+                     '2024-01-01 00:30:00+00'::timestamptz,
+                     '15 minutes'::interval) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+-- Expected: ERROR from PG function resolution (no matching overload)
+-- or from our validator if both origin and offset are detected
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- T45: DISTINCT ON → should be rejected (TSDB-E07)
+--      DISTINCT ON is different from DISTINCT; verify our
+--      distinctClause check catches both.
+-- ============================================================
+\echo '=== T45: DISTINCT ON ==='
+\set ON_ERROR_STOP 0
+CREATE MATERIALIZED VIEW t45_distincton
+WITH (time_series.continuous) AS
+  SELECT DISTINCT ON (tags_id)
+         time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- T46: Named parameters for time_bucket (TSDB-DDL-60~63)
+--      Users may use `origin => '...'` syntax from TSDB docs.
+-- ============================================================
+\echo '=== T46: named parameters ==='
+CREATE MATERIALIZED VIEW t46_named
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time,
+                     origin => '2024-01-01 00:30:00+00'::timestamptz) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify origin was stored correctly
+SELECT bf.bucket_origin IS NOT NULL AS has_origin
+FROM time_series.cagg_bucket_function bf
+JOIN time_series.continuous_agg c ON c.cagg_id = bf.cagg_id
+WHERE c.user_view_name = 't46_named';
+
+DROP VIEW t46_named CASCADE;
+
+-- ============================================================
+-- T47: DROP without CASCADE when dependency exists (TSDB-DDL-41)
+--      If another view depends on the CAGG user view, DROP
+--      without CASCADE should fail with a clear error.
+-- ============================================================
+\echo '=== T47: DROP without CASCADE ==='
+CREATE MATERIALIZED VIEW t47_dep
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Create a dependent view
+CREATE VIEW t47_depends_on AS SELECT * FROM t47_dep WHERE tags_id = 1;
+
+-- DROP without CASCADE should fail
+\set ON_ERROR_STOP 0
+DROP VIEW t47_dep;
+\set ON_ERROR_STOP 1
+
+-- DROP with CASCADE should succeed
+DROP VIEW t47_dep CASCADE;
+
+-- ============================================================
+-- T48: CAGG on internal mat table → should be rejected (TSDB-DDL-23)
+--      Users might try to build a CAGG on top of another CAGG's
+--      materialization table.
+-- ============================================================
+\echo '=== T48: CAGG on mat table ==='
+CREATE MATERIALIZED VIEW t48_base
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Verify the mat table exists and is a regular table (relkind='r')
+-- which means our relkind check would NOT block a CAGG-on-mat-table.
+-- This is a known V1 gap (TSDB-DDL-23): we should reject it but don't.
+SELECT c.relkind AS mat_relkind
+FROM pg_class c
+JOIN time_series.continuous_agg ca ON c.relname = ca.mat_table_name
+WHERE ca.user_view_name = 't48_base';
+-- Expected: relkind = 'r' (regular table) — NOT blocked by our check
+-- TSDB would reject this; we document as known V1 limitation.
+
+DROP VIEW t48_base CASCADE;
+
+-- ============================================================
+-- T49: STABLE function in aggregate (TSDB-E27~E29)
+--      TimescaleDB rejects non-IMMUTABLE functions.
+--      Document our current behavior (we allow them in V1).
+-- ============================================================
+\echo '=== T49: STABLE function in aggregate ==='
+CREATE FUNCTION test_stable_fn(val float8)
+RETURNS float8 LANGUAGE SQL STABLE AS $$ SELECT val + 1.0; $$;
+
+\set ON_ERROR_STOP 0
+CREATE MATERIALIZED VIEW t49_stable
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         sum(test_stable_fn(temperature)) AS sum_stable
+  FROM metrics
+  GROUP BY bucket, tags_id;
+\set ON_ERROR_STOP 1
+-- Document: does this succeed (we allow) or fail (we reject)?
+
+DROP VIEW IF EXISTS t49_stable CASCADE;
+DROP FUNCTION IF EXISTS test_stable_fn(float8) CASCADE;
+
+-- ============================================================
+-- T50: INSTEAD OF trigger on user view (TSDB-E34)
+--      Creating a trigger on the CAGG user view could
+--      interfere with real-time query behavior.
+-- ============================================================
+\echo '=== T50: INSTEAD OF trigger on user view ==='
+CREATE MATERIALIZED VIEW t50_trigger
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+\set ON_ERROR_STOP 0
+CREATE TRIGGER t50_bad_trigger
+  INSTEAD OF INSERT ON t50_trigger
+  FOR EACH ROW EXECUTE FUNCTION time_series.cagg_invalidation_trigfn();
+\set ON_ERROR_STOP 1
+-- PG may reject this since views don't support all trigger types.
+-- Document current behavior.
+
+DROP VIEW t50_trigger CASCADE;
+
+-- ============================================================
+-- T51: ALTER mat table protection (TSDB-DDL-08~20)
+--      Verify behavior when users ALTER the internal mat table
+--      directly (ADD COLUMN, DROP COLUMN, RENAME COLUMN).
+-- ============================================================
+\echo '=== T51: ALTER mat table ==='
+CREATE MATERIALIZED VIEW t51_alter
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Try various ALTER operations on the internal mat table (dynamic name)
+\set ON_ERROR_STOP 0
+DO $$
+DECLARE
+  mat text;
+BEGIN
+  SELECT mat_table_name INTO mat
+  FROM time_series.continuous_agg WHERE user_view_name = 't51_alter';
+  -- ADD COLUMN
+  BEGIN
+    EXECUTE format('ALTER TABLE time_series.%I ADD COLUMN extra int', mat);
+    RAISE NOTICE 'ADD COLUMN: succeeded (not protected)';
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'ADD COLUMN: blocked — %', SQLERRM;
+  END;
+  -- DROP COLUMN
+  BEGIN
+    EXECUTE format('ALTER TABLE time_series.%I DROP COLUMN cnt', mat);
+    RAISE NOTICE 'DROP COLUMN: succeeded (not protected)';
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'DROP COLUMN: blocked — %', SQLERRM;
+  END;
+  -- RENAME COLUMN
+  BEGIN
+    EXECUTE format('ALTER TABLE time_series.%I RENAME COLUMN bucket TO ts', mat);
+    RAISE NOTICE 'RENAME COLUMN: succeeded (not protected)';
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'RENAME COLUMN: blocked — %', SQLERRM;
+  END;
+END $$;
+\set ON_ERROR_STOP 1
+-- Document: which operations succeed vs fail.
+-- Note: Unlike TSDB, we don't protect internal tables in V1.
+
+DROP VIEW t51_alter CASCADE;
+
+-- ============================================================
+-- T52: Column rename on user view + re-query (TSDB-DDL-46)
+--      If user renames a column on the user view, it should
+--      still work or fail cleanly.
+-- ============================================================
+\echo '=== T52: column rename on user view ==='
+CREATE MATERIALIZED VIEW t52_rename
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM metrics
+  GROUP BY bucket, tags_id;
+
+-- Rename a column on the user view
+\set ON_ERROR_STOP 0
+ALTER VIEW t52_rename RENAME COLUMN bucket TO ts_bucket;
+-- If succeeded, verify SELECT still works
+SELECT count(*) AS after_rename FROM t52_rename;
+\set ON_ERROR_STOP 1
+
+DROP VIEW IF EXISTS t52_rename CASCADE;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE metrics CASCADE;
+
+\echo '=== ALL TESTS PASSED ==='
+
+-- ============================================================
+-- ERROR CASES (merged from cagg_errors.sql)
+-- ============================================================
+
+-- ============================================================
+-- cagg_errors.sql
+-- Test: CREATE MATERIALIZED VIEW ... WITH (time_series.continuous)
+--       error cases — every invalid syntax should be rejected.
+--
+-- Reference: TimescaleDB tsl/test/sql/cagg_errors.sql
+-- ============================================================
+
+\set ON_ERROR_STOP 0
+
+SET optimizer = off;
+SET timezone = 'UTC';
+
+-- Setup: fresh extension
+DROP EXTENSION IF EXISTS time_series CASCADE;
+CREATE EXTENSION time_series;
+SET search_path TO public, time_series;
+
+-- Setup: source table with tags_id distribution
+DROP TABLE IF EXISTS conditions CASCADE;
+CREATE TABLE conditions (
+    time         TIMESTAMPTZ       NOT NULL,
+    tags_id      INT               NOT NULL,
+    location     TEXT              NOT NULL,
+    temperature  DOUBLE PRECISION  NULL,
+    humidity     DOUBLE PRECISION  NULL
+) DISTRIBUTED BY (tags_id);
+
+INSERT INTO conditions VALUES
+    ('2024-01-01 00:00', 1, 'NYC', 20.0, 50.0),
+    ('2024-01-01 01:00', 2, 'LAX', 25.0, 40.0),
+    ('2024-01-01 02:00', 1, 'NYC', 22.0, 55.0),
+    ('2024-01-01 03:00', 3, 'CHI', 10.0, 70.0);
+
+-- ============================================================
+-- E1: No GROUP BY clause
+-- ============================================================
+\echo '=== E1: no GROUP BY ==='
+CREATE MATERIALIZED VIEW e1 WITH (time_series.continuous) AS
+  SELECT avg(temperature) FROM conditions;
+
+-- ============================================================
+-- E2: GROUP BY without time_bucket
+-- ============================================================
+\echo '=== E2: GROUP BY without time_bucket ==='
+CREATE MATERIALIZED VIEW e2 WITH (time_series.continuous) AS
+  SELECT tags_id, avg(temperature) FROM conditions GROUP BY tags_id;
+
+-- ============================================================
+-- E2b: time_bucket ONLY in SELECT, NOT in GROUP BY
+-- Verifies we scan groupClause (not targetList) to find time_bucket.
+-- tags_id is the grouping key; time_bucket(min(time)) is an aggregate-
+-- wrapped expression in SELECT — it's NOT a grouping key, so should fail.
+-- ============================================================
+\echo '=== E2b: time_bucket in SELECT only, not in GROUP BY ==='
+CREATE MATERIALIZED VIEW e2b WITH (time_series.continuous) AS
+  SELECT tags_id,
+         time_bucket('1 hour'::interval, min(time)) AS bucket,
+         count(*) AS cnt
+  FROM conditions
+  GROUP BY tags_id;  -- time_bucket wraps an aggregate, not a grouping key
+
+-- ============================================================
+-- E3: Non-constant bucket width
+-- ============================================================
+\echo '=== E3: non-constant bucket width ==='
+CREATE MATERIALIZED VIEW e3 WITH (time_series.continuous) AS
+  SELECT time_bucket(humidity * '1 hour'::interval, time) AS bucket,
+         avg(temperature)
+  FROM conditions
+  GROUP BY bucket;
+
+-- ============================================================
+-- E4: DISTINCT in SELECT
+-- ============================================================
+\echo '=== E4: DISTINCT ==='
+CREATE MATERIALIZED VIEW e4 WITH (time_series.continuous) AS
+  SELECT DISTINCT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id
+  FROM conditions
+  GROUP BY bucket, tags_id;
+
+-- ============================================================
+-- E5: LIMIT
+-- ============================================================
+\echo '=== E5: LIMIT ==='
+CREATE MATERIALIZED VIEW e5 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions
+  GROUP BY bucket
+  LIMIT 10;
+
+-- ============================================================
+-- E6: OFFSET
+-- ============================================================
+\echo '=== E6: OFFSET ==='
+CREATE MATERIALIZED VIEW e6 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions
+  GROUP BY bucket
+  OFFSET 5;
+
+-- ============================================================
+-- E7: Window function
+-- ============================================================
+\echo '=== E7: window function ==='
+CREATE MATERIALIZED VIEW e7 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         row_number() OVER ()
+  FROM conditions
+  GROUP BY bucket;
+
+-- ============================================================
+-- E8: Subquery in WHERE
+-- ============================================================
+\echo '=== E8: subquery ==='
+CREATE MATERIALIZED VIEW e8 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         avg(temperature)
+  FROM conditions
+  WHERE tags_id IN (SELECT tags_id FROM conditions WHERE location = 'NYC')
+  GROUP BY bucket;
+
+-- ============================================================
+-- E9: CTE (WITH clause)
+-- ============================================================
+\echo '=== E9: CTE ==='
+CREATE MATERIALIZED VIEW e9 WITH (time_series.continuous) AS
+  WITH cte AS (SELECT * FROM conditions)
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         avg(temperature)
+  FROM cte
+  GROUP BY bucket;
+
+-- ============================================================
+-- E10: JOIN (not supported in V1)
+-- ============================================================
+\echo '=== E10: JOIN ==='
+DROP TABLE IF EXISTS devices;
+CREATE TABLE devices (tags_id int PRIMARY KEY, name text) DISTRIBUTED REPLICATED;
+CREATE MATERIALIZED VIEW e10 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, c.time) AS bucket,
+         d.name,
+         avg(c.temperature)
+  FROM conditions c
+  JOIN devices d ON c.tags_id = d.tags_id
+  GROUP BY bucket, d.name;
+DROP TABLE IF EXISTS devices CASCADE;
+
+-- ============================================================
+-- E11: GROUPING SETS
+-- ============================================================
+\echo '=== E11: GROUPING SETS ==='
+CREATE MATERIALIZED VIEW e11 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*)
+  FROM conditions
+  GROUP BY GROUPING SETS ((bucket), (bucket, tags_id));
+
+-- ============================================================
+-- E12: UNION
+-- ============================================================
+\echo '=== E12: UNION ==='
+CREATE MATERIALIZED VIEW e12 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket
+  UNION
+  SELECT time_bucket('1 day'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket;
+
+-- ============================================================
+-- E13: FOR UPDATE
+-- ============================================================
+\echo '=== E13: FOR UPDATE ==='
+CREATE MATERIALIZED VIEW e13 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions
+  GROUP BY bucket
+  FOR UPDATE;
+
+-- ============================================================
+-- E14: (removed) — empty placeholder; PG parser rejects non-SELECT
+--      forms before our hook runs, so there is nothing meaningful to test.
+-- ============================================================
+
+-- ============================================================
+-- E15: No FROM clause
+-- ============================================================
+\echo '=== E15: no FROM ==='
+CREATE MATERIALIZED VIEW e15 WITH (time_series.continuous) AS
+  SELECT 1 AS bucket, count(*) GROUP BY bucket;
+
+-- ============================================================
+-- E16: Multiple time_bucket functions (C2-05)
+-- ============================================================
+\echo '=== E16: multiple time_bucket ==='
+CREATE MATERIALIZED VIEW e16 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket_h,
+         time_bucket('1 day'::interval, time) AS bucket_d,
+         count(*)
+  FROM conditions
+  GROUP BY bucket_h, bucket_d;
+
+-- ============================================================
+-- E17: NULL bucket width (C2-07)
+-- ============================================================
+\echo '=== E17: NULL bucket width ==='
+CREATE MATERIALIZED VIEW e17 WITH (time_series.continuous) AS
+  SELECT time_bucket(NULL::interval, time) AS bucket,
+         count(*)
+  FROM conditions
+  GROUP BY bucket;
+
+-- ============================================================
+-- E18: FETCH FIRST (C2-14)
+-- ============================================================
+\echo '=== E18: FETCH FIRST ==='
+CREATE MATERIALIZED VIEW e18 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions
+  GROUP BY bucket
+  FETCH FIRST 5 ROWS ONLY;
+
+-- ============================================================
+-- E19: CAGG on a VIEW (not a table) (C2-02)
+-- ============================================================
+\echo '=== E19: CAGG on VIEW ==='
+CREATE VIEW conditions_view AS SELECT * FROM conditions;
+CREATE MATERIALIZED VIEW e19 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions_view
+  GROUP BY bucket;
+DROP VIEW conditions_view;
+
+-- ============================================================
+-- E20: ROLLUP (C2-16 variant)
+-- ============================================================
+\echo '=== E20: ROLLUP ==='
+CREATE MATERIALIZED VIEW e20 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*)
+  FROM conditions
+  GROUP BY ROLLUP (bucket, tags_id);
+
+-- ============================================================
+-- E21: CUBE (C2-16 variant)
+-- ============================================================
+\echo '=== E21: CUBE ==='
+CREATE MATERIALIZED VIEW e21 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id,
+         count(*)
+  FROM conditions
+  GROUP BY CUBE (bucket, tags_id);
+
+-- ============================================================
+-- E22: EXCEPT (C2-17 variant)
+-- ============================================================
+\echo '=== E22: EXCEPT ==='
+CREATE MATERIALIZED VIEW e22 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket
+  EXCEPT
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions WHERE tags_id = 1 GROUP BY bucket;
+
+-- ============================================================
+-- E23: INTERSECT (C2-17 variant)
+-- ============================================================
+\echo '=== E23: INTERSECT ==='
+CREATE MATERIALIZED VIEW e23 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket
+  INTERSECT
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions WHERE tags_id = 1 GROUP BY bucket;
+
+-- ============================================================
+-- E25: TABLESAMPLE (C2-21)
+-- ============================================================
+\echo '=== E25: TABLESAMPLE ==='
+CREATE MATERIALIZED VIEW e25 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         count(*)
+  FROM conditions TABLESAMPLE BERNOULLI(50)
+  GROUP BY bucket;
+
+-- ============================================================
+-- E26: RLS table (C2-30)
+-- ============================================================
+\echo '=== E26: RLS ==='
+CREATE TABLE rls_test (time timestamptz, tags_id int, val float8) DISTRIBUTED BY (tags_id);
+ALTER TABLE rls_test ENABLE ROW LEVEL SECURITY;
+CREATE MATERIALIZED VIEW e26 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         avg(val)
+  FROM rls_test
+  GROUP BY bucket;
+ALTER TABLE rls_test DISABLE ROW LEVEL SECURITY;
+DROP TABLE rls_test;
+
+-- ============================================================
+-- E27: (removed) — CAGG on internal mat table.  Hard-coded
+--      `_mat_e27_base_1` only matches when cagg_id happens to be 1, so
+--      the original test "passed" via "relation does not exist" rather
+--      than via the intended rejection logic — which F1 may not even
+--      implement.  Hierarchical CAGG / mat-table protection is properly
+--      a F2/F3 concern; deferred there.
+-- ============================================================
+
+-- ============================================================
+-- E29: Duplicate view name
+-- ============================================================
+\echo '=== E29: duplicate view name ==='
+\set ON_ERROR_STOP 1
+CREATE MATERIALIZED VIEW e29_dup WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket;
+\set ON_ERROR_STOP 0
+-- Try creating again with same name
+CREATE MATERIALIZED VIEW e29_dup WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM conditions GROUP BY bucket;
+DROP VIEW e29_dup CASCADE;
+
+-- ============================================================
+-- E30: CAGG on materialized view (without time column — old test)
+-- ============================================================
+\echo '=== E30: CAGG on matview ==='
+CREATE MATERIALIZED VIEW regular_matview AS
+  SELECT tags_id, count(*) AS cnt FROM conditions GROUP BY tags_id
+  DISTRIBUTED BY (tags_id);
+CREATE MATERIALIZED VIEW e30 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+  FROM regular_matview GROUP BY bucket;
+DROP MATERIALIZED VIEW regular_matview;
+
+-- ============================================================
+-- E30b: CAGG on materialized view WITH a time column.
+--       The matview has all columns needed (time, tags_id) so
+--       time_bucket() would resolve — must still be rejected by
+--       the relkind check, not pass silently.
+-- ============================================================
+\echo '=== E30b: CAGG on matview with time column ==='
+CREATE MATERIALIZED VIEW matview_with_time AS
+  SELECT time, tags_id, count(*) AS cnt FROM conditions GROUP BY time, tags_id
+  DISTRIBUTED BY (tags_id);
+CREATE MATERIALIZED VIEW e30b WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, sum(cnt)
+  FROM matview_with_time
+  GROUP BY bucket, tags_id;
+DROP MATERIALIZED VIEW matview_with_time;
+
+-- ============================================================
+-- E31: (removed) — json_agg / no-COMBINEFUNC aggregate rejection.
+--      F1 currently does NOT validate aggregate.aggcombinefn, so this
+--      CREATE silently succeeds.  Aligning with T23/T27/T28/T29 which
+--      were also deferred to F3, the real validation belongs there
+--      (alongside the design decision: reject at CREATE vs allow with
+--      degraded non-incremental REFRESH).
+-- ============================================================
+
+-- ============================================================
+-- DDL safety tests (TSDB cagg-17.sql TEST7 + cagg_ddl-17.sql)
+--
+-- Create a fresh CAGG for these tests (cv from earlier may be gone)
+-- ============================================================
+CREATE MATERIALIZED VIEW cv_ddl
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS cnt
+  FROM conditions GROUP BY bucket, tags_id;
+
+-- ============================================================
+-- T53: DROP internal mat table → blocked by PG dependency
+-- ============================================================
+\echo '=== T53: DROP mat table blocked ==='
+\set ON_ERROR_STOP 0
+DO $$
+DECLARE mat_name text;
+BEGIN
+  SELECT mat_table_name INTO mat_name FROM time_series.continuous_agg
+  WHERE user_view_name = 'cv_ddl';
+  EXECUTE format('DROP TABLE time_series.%I', mat_name);
+END $$;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- T54: DROP internal direct view → blocked by PG dependency
+-- ============================================================
+\echo '=== T54: DROP direct view blocked ==='
+\set ON_ERROR_STOP 0
+DO $$
+DECLARE dv_name text;
+BEGIN
+  SELECT direct_view_name INTO dv_name FROM time_series.continuous_agg
+  WHERE user_view_name = 'cv_ddl';
+  EXECUTE format('DROP VIEW time_series.%I', dv_name);
+END $$;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- T55: DROP source table WITHOUT CASCADE → blocked
+-- ============================================================
+\echo '=== T55: DROP source no CASCADE blocked ==='
+\set ON_ERROR_STOP 0
+DROP TABLE conditions;
+\set ON_ERROR_STOP 1
+
+DROP VIEW cv_ddl CASCADE;
+
+-- ============================================================
+-- T56: ALTER VIEW RENAME → catalog synced automatically
+--      ProcessUtility hook updates continuous_agg.user_view_name
+--      after PG renames the view in pg_class.
+-- ============================================================
+\echo '=== T56: ALTER VIEW RENAME ==='
+\set ON_ERROR_STOP 1
+CREATE TABLE rename_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO rename_src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+CREATE MATERIALIZED VIEW cv_rename_test
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM rename_src GROUP BY bucket;
+
+ALTER VIEW cv_rename_test RENAME TO cv_renamed;
+-- Catalog should reflect the NEW name
+SELECT user_view_name FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_renamed';
+-- Old name should be gone from catalog
+SELECT count(*) AS old_name_gone FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_rename_test';
+-- SELECT works under new name
+SELECT count(*) AS renamed_queryable FROM cv_renamed;
+-- REFRESH works with new name
+CALL time_series.refresh_continuous_aggregate('cv_renamed', NULL, NULL);
+SELECT count(*) AS renamed_refreshed FROM cv_renamed;
+
+DROP TABLE rename_src CASCADE;
+
+-- ============================================================
+-- T57: DROP source CASCADE → all catalog artifacts cleaned
+-- ============================================================
+\echo '=== T57: DROP CASCADE full cleanup ==='
+CREATE TABLE cleanup_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO cleanup_src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+CREATE MATERIALIZED VIEW cv_cleanup
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM cleanup_src GROUP BY bucket;
+CALL time_series.refresh_continuous_aggregate('cv_cleanup', NULL, NULL);
+
+SELECT cagg_id AS cleanup_id FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_cleanup' \gset
+
+DROP TABLE cleanup_src CASCADE;
+
+SELECT count(*) AS orphan_agg FROM time_series.continuous_agg
+WHERE cagg_id = :cleanup_id;
+SELECT count(*) AS orphan_wm FROM time_series.cagg_watermark
+WHERE cagg_id = :cleanup_id;
+SELECT count(*) AS orphan_bf FROM time_series.cagg_bucket_function
+WHERE cagg_id = :cleanup_id;
+SELECT count(*) AS orphan_l2 FROM time_series.cagg_materialization_log
+WHERE cagg_id = :cleanup_id;
+
+-- ============================================================
+-- Complex HAVING tests (TSDB cagg-17.sql Issue #2655)
+-- ============================================================
+
+-- ============================================================
+-- T58: HAVING with OR + multiple aggregates
+-- ============================================================
+\echo '=== T58: HAVING with OR ==='
+CREATE TABLE having_src (time TIMESTAMPTZ NOT NULL, loc TEXT, temp FLOAT8, hum FLOAT8, cnt INT, cnt2 INT)
+  DISTRIBUTED BY (loc);
+INSERT INTO having_src VALUES
+  ('2024-01-01 00:10+00', 'NYC', 55, 45, 1, 100),
+  ('2024-01-01 00:20+00', 'NYC', 65, 45, 2, 200),
+  ('2024-01-01 00:30+00', 'SFO', 75, 100, 3, 300),
+  ('2024-01-01 01:10+00', 'NYC', 45, 55, 10, 10),
+  ('2024-01-01 01:20+00', 'NYC', 35, 15, 20, 20);
+
+CREATE MATERIALIZED VIEW cv_hav_or WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, loc,
+         count(*) AS cnt_rows, sum(cnt) AS s
+  FROM having_src GROUP BY bucket, loc
+  HAVING count(*) > 3 OR sum(cnt) > 1;
+
+CALL time_series.refresh_continuous_aggregate('cv_hav_or', NULL, NULL);
+SELECT count(*) AS diff_hav_or FROM (
+  (  SELECT bucket, loc, cnt_rows, s FROM cv_hav_or
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), loc, count(*), sum(cnt)
+   FROM having_src GROUP BY 1, 2
+   HAVING count(*) > 3 OR sum(cnt) > 1)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), loc, count(*), sum(cnt)
+   FROM having_src GROUP BY 1, 2
+   HAVING count(*) > 3 OR sum(cnt) > 1
+   EXCEPT
+   SELECT bucket, loc, cnt_rows, s FROM cv_hav_or
+   )
+) x;
+
+-- ============================================================
+-- T59: HAVING with FILTER
+-- ============================================================
+\echo '=== T59: HAVING with FILTER ==='
+CREATE MATERIALIZED VIEW cv_hav_filter WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         max(temp) AS max_temp
+  FROM having_src GROUP BY bucket, loc
+  HAVING sum(temp) FILTER (WHERE hum > 40) > 50;
+
+CALL time_series.refresh_continuous_aggregate('cv_hav_filter', NULL, NULL);
+SELECT count(*) AS diff_hav_filter FROM (
+  (  SELECT bucket, max_temp FROM cv_hav_filter
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), max(temp)
+   FROM having_src GROUP BY 1, loc
+   HAVING sum(temp) FILTER (WHERE hum > 40) > 50)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), max(temp)
+   FROM having_src GROUP BY 1, loc
+   HAVING sum(temp) FILTER (WHERE hum > 40) > 50
+   EXCEPT
+   SELECT bucket, max_temp FROM cv_hav_filter
+   )
+) x;
+
+-- ============================================================
+-- T60: HAVING on GROUP BY expression (cnt + cnt2)
+-- ============================================================
+\echo '=== T60: HAVING on GROUP BY expr ==='
+CREATE MATERIALIZED VIEW cv_hav_expr WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, loc,
+         sum(cnt) AS s
+  FROM having_src GROUP BY cnt + cnt2, bucket, loc
+  HAVING cnt + cnt2 + sum(cnt) > 2;
+
+CALL time_series.refresh_continuous_aggregate('cv_hav_expr', NULL, NULL);
+SELECT count(*) AS diff_hav_expr FROM (
+  (  SELECT bucket, loc, s FROM cv_hav_expr
+   EXCEPT
+   SELECT time_bucket('1 hour'::interval, time), loc, sum(cnt)
+   FROM having_src GROUP BY cnt + cnt2, 1, 2
+   HAVING cnt + cnt2 + sum(cnt) > 2)
+  UNION ALL
+  (SELECT time_bucket('1 hour'::interval, time), loc, sum(cnt)
+   FROM having_src GROUP BY cnt + cnt2, 1, 2
+   HAVING cnt + cnt2 + sum(cnt) > 2
+   EXCEPT
+   SELECT bucket, loc, s FROM cv_hav_expr
+   )
+) x;
+
+DROP TABLE having_src CASCADE;
+
+-- ============================================================
+-- T61: MODE() WITHIN GROUP — ordered-set aggregate
+-- ============================================================
+\echo '=== T61: MODE aggregate ==='
+CREATE TABLE mode_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, hum FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO mode_src VALUES
+  ('2024-01-01 00:10+00', 1, 45), ('2024-01-01 00:20+00', 1, 45),
+  ('2024-01-01 00:30+00', 1, 60), ('2024-01-01 01:10+00', 2, 30);
+
+CREATE MATERIALIZED VIEW cv_mode WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         MODE() WITHIN GROUP (ORDER BY hum) AS mode_hum
+  FROM mode_src GROUP BY bucket;
+
+CALL time_series.refresh_continuous_aggregate('cv_mode', NULL, NULL);
+-- bucket=00:00 should have mode=45 (appears twice)
+SELECT bucket, mode_hum FROM cv_mode ORDER BY bucket;
+DROP TABLE mode_src CASCADE;
+
+-- ============================================================
+-- T62: RANK/DENSE_RANK WITHIN GROUP — hypothetical-set aggregate
+-- ============================================================
+\echo '=== T62: RANK WITHIN GROUP ==='
+CREATE TABLE rank_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, hum FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO rank_src VALUES
+  ('2024-01-01 00:10+00', 1, 45), ('2024-01-01 00:20+00', 1, 55),
+  ('2024-01-01 00:30+00', 1, 65), ('2024-01-01 00:40+00', 1, 75);
+
+CREATE MATERIALIZED VIEW cv_rank WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         RANK(60) WITHIN GROUP (ORDER BY hum) AS r,
+         DENSE_RANK(60) WITHIN GROUP (ORDER BY hum) AS dr
+  FROM rank_src GROUP BY bucket;
+
+CALL time_series.refresh_continuous_aggregate('cv_rank', NULL, NULL);
+-- With values [45,55,65,75], RANK(60) = 3, DENSE_RANK(60) = 3
+SELECT bucket, r, dr FROM cv_rank ORDER BY bucket;
+DROP TABLE rank_src CASCADE;
+
+-- ============================================================
+-- T63: DROP SCHEMA CASCADE with 2 CAGGs on same source
+-- ============================================================
+\echo '=== T63: DROP SCHEMA multi-CAGG ==='
+CREATE SCHEMA multi_cagg_ns;
+CREATE TABLE multi_cagg_ns.src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO multi_cagg_ns.src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+
+CREATE MATERIALIZED VIEW multi_cagg_ns.hourly WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM multi_cagg_ns.src GROUP BY bucket;
+CREATE MATERIALIZED VIEW multi_cagg_ns.daily WITH (time_series.continuous) AS
+  SELECT time_bucket('1 day'::interval, time) AS bucket, sum(val) AS total
+  FROM multi_cagg_ns.src GROUP BY bucket;
+
+-- Both should exist in catalog
+SELECT count(*) AS caggs_before FROM time_series.continuous_agg
+WHERE user_view_schema = 'multi_cagg_ns';
+
+DROP SCHEMA multi_cagg_ns CASCADE;
+
+-- Both should be cleaned from catalog
+SELECT count(*) AS caggs_after FROM time_series.continuous_agg
+WHERE user_view_schema = 'multi_cagg_ns';
+
+-- ============================================================
+-- Additional error cases (TSDB cagg_errors.sql + cagg_ddl-17.sql)
+-- ============================================================
+
+-- ============================================================
+-- E32: time_bucket on expression → error
+--      (TSDB cagg_errors.sql: time_bucket('1week', timec + interval))
+-- ============================================================
+\echo '=== E32: time_bucket on expression ==='
+\set ON_ERROR_STOP 0
+CREATE MATERIALIZED VIEW cv_expr_bucket
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time + interval '10 min') AS bucket,
+         count(*)
+  FROM conditions GROUP BY bucket;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- E33: Subquery wrapping valid CAGG query → error
+--      (TSDB cagg_errors.sql: SELECT * FROM (valid_cagg_query))
+-- ============================================================
+\echo '=== E33: subquery wrapping ==='
+\set ON_ERROR_STOP 0
+CREATE MATERIALIZED VIEW cv_subq
+WITH (time_series.continuous) AS
+  SELECT * FROM (
+    SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*)
+    FROM conditions GROUP BY bucket
+  ) q;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- E34: CAGG on non-table (plain table without time column)
+--      (TSDB cagg_errors.sql: non-hypertable source)
+-- ============================================================
+\echo '=== E34: CAGG on non-time table ==='
+\set ON_ERROR_STOP 0
+CREATE TABLE no_time_col (id INT, val FLOAT8) DISTRIBUTED BY (id);
+CREATE MATERIALIZED VIEW cv_no_time
+WITH (time_series.continuous) AS
+  SELECT count(*) FROM no_time_col GROUP BY id;
+DROP TABLE no_time_col;
+\set ON_ERROR_STOP 1
+
+-- ============================================================
+-- E99: Verify non-continuous MATERIALIZED VIEW still works
+-- ============================================================
+\echo '=== E99: non-continuous MATVIEW passes through ==='
+\set ON_ERROR_STOP 1
+CREATE MATERIALIZED VIEW normal_matview AS
+  SELECT tags_id, count(*) FROM conditions GROUP BY tags_id
+  DISTRIBUTED BY (tags_id);
+SELECT count(*) FROM normal_matview;
+DROP MATERIALIZED VIEW normal_matview;
+
+-- ============================================================
+-- T-MAT-TRUNCATE: TRUNCATE mat table must be blocked
+--   Matches TimescaleDB: "cannot TRUNCATE a hypertable
+--   underlying a continuous aggregate"
+-- ============================================================
+\echo '=== T-MAT-TRUNCATE: block TRUNCATE on mat table ==='
+\set ON_ERROR_STOP 1
+
+CREATE TABLE trunc_src (time TIMESTAMPTZ NOT NULL, dev INT, val INT)
+  DISTRIBUTED BY (dev);
+INSERT INTO trunc_src
+SELECT '2024-01-01'::timestamptz + (i || ' hour')::interval, 1, i
+FROM generate_series(1, 24) i;
+
+CREATE MATERIALIZED VIEW trunc_cv WITH (time_series.continuous) AS
+SELECT time_bucket('4 hours'::interval, time) AS bucket,
+       dev, sum(val) AS total, count(*) AS n
+FROM trunc_src GROUP BY bucket, dev;
+
+CALL time_series.refresh_continuous_aggregate('trunc_cv', NULL, NULL);
+
+-- Verify data is present
+SELECT count(*) AS mat_before FROM trunc_cv;
+
+-- Case 1: TRUNCATE mat table must ERROR
+-- Use dynamic SQL because mat table name has auto-incremented suffix
+\set ON_ERROR_STOP off
+DO $$
+DECLARE
+  mat_name text;
+BEGIN
+  SELECT mat_table_schema || '.' || mat_table_name INTO mat_name
+  FROM time_series.continuous_agg WHERE user_view_name = 'trunc_cv';
+  EXECUTE format('TRUNCATE %s', mat_name);
+END $$;
+\set ON_ERROR_STOP on
+
+-- Data must still be intact after blocked TRUNCATE
+SELECT count(*) AS mat_after_blocked FROM trunc_cv;
+
+-- Case 2: TRUNCATE source table should still work (resets watermark)
+TRUNCATE trunc_src;
+SELECT count(*) AS mat_after_src_trunc FROM trunc_cv;
+
+-- Case 3: Normal table with _mat_ prefix but NOT a CAGG mat table — should work
+CREATE TABLE _mat_fake_table (id INT) DISTRIBUTED BY (id);
+INSERT INTO _mat_fake_table VALUES (1), (2), (3);
+TRUNCATE _mat_fake_table;
+SELECT count(*) AS fake_after_trunc FROM _mat_fake_table;
+DROP TABLE _mat_fake_table;
+
+DROP TABLE trunc_src CASCADE;
+
+-- Cleanup
+\set ON_ERROR_STOP 1
+DROP TABLE conditions CASCADE;

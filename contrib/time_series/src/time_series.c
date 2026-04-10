@@ -11,8 +11,12 @@
 #include "include/time_series.h"
 
 #include "catalog/namespace.h"
+#include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
+
+/* GUC: max individual materializations per REFRESH call */
+int ts_guc_materializations_per_refresh_window = 10;
 
 PG_MODULE_MAGIC;
 
@@ -53,8 +57,25 @@ _PG_init(void)
 	/* 2. Install GapFill Planner Hook */
 	ht_gapfill_planner_init();
 
-	/* 3. Register syscache callback for namespace OID invalidation */
+	/* 3. Install Continuous Aggregate ProcessUtility Hook */
+	ht_cagg_init();
+
+	/* 4. Register syscache callback for namespace OID invalidation */
 	CacheRegisterSyscacheCallback(NAMESPACENAME,
 								  ht_namespace_invalidation_cb,
 								  (Datum) 0);
+
+	/* 5. Define GUCs */
+	DefineCustomIntVariable("time_series.materializations_per_refresh_window",
+							"Max number of individual refreshes per REFRESH call",
+							"If more intervals need to be refreshed, they are "
+							"merged into a single large refresh to avoid "
+							"excessive fragmented I/O.",
+							&ts_guc_materializations_per_refresh_window,
+							10,		/* default */
+							0,		/* min (0 = unlimited) */
+							INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
 }

@@ -3157,9 +3157,252 @@ ORDER BY bucket;
 DROP TABLE gf_month_oracle;
 
 -- ============================================================
--- Cleanup
+-- Cleanup (basic gapfill tests)
 -- ============================================================
 
-RESET optimizer;
 DROP TABLE gapfill_test;
+
+-- ============================================================
+-- CAGG + Gapfill tests
+-- Test: Gapfill functions (time_bucket_gapfill, locf, interpolate)
+--       applied to Continuous Aggregate views.
+--
+-- Common user pattern: create a CAGG for fast aggregation,
+-- then query it with gapfill to fill gaps for dashboards.
+--
+-- Covers:
+--   1. Basic gapfill on CAGG (real-time mode)
+--   2. Gapfill on CAGG (materialized_only mode)
+--   3. LOCF on CAGG
+--   4. Interpolate on CAGG
+--   5. Gapfill spanning mat/live boundary
+--   6. Multi-device gapfill on CAGG
+--   7. Gapfill with CTE wrapping CAGG
+--   8. Oracle verification (gapfill on CAGG = gapfill on source)
+-- ============================================================
+
+-- Setup: source table with intentional gaps
+-- Device 1: data at hours 0,1,2, gap at 3,4, data at 5,6,7
+-- Device 2: data at hours 0,1, gap at 2,3,4,5, data at 6,7
+CREATE TABLE gf_src (
+    time        TIMESTAMPTZ NOT NULL,
+    device_id   INT         NOT NULL,
+    temperature DOUBLE PRECISION
+) DISTRIBUTED BY (device_id);
+
+-- Device 1: hours 0,1,2,5,6,7 (gap at 3,4)
+INSERT INTO gf_src VALUES
+    ('2024-01-01 00:30+00', 1, 10.0),
+    ('2024-01-01 01:30+00', 1, 12.0),
+    ('2024-01-01 02:30+00', 1, 14.0),
+    ('2024-01-01 05:30+00', 1, 20.0),
+    ('2024-01-01 06:30+00', 1, 22.0),
+    ('2024-01-01 07:30+00', 1, 24.0);
+
+-- Device 2: hours 0,1,6,7 (gap at 2,3,4,5)
+INSERT INTO gf_src VALUES
+    ('2024-01-01 00:30+00', 2, 50.0),
+    ('2024-01-01 01:30+00', 2, 52.0),
+    ('2024-01-01 06:30+00', 2, 62.0),
+    ('2024-01-01 07:30+00', 2, 64.0);
+
+-- CAGG: hourly aggregation
+CREATE MATERIALIZED VIEW gf_hourly
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         device_id,
+         avg(temperature) AS avg_temp,
+         count(*) AS n
+  FROM gf_src
+  GROUP BY bucket, device_id;
+
+CALL time_series.refresh_continuous_aggregate('gf_hourly', NULL, NULL);
+
+-- ============================================================
+-- 90. Basic gapfill on CAGG (real-time mode, default)
+--     Gap rows should have NULL for avg_temp.
+-- ============================================================
+\echo '=== 90: Basic gapfill on CAGG ==='
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 00:00+00'::timestamptz,
+        '2024-01-01 08:00+00'::timestamptz) AS bucket,
+    device_id,
+    avg(avg_temp) AS avg_temp
+FROM gf_hourly
+WHERE device_id = 1
+  AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+GROUP BY 1, device_id
+ORDER BY 1;
+
+-- ============================================================
+-- 91. Gapfill on CAGG (materialized_only mode)
+-- ============================================================
+\echo '=== 91: Gapfill materialized_only ==='
+ALTER VIEW gf_hourly SET (time_series.materialized_only = true);
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 00:00+00'::timestamptz,
+        '2024-01-01 08:00+00'::timestamptz) AS bucket,
+    device_id,
+    avg(avg_temp) AS avg_temp
+FROM gf_hourly
+WHERE device_id = 1
+  AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+GROUP BY 1, device_id
+ORDER BY 1;
+ALTER VIEW gf_hourly SET (time_series.materialized_only = false);
+
+-- ============================================================
+-- 92. LOCF on CAGG — carry forward last known value
+-- ============================================================
+\echo '=== 92: LOCF on CAGG ==='
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 00:00+00'::timestamptz,
+        '2024-01-01 08:00+00'::timestamptz) AS bucket,
+    device_id,
+    time_series.locf(avg(avg_temp)) AS locf_temp
+FROM gf_hourly
+WHERE device_id = 1
+  AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+GROUP BY 1, device_id
+ORDER BY 1;
+
+-- ============================================================
+-- 93. Interpolate on CAGG — linear interpolation across gaps
+-- ============================================================
+\echo '=== 93: Interpolate on CAGG ==='
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 00:00+00'::timestamptz,
+        '2024-01-01 08:00+00'::timestamptz) AS bucket,
+    device_id,
+    time_series.interpolate(avg(avg_temp)) AS interp_temp
+FROM gf_hourly
+WHERE device_id = 1
+  AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+GROUP BY 1, device_id
+ORDER BY 1;
+
+-- ============================================================
+-- 94. Gapfill spanning mat/live boundary
+--     Insert data beyond watermark (not refreshed), gapfill
+--     should show data from both mat and live branches.
+-- ============================================================
+\echo '=== 94: Gapfill across mat/live boundary ==='
+INSERT INTO gf_src VALUES ('2024-01-01 10:30+00', 1, 30.0);
+
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 06:00+00'::timestamptz,
+        '2024-01-01 12:00+00'::timestamptz) AS bucket,
+    device_id,
+    avg(avg_temp) AS avg_temp
+FROM gf_hourly
+WHERE device_id = 1
+  AND bucket >= '2024-01-01 06:00+00' AND bucket < '2024-01-01 12:00+00'
+GROUP BY 1, device_id
+ORDER BY 1;
+
+DELETE FROM gf_src WHERE time = '2024-01-01 10:30+00';
+
+-- ============================================================
+-- 95. Multi-device gapfill on CAGG
+--     Each device has different gap patterns.
+-- ============================================================
+\echo '=== 95: Multi-device gapfill ==='
+SELECT
+    time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+        '2024-01-01 00:00+00'::timestamptz,
+        '2024-01-01 08:00+00'::timestamptz) AS bucket,
+    device_id,
+    time_series.locf(avg(avg_temp)) AS locf_temp
+FROM gf_hourly
+WHERE bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+GROUP BY 1, device_id
+ORDER BY device_id, 1;
+
+-- ============================================================
+-- 96. CTE wrapping CAGG with gapfill + COALESCE
+-- ============================================================
+\echo '=== 96: CTE + gapfill on CAGG ==='
+WITH filled AS (
+    SELECT
+        time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+            '2024-01-01 00:00+00'::timestamptz,
+            '2024-01-01 08:00+00'::timestamptz) AS bucket,
+        device_id,
+        time_series.locf(avg(avg_temp)) AS filled_temp
+    FROM gf_hourly
+    WHERE device_id = 1
+      AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+    GROUP BY 1, device_id
+)
+SELECT bucket, COALESCE(filled_temp, -1) AS temp
+FROM filled
+ORDER BY bucket;
+
+-- ============================================================
+-- 97. Oracle verification: gapfill on CAGG = gapfill on source
+--     Both must produce identical results (symmetric EXCEPT = 0).
+-- ============================================================
+\echo '=== 97: Oracle verification ==='
+SELECT count(*) AS diff_gapfill FROM (
+  (SELECT
+      time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+          '2024-01-01 00:00+00'::timestamptz,
+          '2024-01-01 08:00+00'::timestamptz) AS bucket,
+      device_id,
+      avg(avg_temp) AS avg_temp
+  FROM gf_hourly
+  WHERE device_id = 1
+    AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+  GROUP BY 1, device_id
+  EXCEPT
+  SELECT
+      time_series.time_bucket_gapfill('1 hour'::interval,
+          time_series.time_bucket('1 hour'::interval, time),
+          '2024-01-01 00:00+00'::timestamptz,
+          '2024-01-01 08:00+00'::timestamptz) AS bucket,
+      device_id,
+      avg(temperature) AS avg_temp
+  FROM gf_src
+  WHERE device_id = 1
+    AND time >= '2024-01-01 00:00+00' AND time < '2024-01-01 08:00+00'
+  GROUP BY 1, device_id)
+  UNION ALL
+  (SELECT
+      time_series.time_bucket_gapfill('1 hour'::interval,
+          time_series.time_bucket('1 hour'::interval, time),
+          '2024-01-01 00:00+00'::timestamptz,
+          '2024-01-01 08:00+00'::timestamptz) AS bucket,
+      device_id,
+      avg(temperature) AS avg_temp
+  FROM gf_src
+  WHERE device_id = 1
+    AND time >= '2024-01-01 00:00+00' AND time < '2024-01-01 08:00+00'
+  GROUP BY 1, device_id
+  EXCEPT
+  SELECT
+      time_series.time_bucket_gapfill('1 hour'::interval, bucket,
+          '2024-01-01 00:00+00'::timestamptz,
+          '2024-01-01 08:00+00'::timestamptz) AS bucket,
+      device_id,
+      avg(avg_temp) AS avg_temp
+  FROM gf_hourly
+  WHERE device_id = 1
+    AND bucket >= '2024-01-01 00:00+00' AND bucket < '2024-01-01 08:00+00'
+  GROUP BY 1, device_id)
+) x;
+
+-- ============================================================
+-- Cleanup (CAGG gapfill tests)
+-- ============================================================
+DROP TABLE gf_src CASCADE;
+
+-- ============================================================
+-- Final cleanup
+-- ============================================================
+RESET optimizer;
 DROP EXTENSION time_series CASCADE;
