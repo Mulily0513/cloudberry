@@ -154,7 +154,7 @@ const ArrowAggFmgr arrow_agg_fmgr_builtins[] = {
         { "max", F_MAX_NUMERIC, "max", "max", "max"},
         { "sum", F_SUM_INT2, "sum", "sum", "sum"},
         { "sum", F_SUM_INT4, "sum", "sum", "sum"},
-        { "sum", F_SUM_INT8, "avg_trans", "sum_final", "sum_64"},
+        { "sum", F_SUM_INT8, "sum_64", "sum", "sum_64"},
         { "sum", F_SUM_NUMERIC, "avg_trans", "sum_final", "sum"},
         { "count", F_COUNT_ANY, "count", "sum", "count"},
         { "count", F_COUNT_, "count", "sum", "count"},

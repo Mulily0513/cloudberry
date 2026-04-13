@@ -1015,7 +1015,15 @@ agg_trans_mutator(Node *node, void *context)
 				return node;
 			switch (aggref->aggfnoid)
 			{
+				/* F_SUM_INT8: Arrow avg_trans outputs struct<sum:int64,count:int64>
+				 * but GP's sum(bigint) needs numeric precision. Until Arrow's
+				 * avg_trans supports numeric128 accumulation for int64 input,
+				 * keep the old path that outputs numeric directly. */
 				case F_SUM_INT8:
+				{
+					aggref->aggtype = NUMERICOID;
+					break;
+				}
 				case F_SUM_NUMERIC:
 				case F_AVG_INT8:
 				case F_AVG_NUMERIC:
