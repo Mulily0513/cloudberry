@@ -11,12 +11,14 @@
  *-------------------------------------------------------------------------
  */
 #include "arrow-glib/record-batch.h"
+#include "arrow-dataset-glib/scanner.h"
 #include "postgres.h"
 
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_tablespace_d.h"
 #include "cdb/cdbvars.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
 #include "nodes/nodes.h"
 #include "parser/scansup.h"
 #include "optimizer/optimizer.h"
@@ -3437,6 +3439,26 @@ build_orderby_node(PlanState *planstate, GArrowExecutePlan *plan,  GArrowExecute
 	return orderby_node;
 }
 
+/*
+ * find_seqscan_for_topk - Traverse from Sort's child to find SeqScan.
+ * Supports Sort→SeqScan and Sort→Result→SeqScan topologies.
+ * Returns NULL if SeqScan not found (TopK RF silently disabled).
+ */
+static VecSeqScanState *
+find_seqscan_for_topk(PlanState *sort_planstate)
+{
+	PlanState *child = outerPlanState(sort_planstate);
+
+	/* Skip through Result node (projection) */
+	if (child && IsA(child, ResultState))
+		child = outerPlanState(child);
+
+	if (child && IsA(child, SeqScanState))
+		return (VecSeqScanState *)child;
+
+	return NULL;
+}
+
 static GArrowExecuteNode*
 build_topk_node(PlanState *planstate, GArrowExecutePlan *plan,
 				GArrowExecuteNode *input, int64 topk_bound)
@@ -3454,8 +3476,78 @@ build_topk_node(PlanState *planstate, GArrowExecutePlan *plan,
 	sort_keys = build_sort_keys(planstate, schema);
 	sortoption = garrow_sort_options_new(sort_keys, 0, take_thread_num, two_phase_take);
 
-	/* Create TopKNode */
-	topk_options = garrow_topk_node_options_new(topk_bound, sortoption, NULL);
+	/* TopK Runtime Filter: try to get threshold state from PAX */
+	gpointer threshold_ptr = NULL;
+	int sort_column_index = -1;
+	Oid collation = InvalidOid;
+
+	if (enable_topk_runtime_filter)
+	{
+		VecSeqScanState *scan_state = find_seqscan_for_topk(planstate);
+		if (scan_state && scan_state->scan_node_options)
+		{
+			Sort *sort = (Sort *)planstate->plan;
+			AttrNumber sort_attno = sort->sortColIdx[0]; /* 1-based in Sort output */
+			bool nulls_first = sort->nullsFirst[0];
+
+			/* Map sort column from Sort's output back to table's physical attnum.
+			 * sortColIdx references a column in Sort's input (SeqScan's output).
+			 * SeqScan may project only a subset of columns, so the Var in
+			 * Sort's targetlist has varattno = position in SeqScan's output,
+			 * not the original table column. We look up SeqScan's targetlist
+			 * to find the original table varattno. */
+			AttrNumber table_attno = InvalidAttrNumber;
+			{
+				Plan *scan_plan = outerPlan(sort);
+				/* Skip Result node if present */
+				if (scan_plan && IsA(scan_plan, Result))
+					scan_plan = outerPlan(scan_plan);
+
+				if (scan_plan)
+				{
+					TargetEntry *tle = get_tle_by_resno(scan_plan->targetlist, sort_attno);
+					if (tle && IsA(tle->expr, Var))
+					{
+						Var *var = (Var *)tle->expr;
+						table_attno = var->varattno; /* 1-based physical column */
+					}
+				}
+			}
+
+			if (!AttributeNumberIsValid(table_attno) || table_attno <= 0)
+			{
+				/* Cannot map to physical column (expression sort key, etc.) */
+				goto skip_topk_rf;
+			}
+
+			collation = sort->collations[0];
+
+			/*
+			 * NULLs occupy the top-K positions iff they sort first, which is
+			 * exactly NULLS FIRST — independent of ASC/DESC. The RF reads a
+			 * scalar threshold and cannot represent NULL, so disable it
+			 * whenever NULLs could be in the top-K.
+			 */
+			if (!nulls_first)
+			{
+				threshold_ptr =
+					garrow_scan_node_options_get_topk_threshold_state(
+						scan_state->scan_node_options);
+				sort_column_index = table_attno - 1;  /* 0-based physical column */
+			}
+skip_topk_rf:
+			;  /* label requires a statement */
+		}
+	}
+
+	/* Create TopKNode with optional runtime filter */
+	g_autoptr(GArrowTopKRuntimeFilterOptions) rf_options = NULL;
+	if (threshold_ptr)
+		rf_options = garrow_topk_runtime_filter_options_new(threshold_ptr,
+															sort_column_index,
+															(guint32)collation);
+	topk_options = garrow_topk_node_options_new(topk_bound, sortoption,
+												rf_options);
 	topk_node = garrow_execute_plan_build_topk_node(plan, input,
 													topk_options, &error);
 	if (error)

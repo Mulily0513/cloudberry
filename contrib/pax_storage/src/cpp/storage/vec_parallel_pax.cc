@@ -108,5 +108,10 @@ arrow::Result<arrow::dataset::FragmentIterator> PaxDatasetInterface::GetFragment
   return arrow::Iterator<std::shared_ptr<arrow::dataset::Fragment>>(std::move(it));
 }
 
+arrow::compute::TopKThresholdState* PaxDatasetInterface::GetTopKThresholdState() {
+  if (!desc_) return nullptr;
+  return desc_->GetTopKThresholdState();
+}
+
 }
 #endif

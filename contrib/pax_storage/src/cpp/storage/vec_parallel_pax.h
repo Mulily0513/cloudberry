@@ -47,6 +47,8 @@ class PaxDatasetInterface : public arrow::dataset::DatasetInterface {
     return std::make_shared<PaxDatasetInterface>(table_schema);
   }
 
+  arrow::compute::TopKThresholdState* GetTopKThresholdState() override;
+
  private:
   Relation relation_ = nullptr;
   std::shared_ptr<ParallelScanDesc> desc_;

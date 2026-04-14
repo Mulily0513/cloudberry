@@ -212,12 +212,35 @@ ExecEndVecSort(SortState *node)
 	ExecEagerFreeVecSort(node);
 	
 	VecSortState *vnode = (VecSortState *)node;
-	FreeVecExecuteState(&vnode->estate);
+
+	/*
+	 * Teardown order is contractual for TopK Runtime Filter.
+	 *
+	 * The Sort's underlying Arrow ExecPlan may contain a TopKNode that
+	 * holds a non-owning pointer to a TopKThresholdState owned by the
+	 * child SeqScan's PaxDatasetInterface (via ParallelScanDesc). The
+	 * lifetime contract (documented on arrow::compute::TopKThresholdState
+	 * in arrow/compute/exec/topk_threshold_state.h) requires that the
+	 * ExecPlan be destroyed *before* the threshold state.
+	 *
+	 * FreeVecExecuteState() releases the GArrowExecutePlan, which:
+	 *   - synchronously waits for all worker threads to stop, and
+	 *   - destroys TopKNode (the only writer of the threshold state).
+	 *
+	 * Only after that is it safe to recurse into the child SeqScan's
+	 * ExecEnd, which releases PaxDatasetInterface and destroys the
+	 * TopKThresholdState along with it.
+	 *
+	 * DO NOT swap these two calls. Doing so would let the TopKNode
+	 * (or, in error paths, still-running workers) reference a destroyed
+	 * threshold state.
+	 */
+	FreeVecExecuteState(&vnode->estate);            /* (1) plan first  */
 
 	/*
 	 * shut down the subplan
 	 */
-	VecExecEndNode(outerPlanState(node));
+	VecExecEndNode(outerPlanState(node));           /* (2) state after */
 
 	SO1_printf("ExecEndVecSort: %s\n",
 			   "sort node shutdown");

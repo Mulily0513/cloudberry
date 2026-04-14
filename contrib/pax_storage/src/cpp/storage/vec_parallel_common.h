@@ -45,6 +45,9 @@
 
 namespace arrow {
 class Schema;
+namespace compute {
+class TopKThresholdState;
+}  // namespace compute
 }  // namespace arrow
 
 namespace pax {
@@ -94,6 +97,11 @@ class ParallelScanDesc final : public std::enable_shared_from_this<ParallelScanD
   const std::shared_ptr<PaxFilter> &GetPaxFilter() const { return pax_filter_; }
   Relation GetRelation() const { return relation_; }
   FileSystem *GetFileSystem() const { return file_system_; }
+
+  // TopK Runtime Filter: threshold state owned by ParallelScanDesc
+  arrow::compute::TopKThresholdState* GetTopKThresholdState() const {
+    return topk_threshold_.get();
+  }
   const std::shared_ptr<FileSystemOptions> &GetFileSystemOptions() const { return fs_options_; }
 
   struct FragmentIteratorInternal {
@@ -118,6 +126,9 @@ class ParallelScanDesc final : public std::enable_shared_from_this<ParallelScanD
   std::shared_ptr<arrow::Schema> scan_schema_;
   int num_micro_partitions_ = 0;
   bool build_ctid_bitmap_ = false;
+
+  // TopK Runtime Filter: created in Initialize(), owned by ParallelScanDesc
+  std::unique_ptr<arrow::compute::TopKThresholdState> topk_threshold_;
 };
 
 class PaxFragmentInterface final : public arrow::dataset::FragmentInterface {

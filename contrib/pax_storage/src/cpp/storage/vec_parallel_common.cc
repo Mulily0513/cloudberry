@@ -36,6 +36,7 @@
 #include "comm/vec_numeric.h"
 #include "storage/file_system.h"
 #include "storage/filter/pax_sparse_filter.h"
+#include "arrow/compute/exec/topk_threshold_state.h"
 #ifdef VEC_BUILD
 
 namespace pax {
@@ -142,6 +143,11 @@ bool PaxFragmentInterface::OpenFile() {
 
   reader_ = std::make_unique<PaxVecReader>(std::move(reader), adapter_, filter);
   reader_->Open(options);
+
+  // TopK Runtime Filter: unconditionally pass the pointer.
+  // PaxVecReader decides whether to use it based on IsSet() and sort_column_index().
+  reader_->SetTopKThreshold(desc->GetTopKThresholdState());
+
   return true;
 }
 
@@ -215,6 +221,9 @@ arrow::Status ParallelScanDesc::Initialize(Relation relation,
   file_system_ = file_system;
   fs_options_ = std::move(fs_options);
   Assert(relation && file_system);
+
+  // TopK Runtime Filter: always create, lightweight
+  topk_threshold_ = std::make_unique<arrow::compute::TopKThresholdState>();
 
   auto tupdesc = RelationGetDescr(relation);
   PlanState *ps = (PlanState *)context;

@@ -271,6 +271,16 @@ _PG_init(void)
                             GUC_GPDB_NEED_SYNC,
                             NULL, NULL, NULL);
 
+    DefineCustomBoolVariable("vector.topk_runtime_filter",
+                             "Enable TopK runtime filter to skip PAX groups "
+                             "whose min/max exceeds the TopK threshold.",
+                             NULL,
+                             &enable_topk_runtime_filter,
+                             true,
+                             PGC_USERSET,
+                             GUC_GPDB_NEED_SYNC,
+                             NULL, NULL, NULL);
+
     exec_simple_query_hook_prev = exec_simple_query_hook;
     exec_simple_query_hook = exec_simple_query_vec;
 

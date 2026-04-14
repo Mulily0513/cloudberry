@@ -29,9 +29,15 @@
 
 #include "comm/guc.h"
 #include "comm/pax_memory.h"
+#include "storage/micro_partition_stats.h"
+#include "storage/oper/pax_stats.h"
 #include "storage/pax_itemptr.h"
 #include "storage/vec/pax_vec_adapter.h"
 #include "storage/filter/pax_sparse_filter.h"
+
+#include <arrow/scalar.h>
+#include <arrow/compute/exec/topk_threshold_state.h>
+
 #ifdef VEC_BUILD
 
 namespace pax {
@@ -75,6 +81,13 @@ retry_next_group:
     if (filter_ && !filter_->ExecSparseFilter(
                        *info, desc, PaxSparseFilter::StatisticsKind::kGroup)) {
       goto retry_next_group;
+    }
+
+    // TopK Runtime Filter: skip group if all rows are worse than threshold
+    if (topk_threshold_ && topk_threshold_->IsSet()) {
+      if (EvalTopKThresholdSkip(*info, desc)) {
+        goto retry_next_group;
+      }
     }
 
     working_group_ = reader_->ReadGroup(group_index);
@@ -153,6 +166,137 @@ std::unique_ptr<ColumnStatsProvider> PaxVecReader::GetGroupStatsInfo(
 std::unique_ptr<MicroPartitionReader::Group> PaxVecReader::ReadGroup(
     size_t index) {
   CBDB_RAISE(cbdb::CException::ExType::kExTypeLogicError);
+}
+
+// ---------------------------------------------------------------------------
+// TopK Runtime Filter: EvalTopKThresholdSkip
+// ---------------------------------------------------------------------------
+
+// Convert Arrow physical-type Scalar to PG Datum for comparison with
+// PAX group min/max statistics. Handles the common ClickBench types.
+static std::pair<Datum, bool> ThresholdScalarToDatum(
+    const std::shared_ptr<arrow::Scalar> &scalar, Form_pg_attribute attr) {
+  if (!scalar || !scalar->is_valid) return {0, false};
+
+  switch (scalar->type->id()) {
+    case arrow::Type::BOOL: {
+      auto v = static_cast<const arrow::BooleanScalar*>(scalar.get())->value;
+      return {BoolGetDatum(v), true};
+    }
+    case arrow::Type::INT8: {
+      auto v = static_cast<const arrow::Int8Scalar*>(scalar.get())->value;
+      return {Int8GetDatum(v), true};
+    }
+    case arrow::Type::INT16: {
+      auto v = static_cast<const arrow::Int16Scalar*>(scalar.get())->value;
+      return {Int16GetDatum(v), true};
+    }
+    case arrow::Type::INT32: {
+      auto v = static_cast<const arrow::Int32Scalar*>(scalar.get())->value;
+      return {Int32GetDatum(v), true};
+    }
+    case arrow::Type::INT64: {
+      auto v = static_cast<const arrow::Int64Scalar*>(scalar.get())->value;
+      return {Int64GetDatum(v), true};
+    }
+    case arrow::Type::FLOAT: {
+      auto v = static_cast<const arrow::FloatScalar*>(scalar.get())->value;
+      return {Float4GetDatum(v), true};
+    }
+    case arrow::Type::DOUBLE: {
+      auto v = static_cast<const arrow::DoubleScalar*>(scalar.get())->value;
+      return {Float8GetDatum(v), true};
+    }
+    case arrow::Type::BINARY: {
+      // Physical type for STRING columns (StringType::PhysicalType = BinaryType)
+      auto *bs = static_cast<const arrow::BinaryScalar*>(scalar.get());
+      const char *s = reinterpret_cast<const char *>(bs->value->data());
+      auto len = static_cast<size_t>(bs->value->size());
+      switch (attr->atttypid) {
+        case TEXTOID:
+          return {PointerGetDatum(cbdb::CstringToText(s, len)), true};
+        case VARCHAROID:
+          return {PointerGetDatum(cbdb::VarcharInput(s, len, attr->atttypmod)), true};
+        case BPCHAROID:
+          return {PointerGetDatum(cbdb::BpcharInput(s, len, attr->atttypmod)), true};
+        default:
+          break;
+      }
+      return {0, false};
+    }
+    case arrow::Type::STRING: {
+      auto *ss = static_cast<const arrow::StringScalar*>(scalar.get());
+      const char *s = reinterpret_cast<const char *>(ss->value->data());
+      auto len = static_cast<size_t>(ss->value->size());
+      switch (attr->atttypid) {
+        case TEXTOID:
+          return {PointerGetDatum(cbdb::CstringToText(s, len)), true};
+        case VARCHAROID:
+          return {PointerGetDatum(cbdb::VarcharInput(s, len, attr->atttypmod)), true};
+        case BPCHAROID:
+          return {PointerGetDatum(cbdb::BpcharInput(s, len, attr->atttypmod)), true};
+        default:
+          break;
+      }
+      return {0, false};
+    }
+    default:
+      break;
+  }
+  return {0, false};
+}
+
+bool PaxVecReader::EvalTopKThresholdSkip(
+    const ColumnStatsProvider& stats, TupleDesc desc) {
+  // 1. Get current threshold
+  auto threshold_scalar = topk_threshold_->Get();
+  if (!threshold_scalar || !threshold_scalar->is_valid) return false;
+
+  // 2. Get sort column info from TopKThresholdState
+  int col = topk_threshold_->sort_column_index();
+  auto order = topk_threshold_->sort_order();
+  Oid collation = static_cast<Oid>(topk_threshold_->collation());
+
+  // 3. Check sort column statistics availability
+  if (col < 0 || col >= stats.ColumnSize()) return false;
+  const auto& data_stats = stats.DataStats(col);
+  if (!data_stats.has_minimal() || !data_stats.has_maximum()) return false;
+
+  // 4. Arrow Scalar → Datum
+  Form_pg_attribute attr = TupleDescAttr(desc, col);
+  auto [threshold_datum, ok] = ThresholdScalarToDatum(threshold_scalar, attr);
+  if (!ok) return false;
+
+  // 5. Group min/max → Datum
+  Datum group_min = pax::MicroPartitionStats::FromValue(
+      data_stats.minimal(), attr->attlen, attr->attbyval, col);
+  Datum group_max = pax::MicroPartitionStats::FromValue(
+      data_stats.maximum(), attr->attlen, attr->attbyval, col);
+
+  // 6. Compare using PAX's OperMinMaxFunc infrastructure
+  OperMinMaxFunc cmp_func;
+  bool skip = false;
+  if (order == arrow::compute::SortOrder::Ascending) {
+    // ASC: threshold is ceiling. If group_min > threshold → skip
+    if (pax::MinMaxGetStrategyProcinfo(attr->atttypid, attr->atttypid,
+                                       collation, cmp_func,
+                                       BTGreaterStrategyNumber))
+      skip = cmp_func(&group_min, &threshold_datum, collation);
+  } else {
+    // DESC: threshold is floor. If group_max < threshold → skip
+    if (pax::MinMaxGetStrategyProcinfo(attr->atttypid, attr->atttypid,
+                                       collation, cmp_func,
+                                       BTLessStrategyNumber))
+      skip = cmp_func(&group_max, &threshold_datum, collation);
+  }
+
+  // ThresholdScalarToDatum palloc's a fresh varlena for non-byval types
+  // (TEXT/VARCHAR/BPCHAR); free it here. group_min/group_max are pointers
+  // into the protobuf stats message and must NOT be pfreed.
+  if (!attr->attbyval && DatumGetPointer(threshold_datum) != nullptr)
+    pfree(DatumGetPointer(threshold_datum));
+
+  return skip;
 }
 
 }  // namespace pax

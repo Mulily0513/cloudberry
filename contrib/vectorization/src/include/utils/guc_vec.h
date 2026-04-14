@@ -49,5 +49,7 @@ extern int sort_external_max_rows;
 extern char *sort_external_temp_file_base;
 /* topk bound threshold: max K value for TopKNode, larger K falls back to OrderByNode */
 extern int topk_bound_threshold;
+/* topk runtime filter: push threshold to PAX for group-level skip */
+extern bool enable_topk_runtime_filter;
 
 #endif   /* GUC_VEC_H */

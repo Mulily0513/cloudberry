@@ -31,6 +31,12 @@
 
 #ifdef VEC_BUILD
 
+namespace arrow {
+namespace compute {
+class TopKThresholdState;
+}  // namespace compute
+}  // namespace arrow
+
 namespace pax {
 
 class PaxFilter;
@@ -67,7 +73,15 @@ class PaxVecReader : public MicroPartitionReaderProxy {
 
   std::shared_ptr<arrow::RecordBatch> ReadBatch(PaxFragmentInterface *frag);
 
+  // TopK Runtime Filter: set pointer to shared threshold state
+  void SetTopKThreshold(arrow::compute::TopKThresholdState* state) {
+    topk_threshold_ = state;
+  }
+
  private:
+  // TopK Runtime Filter: evaluate whether this group can be skipped
+  bool EvalTopKThresholdSkip(const ColumnStatsProvider& stats, TupleDesc desc);
+
   std::shared_ptr<VecAdapter> adapter_;
 
   std::unique_ptr<MicroPartitionReader::Group> working_group_;
@@ -75,6 +89,8 @@ class PaxVecReader : public MicroPartitionReaderProxy {
   size_t ctid_offset_;
   std::shared_ptr<PaxFilter> filter_;
 
+  // TopK Runtime Filter (raw pointer, not owned)
+  arrow::compute::TopKThresholdState* topk_threshold_ = nullptr;
 };
 
 }  // namespace pax
