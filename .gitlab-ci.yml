@@ -356,10 +356,10 @@ test_pax_orca:
 
 test_vectorization_orca:
   stage: test
-  extends:
-    - .common
-    - .coverage-capture
+  extends: .common
   <<: *cache-only-pull
+  variables:
+    DATABASE_CONFIG_EXTRA_OPTIONS: ""
   script: |
     trap 'test -e /tmp/.debugging && tmux new-session -d -s debug && tmux wait-for done' EXIT
 
@@ -367,6 +367,14 @@ test_vectorization_orca:
     set -euxo pipefail
 
     export ENV=devel
+
+    # Install dependencies needed by Apache Arrow reconfiguration
+    make build-depends
+
+    # Clean previous coverage-instrumented objects, then rebuild without coverage
+    make clean-database
+    make build-database
+
     export MAKE_TEST_COMMAND="-c vector.enable_vectorization=on -c optimizer=on -c enable_parallel=off"
     export TEST_TYPE=installcheck
     make test-vectorization
@@ -448,9 +456,6 @@ coverage_report:
       optional: true
       artifacts: true
     - job: test_pax_orca
-      optional: true
-      artifacts: true
-    - job: test_vectorization_orca
       optional: true
       artifacts: true
     - job: test_parallel
