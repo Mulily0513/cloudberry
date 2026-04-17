@@ -489,7 +489,8 @@ get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo)
 			 "                        'binary_upgrade', 'pg_toast') AND "
 			 "      c.oid >= %u::pg_catalog.oid) OR "
 			 "     (n.nspname = 'pg_catalog' AND "
-			 "      relname IN ('pg_largeobject') ))), ",
+			 "      relname IN ('pg_largeobject', "
+			 "					'gp_fastsequence', 'gp_fastsequence_objid_objmod_index') ))), ",
 	/* see the comment at the top of old_8_3_create_sequence_script() */
 			 (GET_MAJOR_VERSION(old_cluster.major_version) == 803) ?
 			 "" : ", " CppAsString2(RELKIND_SEQUENCE), FirstNormalObjectId);
