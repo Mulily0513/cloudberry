@@ -299,3 +299,54 @@ new_gpdb_invalidate_bitmap_indexes(void)
 
 	check_ok();
 }
+
+/*
+ * new_invalidate_ao_brin_indexes()
+ *
+ * The on-disk format of BRIN indexes on AO/CO tables changed: the old format
+ * used pre-allocated UPPER pages, while the new format uses singly-linked
+ * revmap chains with AOChainInfo in the metapage.  Since pg_upgrade transfers
+ * index files by copying relfilenodes, the old-format BRIN files are
+ * incompatible with the new code.  Mark these indexes as invalid so that the
+ * planner will not use them and users can REINDEX after upgrade.
+ *
+ * Only AO/CO table BRIN indexes are affected; heap table BRIN indexes have
+ * not changed format.
+ */
+void
+new_invalidate_ao_brin_indexes(void)
+{
+	int			dbnum;
+
+	prep_status("Invalidating BRIN indexes on AO/CO tables in new cluster");
+
+	for (dbnum = 0; dbnum < new_cluster.dbarr.ndbs; dbnum++)
+	{
+		DbInfo	   *newdb = &new_cluster.dbarr.dbs[dbnum];
+		PGconn	   *conn = connectToServer(&new_cluster, newdb->db_name);
+
+		/*
+		 * GPDB doesn't allow hacking the catalogs without setting
+		 * allow_system_table_mods first.
+		 */
+		PQclear(executeQueryOrDie(conn, "set allow_system_table_mods=true"));
+
+		if (!user_opts.check)
+		{
+			PQclear(executeQueryOrDie(conn,
+									  "UPDATE pg_index SET indisvalid = false "
+									  "  FROM pg_class idx, pg_class tbl, pg_am tam "
+									  " WHERE idx.oid = pg_index.indexrelid AND "
+									  "       tbl.oid = pg_index.indrelid AND "
+									  "       tam.oid = tbl.relam AND "
+									  "       pg_index.indexrelid >= %u AND "
+									  "       idx.relam = (SELECT oid FROM pg_am "
+									  "                     WHERE amname = 'brin') AND "
+									  "       tam.amname IN ('ao_row', 'ao_column')",
+									  FirstNormalObjectId));
+		}
+		PQfinish(conn);
+	}
+
+	check_ok();
+}

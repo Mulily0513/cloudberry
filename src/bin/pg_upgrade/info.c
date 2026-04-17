@@ -523,16 +523,25 @@ get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo)
 	 * selected tables.  We can ignore invalid indexes since pg_dump does.
 	 * Testing indisready is necessary in 9.2, and harmless in earlier/later
 	 * versions.
+	 *
+	 * In segment mode the new cluster catalog is an rsync copy of the
+	 * upgraded coordinator, which may already have some indexes marked
+	 * invalid (e.g. bitmap, BRIN on AO/CO).  The old segment still has
+	 * them as valid.  Filtering by indisvalid would cause a mismatch
+	 * between old and new relation lists.  Since there is no pg_dump /
+	 * pg_restore on segments, every index present in the catalog must be
+	 * included in the transfer list, so skip the validity filter.
 	 */
 	snprintf(query + strlen(query), sizeof(query) - strlen(query),
 			 "  all_index (reloid, indtable, toastheap) AS ( "
 			 "  SELECT indexrelid, indrelid, 0::oid "
 			 "  FROM pg_catalog.pg_index "
-			 "  WHERE indisvalid AND indisready "
+			 "  WHERE %s indisready "
 			 "    AND indrelid IN "
 			 "        (SELECT reloid FROM regular_heap "
 			 "         UNION ALL "
-			 "         SELECT reloid FROM toast_heap)) ");
+			 "         SELECT reloid FROM toast_heap)) ",
+			 is_greenplum_dispatcher_mode() ? "indisvalid AND" : "");
 
 	/*
 	 * And now we can write the query that retrieves the data we want for each

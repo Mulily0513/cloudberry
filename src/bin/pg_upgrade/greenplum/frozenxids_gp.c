@@ -33,6 +33,12 @@ update_db_xids(void)
 
 	prep_status("Updating xid's in new cluster databases");
 
+	if (user_opts.check)
+	{
+		check_ok();
+		return;
+	}
+
 	for (dbnum = 0; dbnum < old_cluster.dbarr.ndbs; dbnum++)
 	{
 		DbInfo	   *active_db = &old_cluster.dbarr.dbs[dbnum];
@@ -83,6 +89,7 @@ update_db_xids(void)
 								  "WHERE	relkind IN ('r', 'm', 't', 'o', 'b', 'M')",
 								  (GET_MAJOR_VERSION(old_cluster.major_version) <= 803) ?
 								  old_cluster.controldata.chkpnt_nxtmulti : datminmxid));
+		pg_free(escaped_datname);
 		PQfinish(conn);
 	}
 

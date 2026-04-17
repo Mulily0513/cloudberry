@@ -293,6 +293,16 @@ main(int argc, char **argv)
 	{
 		start_postmaster(&new_cluster, true);
 
+		/*
+		 * Invalidate bitmap and AO/CO BRIN indexes after relfilenode transfer,
+		 * not inside create_new_objects().  If done before transfer, the
+		 * indisvalid=false state is rsynced to segments, causing get_rel_infos()
+		 * to skip those indexes on the new cluster while the old cluster still
+		 * has them, leading to a relation mismatch error during segment upgrade.
+		 */
+		new_gpdb_invalidate_bitmap_indexes();
+		new_invalidate_ao_brin_indexes();
+
 		update_db_xids();
 		freeze_master_data();
 
@@ -694,14 +704,26 @@ prepare_new_cluster(void)
 	 * not frozen here, but data rows were frozen by initdb, and we set its
 	 * datfrozenxid, relfrozenxids, and relminmxid later to match the new xid
 	 * counter later.
+	 *
+	 * On segments, the data directory is a copy of the coordinator's and
+	 * contains AO/AOCS catalog entries whose data files have not yet been
+	 * transferred.  VACUUM FREEZE would fail trying to open those missing
+	 * segment files.  Skip the freeze here; update_db_xids() will correct
+	 * relfrozenxid values later instead.
+	 *
+	 * See also: https://github.com/greenplum-db/gpdb/commit/592c5c30ba
+	 * ("Don't freeze before data transfer during segment upgrade")
 	 */
-	prep_status("Freezing all rows in the new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "%s \"%s/vacuumdb\" %s --all --freeze %s",
-			  PG_OPTIONS_UTILITY_MODE_VERSION(new_cluster.major_version),
-			  new_cluster.bindir, cluster_conn_opts(&new_cluster),
-			  log_opts.verbose ? "--verbose" : "");
-	check_ok();
+	if (is_greenplum_dispatcher_mode())
+	{
+		prep_status("Freezing all rows in the new cluster");
+		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
+				  "%s \"%s/vacuumdb\" %s --all --freeze %s",
+				  PG_OPTIONS_UTILITY_MODE_VERSION(new_cluster.major_version),
+				  new_cluster.bindir, cluster_conn_opts(&new_cluster),
+				  log_opts.verbose ? "--verbose" : "");
+		check_ok();
+	}
 }
 
 
@@ -832,9 +854,6 @@ create_new_objects(void)
 
 	/* update new_cluster info now that we have objects in the databases */
 	get_db_and_rel_infos(&new_cluster);
-
-	/* Bitmap indexes are not currently supported, so mark them as invalid. */
-	new_gpdb_invalidate_bitmap_indexes();
 }
 
 
