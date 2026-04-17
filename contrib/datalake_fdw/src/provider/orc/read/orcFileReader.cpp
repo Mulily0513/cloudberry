@@ -107,6 +107,22 @@ arrow::Status orcFileReader::readRecordBatch(arrow::MemoryPool* pool,
 	return arrow::Status::OK();
 }
 
+/*
+ * Helper macro: dynamic_cast to the expected ORC vector batch type and
+ * error out instead of dereferencing NULL when the actual ORC column
+ * type doesn't match the PostgreSQL column type.  This turns a SIGSEGV
+ * into a clean ereport(ERROR).
+ */
+#define ORC_SAFE_CAST(CppType, batch, columnName, typeOid) \
+	({ \
+		auto *_vec = dynamic_cast<CppType *>(batch); \
+		if (_vec == NULL) \
+			elog(ERROR, "Type mismatch reading ORC column \"%s\": " \
+				 "expected %s-compatible ORC vector, got incompatible type", \
+				 columnName, getColTypeName(typeOid).data()); \
+		_vec; \
+	})
+
 Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, const char *columnName, int columnIndex, orc::ColumnVectorBatch *batch)
 {
     auto colType = readInterface.type->getSubtype(columnIndex);
@@ -115,38 +131,38 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
     {
 		case BOOLOID:
 		{
-			orc::LongVectorBatch *vec = dynamic_cast<orc::LongVectorBatch *>(batch);
+			orc::LongVectorBatch *vec = ORC_SAFE_CAST(orc::LongVectorBatch, batch, columnName, typeOid);
 			return BoolGetDatum(vec->data[rowIndex] != 0L);
 		}
 		case INT8OID:
 		{
-			orc::LongVectorBatch *vec = dynamic_cast<orc::LongVectorBatch *>(batch);
+			orc::LongVectorBatch *vec = ORC_SAFE_CAST(orc::LongVectorBatch, batch, columnName, typeOid);
 			return Int64GetDatum(vec->data[rowIndex]);
 		}
 		case INT4OID:
 		{
-			orc::LongVectorBatch *vec = dynamic_cast<orc::LongVectorBatch *>(batch);
+			orc::LongVectorBatch *vec = ORC_SAFE_CAST(orc::LongVectorBatch, batch, columnName, typeOid);
 			return Int32GetDatum((int32_t)vec->data[rowIndex]);
 		}
 		case INT2OID:
 		{
-			orc::LongVectorBatch *vec = dynamic_cast<orc::LongVectorBatch *>(batch);
+			orc::LongVectorBatch *vec = ORC_SAFE_CAST(orc::LongVectorBatch, batch, columnName, typeOid);
 			return Int16GetDatum((int16_t)vec->data[rowIndex]);
 		}
 		case FLOAT4OID:
 		{
-			orc::DoubleVectorBatch *vec = dynamic_cast<orc::DoubleVectorBatch *>(batch);
+			orc::DoubleVectorBatch *vec = ORC_SAFE_CAST(orc::DoubleVectorBatch, batch, columnName, typeOid);
 			return Float4GetDatum((float)vec->data[rowIndex]);
 		}
 		case FLOAT8OID:
 		{
-			orc::DoubleVectorBatch *vec = dynamic_cast<orc::DoubleVectorBatch *>(batch);
+			orc::DoubleVectorBatch *vec = ORC_SAFE_CAST(orc::DoubleVectorBatch, batch, columnName, typeOid);
 			return Float8GetDatum(vec->data[rowIndex]);
 		}
 		case INTERVALOID:
 		{
 			// No corresponding data type in orc, needs the source to be string
-			orc::StringVectorBatch *vec = dynamic_cast<orc::StringVectorBatch *>(batch);
+			orc::StringVectorBatch *vec = ORC_SAFE_CAST(orc::StringVectorBatch, batch, columnName, typeOid);
 			size_t size = vec->length[rowIndex];
 			if (size > ORC_FIELD_STR_BUF_LEN)
 			{
@@ -160,7 +176,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 		}
 		case DATEOID:
 		{
-			orc::LongVectorBatch *vec = dynamic_cast<orc::LongVectorBatch *>(batch);
+			orc::LongVectorBatch *vec = ORC_SAFE_CAST(orc::LongVectorBatch, batch, columnName, typeOid);
 			int32_t date = vec->data[rowIndex] + (UNIX_EPOCH_JDATE - POSTGRES_EPOCH_JDATE);
 			return Int32GetDatum(date);
 
@@ -168,7 +184,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 		case TIMEOID:
 		{
 			// No corresponding data type in orc, needs the source to be string
-			orc::StringVectorBatch *vec = dynamic_cast<orc::StringVectorBatch *>(batch);
+			orc::StringVectorBatch *vec = ORC_SAFE_CAST(orc::StringVectorBatch, batch, columnName, typeOid);
 			size_t size = vec->length[rowIndex];
 			if (size > ORC_FIELD_STR_BUF_LEN)
 			{
@@ -182,7 +198,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 		}
 		case TIMESTAMPOID:
 		{
-			orc::TimestampVectorBatch *vec = dynamic_cast<orc::TimestampVectorBatch *>(batch);
+			orc::TimestampVectorBatch *vec = ORC_SAFE_CAST(orc::TimestampVectorBatch, batch, columnName, typeOid);
 			int64_t second = (int64_t)vec->data[rowIndex];
 			int64_t nanosec = (int64_t)vec->nanoseconds[rowIndex];
 			int64_t timestamp = 0;
@@ -198,7 +214,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 			dataBuffer *ptr = options.buffer.getDataBuffer(columnIndex);
 			if (colType->getPrecision() <= 18)
 			{
-				orc::Decimal64VectorBatch *d64vec = dynamic_cast<orc::Decimal64VectorBatch *>(batch);
+				orc::Decimal64VectorBatch *d64vec = ORC_SAFE_CAST(orc::Decimal64VectorBatch, batch, columnName, typeOid);
 				int64_t *values = d64vec->values.data();
 				scale = d64vec->scale;
 				int64_t value = values[rowIndex];
@@ -206,7 +222,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 			}
 			else if (colType->getPrecision() <= 38)
 			{
-				orc::Decimal128VectorBatch *d128vec = dynamic_cast<orc::Decimal128VectorBatch *>(batch);
+				orc::Decimal128VectorBatch *d128vec = ORC_SAFE_CAST(orc::Decimal128VectorBatch, batch, columnName, typeOid);
 				scale = d128vec->scale;
 				orc::Int128 *values = d128vec->values.data();
 				orc::Int128 value = values[rowIndex];
@@ -221,7 +237,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 		}
 		case CHAROID:
 		{
-			orc::StringVectorBatch *vec = dynamic_cast<orc::StringVectorBatch *>(batch);
+			orc::StringVectorBatch *vec = ORC_SAFE_CAST(orc::StringVectorBatch, batch, columnName, typeOid);
 			return CharGetDatum(vec->data[rowIndex][0]);
 		}
 		case BYTEAOID:
@@ -229,7 +245,7 @@ Datum orcFileReader::readField(TupleDesc tupDesc, Oid typeOid, int rowIndex, con
 		case BPCHAROID:
 		case VARCHAROID:
 		{
-			orc::StringVectorBatch *vec = dynamic_cast<orc::StringVectorBatch *>(batch);
+			orc::StringVectorBatch *vec = ORC_SAFE_CAST(orc::StringVectorBatch, batch, columnName, typeOid);
 			int64_t size = vec->length[rowIndex];
 			if (size > BUFFER_LENGTH)
 			{

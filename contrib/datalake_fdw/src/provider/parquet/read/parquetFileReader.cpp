@@ -137,6 +137,8 @@ int64_t parquetFileReader::rowGroupOffset(int row_group_num)
 void parquetFileReader::createScanners()
 {
     int index = 0;
+    auto schema = file_metadata->schema();
+    columnDescriptors.resize(scanners.size(), nullptr);
     for (int i = 0; i < num_columns; i++)
     {
         if (options.nPartitionKey <= 0 && !options.includes_columns[i])
@@ -147,18 +149,20 @@ void parquetFileReader::createScanners()
         }
         std::shared_ptr<parquet::ColumnReader> col_reader = row_group_reader->Column(i);
         scanners[index] = ::parquet::Scanner::Make(col_reader, options.batch_size);
+        columnDescriptors[index] = schema->Column(i);
         index++;
     }
 }
 
 void parquetFileReader::resetScanners() {
     scanners.clear();
+    columnDescriptors.clear();
 }
 
 
 Datum parquetFileReader::read(Oid typeOid, int column_index, bool &isNull, int &state)
 {
-    const parquet::ColumnDescriptor* des = file_metadata->schema()->Column(column_index);
+    const parquet::ColumnDescriptor* des = columnDescriptors[column_index];
 
     auto &scanner = scanners[column_index];
     switch(typeOid)
@@ -323,24 +327,36 @@ Datum parquetFileReader::read(Oid typeOid, int column_index, bool &isNull, int &
         case TIMESTAMPOID:
         case TIMESTAMPTZOID:
         {
-            parquet::TypedScanner<parquet::Int96Type>* scanner_ = reinterpret_cast<parquet::TypedScanner<parquet::Int96Type>*>(scanner.get());
-            parquet::Int96 values;
-            bool hasRow = scanner_->NextValue(&values, &isNull);
-            if (!hasRow)
+            /*
+             * Handle both INT64 (new: microseconds since Unix epoch) and
+             * INT96 (legacy: Julian day + nanoseconds) timestamp formats.
+             */
+            if (des->physical_type() == ::parquet::Type::INT64)
             {
-                //no row to read
-                state = -1;
-                return 0;
+                /* INT64 MICROS: microseconds since Unix epoch */
+                static const int64_t UNIX_TO_PG_EPOCH_USECS =
+                    ((int64_t)(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)) * SECS_PER_DAY * USECS_PER_SEC;
+                parquet::TypedScanner<parquet::Int64Type>* scanner_ = reinterpret_cast<parquet::TypedScanner<parquet::Int64Type>*>(scanner.get());
+                int64_t values = 0;
+                bool hasRow = scanner_->NextValue(&values, &isNull);
+                if (!hasRow) { state = -1; return 0; }
+                if (isNull) return 0;
+                return Int64GetDatum(values - UNIX_TO_PG_EPOCH_USECS);
             }
-            if (isNull)
+            else
             {
-                return 0;
+                /* INT96 legacy: Julian day + nanoseconds within day */
+                parquet::TypedScanner<parquet::Int96Type>* scanner_ = reinterpret_cast<parquet::TypedScanner<parquet::Int96Type>*>(scanner.get());
+                parquet::Int96 values;
+                bool hasRow = scanner_->NextValue(&values, &isNull);
+                if (!hasRow) { state = -1; return 0; }
+                if (isNull) return 0;
+                int64_t second = parquet::Int96GetSeconds(values);
+                int64_t micsecs = (second + (UNIX_EPOCH_JDATE - POSTGRES_EPOCH_JDATE) *60*60*24) * 1000000;
+                int64_t diff_micsecs = parquet::Int96GetMicroSeconds(values) - second * 1000000;
+                int64_t timestamp = micsecs + diff_micsecs;
+                return Int64GetDatum(timestamp);
             }
-            int64_t second = parquet::Int96GetSeconds(values);
-            int64_t micsecs = (second + (UNIX_EPOCH_JDATE - POSTGRES_EPOCH_JDATE) *60*60*24) * 1000000;
-            int64_t diff_micsecs = parquet::Int96GetMicroSeconds(values) - second * 1000000;
-            int64_t timestamp = micsecs + diff_micsecs;
-            return Int64GetDatum(timestamp);
         }
         case NUMERICOID:
         {

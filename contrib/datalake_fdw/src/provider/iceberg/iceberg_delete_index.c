@@ -167,9 +167,17 @@ icebergBuildDeleteIndex(MemoryContext parentMcxt,
 		Datum			values[2] = {0, 0};
 		DatalakeInternalRecord record = {values, nulls, 0};
 
-		reader = (Reader *) datalakeCreateFileReader(indexMcxt, schema, attrUsed,
-													 true, deleteFile,
-													 gopherFilesystem, -1, -1, NULL);
+		/*
+		 * datalakeCreateFileReader stores the FileFragment pointer and
+		 * fileReaderClose() will pfree() it.  Pass a private copy so the
+		 * original fragment in the task's deletes list is not destroyed.
+		 */
+		{
+			FileFragment *deleteCopy = copyObject(deleteFile);
+			reader = (Reader *) datalakeCreateFileReader(indexMcxt, schema, attrUsed,
+														 true, deleteCopy,
+														 gopherFilesystem, -1, -1, NULL);
+		}
 
 		while (reader->Next(reader, &record))
 		{

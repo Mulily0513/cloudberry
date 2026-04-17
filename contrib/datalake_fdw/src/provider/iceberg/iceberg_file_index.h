@@ -86,9 +86,21 @@ icebergGetNumFiles(IcebergFileIndexMap *map);
 extern void
 icebergClearFileIndexMap(IcebergFileIndexMap *map);
 
-/* Encode file ID and row offset into TID */
-extern void
-icebergEncodeTID(ItemPointer tid, uint32 fileId, int64 rowOffset);
+/* Encode file ID and row offset into TID — inlined for hot path */
+static inline void
+icebergEncodeTID(ItemPointer tid, uint32 fileId, int64 rowOffset)
+{
+	BlockNumber blkno;
+	OffsetNumber offset;
+
+	Assert(fileId <= ICEBERG_MAX_FILE_ID);
+	Assert(rowOffset >= 0 && rowOffset <= ICEBERG_MAX_ROW_OFFSET);
+
+	blkno = (fileId << ICEBERG_ROW_OFFSET_HIGH_BITS) |
+			((rowOffset >> ICEBERG_ROW_OFFSET_LOW_BITS) & ICEBERG_ROW_OFFSET_HIGH_MASK);
+	offset = (OffsetNumber)(rowOffset & ICEBERG_ROW_OFFSET_LOW_MASK);
+	ItemPointerSet(tid, blkno, offset);
+}
 
 /* Decode TID into file ID and row offset */
 extern void

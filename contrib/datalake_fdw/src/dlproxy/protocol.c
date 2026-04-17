@@ -35,6 +35,7 @@
 
 #include "src/datalake_def.h"
 #include "src/common/fileMetadata.h"
+#include "icebergConfig.h"
 
 #define BUFFER_SIZE 4096
 
@@ -207,6 +208,13 @@ datalake_destroy_context(datalake_gphadoop_context *context, bool afterError)
 		context->filterstr = NULL;
 	}
 
+	/* Free request body if it was allocated */
+	if (context->request_body != NULL)
+	{
+		pfree(context->request_body);
+		context->request_body = NULL;
+	}
+
 	pfree(context->uri.data);
 	pfree(context->buffer);
 	pfree(context);
@@ -279,6 +287,10 @@ create_context_(Oid relid,
 
 	context->buffer = palloc(BUFFER_SIZE);
 	context->buffer_size = BUFFER_SIZE;
+
+	/* Initialize request body fields */
+	context->request_body = NULL;
+	context->request_body_len = 0;
 
 	return context;
 }
@@ -384,6 +396,22 @@ datalakeDoRPC_once(datalake_gphadoop_context *context)
 		/* Clean up JSON buffer with NULL check for safety */
 		if (json_data.data)
 			pfree(json_data.data);
+	}
+	else if (context->request_body != NULL && context->request_body_len > 0)
+	{
+		/* For requests with body payload (POST with JSON configuration) */
+		context->churl_handle = datalake_churl_init_upload(context->uri.data, context->churl_headers);
+		datalake_churl_write(context->churl_handle, context->request_body, context->request_body_len);
+		/* Signal end of data */
+		datalake_churl_write(context->churl_handle, NULL, 0);
+		read_all_post_response_data(context);
+		context->completed = true;
+		datalake_churl_cleanup(context->churl_handle, false);
+		context->churl_handle = NULL;
+		/* Free request body */
+		pfree(context->request_body);
+		context->request_body = NULL;
+		context->request_body_len = 0;
 	}
 	else
 	{
@@ -576,6 +604,7 @@ add_querydata_to_http_headers(datalake_gphadoop_context *context, transform_call
 	inputData.quals = context->quals;
 	inputData.relName = context->relName;
 	inputData.schemaName     = context->schemaName;
+	inputData.file_list = NIL;
 	datalake_build_http_headers(&inputData, transform);
 }
 
@@ -589,10 +618,8 @@ add_write_querydata_to_http_headers(datalake_gphadoop_context *context, transfor
 	inputData.rel			= context->relation;
 	inputData.relName		= context->relName;
 	inputData.schemaName	= context->schemaName;
+	inputData.file_list		= context->file_list;
 	datalake_build_http_headers(&inputData, transform);
-
-	/* Set JSON content type for POST request body */
-	datalake_churl_headers_append(context->churl_headers, "Content-Type", "application/json");
 }
 
 /*
@@ -661,6 +688,19 @@ internal_get_external_fragments(char *profile,
 		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-SCAN-TYPE", "snapshot");
 		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-METHOD", "getFragments");
 
+		/* Add JSON configuration to the request (Iceberg only) */
+		if (pg_strcasecmp(profile, "iceberg") == 0)
+		{
+			char *jsonConfig = getIcebergConfigJsonString(relid);
+			if (jsonConfig != NULL && strlen(jsonConfig) > 0)
+			{
+				datalake_churl_headers_append(context->churl_headers, "Content-Type", "application/json");
+				datalake_churl_headers_append(context->churl_headers, "Content-Length", psprintf("%zu", strlen(jsonConfig)));
+				context->request_body = pstrdup(jsonConfig);
+				context->request_body_len = strlen(jsonConfig);
+			}
+		}
+
 		datalakeDoRPC((datalake_gphadoop_context *) context);
 		result = parseFn(context->buffer, context->buffer_pos);
 
@@ -728,6 +768,7 @@ internal_commit_external_common(Oid relid, List *file_list, List *locations,
 	PG_END_TRY();
 }
 
+
 void
 internal_commit_external_write(Oid relid,
 								List *file_list,
@@ -759,7 +800,7 @@ internal_get_current_snapshot_statistics(Oid relid, List *locations, parse_callb
 								NULL,
 								strVal(linitial(locations)),
 								transform_datalake_options);
-	
+
 		datalake_churl_headers_append(context->churl_headers, "X-GP-OPTIONS-PROFILE", "iceberg");
 
 		char *catalogType = get_catalog_type("iceberg", locations);

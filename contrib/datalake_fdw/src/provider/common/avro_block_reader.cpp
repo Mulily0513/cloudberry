@@ -57,7 +57,7 @@ AvroBlockReader::createMapping(List *columnDesc, bool *attrUsed)
 	foreach_with_count(lc, columnDesc, i)
 	{
 		DatalakeFieldDescription *entry = (DatalakeFieldDescription *) lfirst(lc);
-		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN};
+		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN, 0, 0, 0, nullptr};
 
 		typeMap_.push_back(typInfo);
 

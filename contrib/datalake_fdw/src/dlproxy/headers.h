@@ -41,6 +41,7 @@ typedef struct sDlProxyInputData
 	List           *quals;
 	char           *relName;
 	char           *schemaName;
+	List		   *file_list; /* List of FileFragment, used for write operations */
 } DlProxyInputData;
 
 /*

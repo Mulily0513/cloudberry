@@ -107,7 +107,18 @@ typedef struct DatalakeRowReader
 	MemoryContext			curMcxt;
 	void 					*buffer;
 	bool					fileIndexMapInitialized;	/* Track if Iceberg file index map has been initialized */
+	bool					deleteIndexBuilt;			/* True after first icebergBuildDeleteIndex attempt */
 	void					*deleteIndex;				/* IcebergDeleteIndex for position delete dedup */
+
+	/*
+	 * Fast-path cache: direct pointer to the innermost format reader
+	 * (e.g. parquet_next + BaseFileReader*), bypassing 3 layers of
+	 * function-pointer indirection per row.  Set by C code in
+	 * row_reader.c after successful datalakeRowReaderNext().
+	 */
+	bool					(*deepNext)(void *reader, DatalakeInternalRecord *record);
+	void					*deepReader;	/* e.g. BaseFileReader* as void* */
+	uint32					deepFileId;		/* cached fileId for TID encoding */
 } DatalakeRowReader;
 
 typedef struct DatalakeRemoteFileHandle
@@ -162,7 +173,7 @@ bool hudiGreaterThan(Oid type, Datum datum1, Datum datum2);
 void datalakeInitRecord(InternalRecordWrapper *record, void *recordDesc, int nColumns);
 void datalakeCleanupRecord(InternalRecordWrapper *record);
 DatalakeInternalRecordDesc *createInternalRecordDesc(MemoryContext mcxt, List *columnDesc, List *recordKeyFields,
-							 char *preCombineField, int *preCombineFieldIndex, Oid *preCombineFieldType);
+						 char *preCombineField, int *preCombineFieldIndex, Oid *preCombineFieldType);
 void destroyInternalRecordDesc(DatalakeInternalRecordDesc *recordDesc);
 
 #endif /* _UTILS_H_ */

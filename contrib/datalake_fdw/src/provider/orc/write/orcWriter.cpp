@@ -123,6 +123,9 @@ void orcWrite::initORC()
 
 void orcWrite::closeORC()
 {
+	if (!openState)
+		return;
+
 	if (rows != 0) {
 		writeToBatch(rows);
 		rows = 0;
@@ -361,10 +364,10 @@ void orcWrite::fillStringValues(const char* data,
 	if (data == NULL) {
 		elog(ERROR, "orc write string buffer is null");
 	}
-	fields->notNull[numValues] = 1;
 	int64_t datalen = static_cast<int64_t> (strlen(data));
 	resizeDataBuff(numValues, buffer, datalen, offset, type);
 
+	fields->notNull[numValues] = 1;
 	memcpy(buffer.data() + offset,
 			data,
 			datalen);

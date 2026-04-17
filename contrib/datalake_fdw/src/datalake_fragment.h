@@ -18,6 +18,7 @@ char *datalakeGetExternalWriteLocation(Oid relid);
 
 IcebergTableStatistics *datalakeGetTableStatistics(Oid relid, dataLakeOptions *options);
 
+
 void datalakeFreeFragmentLists(List *fragments);
 
 #endif

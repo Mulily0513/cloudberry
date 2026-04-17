@@ -57,7 +57,7 @@ ParquetReader::createMapping(List *columnDesc, bool *attrUsed)
 	foreach_with_count(lc, columnDesc, i)
 	{
 		DatalakeFieldDescription *entry = (DatalakeFieldDescription *) lfirst(lc);
-		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN, 0, 0};
+		TypeInfo typInfo = {entry->typeOid, entry->typeMod, InvalidOid, -1, TIMEUNIT_UNKNOWN, 0, 0, 0, nullptr};
 		typeMap_.push_back(typInfo);
 
 		if (!attrUsed[i])
@@ -74,7 +74,9 @@ ParquetReader::createMapping(List *columnDesc, bool *attrUsed)
 				typeMap_[i].fileTypeId_ = mapParquetDataType(field->physical_type());
 				typeMap_[i].timeUnit_ = getTimeUnit(field);
 				typeMap_[i].scale_ = field->type_scale();
+				typeMap_[i].precision_ = field->type_precision();
 				typeMap_[i].typeLength_ = field->type_length();
+				typeMap_[i].readFn_ = resolveReadFn(typeMap_[i]);
 				break;
 			}
 		}
@@ -220,6 +222,12 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 			((parquet::TypedScanner<parquet::BooleanType> *)scanner.get())->NextValue(&d.boolValue, &isNull);
 			return BoolGetDatum(d.boolValue);
 		}
+		case INT2OID:
+		{
+			/* Parquet stores SMALLINT as INT32; read and truncate */
+			((parquet::TypedScanner<parquet::Int32Type> *)scanner.get())->NextValue(&d.int32Value, &isNull);
+			return Int16GetDatum((int16) d.int32Value);
+		}
 		case INT4OID:
 		{
 			((parquet::TypedScanner<parquet::Int32Type> *)scanner.get())->NextValue(&d.int32Value, &isNull);
@@ -266,6 +274,7 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 		}
 		case BYTEAOID:
 		case TEXTOID:
+		case VARCHAROID:
 		{
 			parquet::ByteArray value;
 			((parquet::TypedScanner<parquet::ByteArrayType> *)scanner.get())->NextValue(&value, &isNull);
@@ -336,7 +345,13 @@ ParquetReader::readPrimitive(const TypeInfo &typInfo, bool &isNull)
 					pgTimestamp = d.int64Value / 1000 - UNIX_TO_PG_EPOCH_USECS;
 					break;
 				default:
-					throw Error("parquet error: Unknown timestamp precision");
+					/*
+					 * Fallback for files without explicit timestamp LogicalType
+					 * (e.g., legacy INT96 or INT64 without annotation).
+					 * Default to microseconds — the Iceberg standard.
+					 */
+					pgTimestamp = d.int64Value - UNIX_TO_PG_EPOCH_USECS;
+					break;
 			}
 			return TimestampGetDatum(pgTimestamp);
 		}
@@ -397,7 +412,15 @@ ParquetReader::readDecimal(std::shared_ptr<parquet::Scanner> &scanner, const Typ
 			((parquet::TypedScanner<parquet::FLBAType> *)scanner.get())->NextValue(&value, &isNull);
 			if (isNull)
 				PG_RETURN_DATUM(0);
-			int_to_numeric_with_scale(FLBA_to_int128(value.ptr, typInfo.typeLength_), scale, (Numeric) out_buf);
+			/*
+			 * For DECIMAL with precision <= 18, the value fits in int64.
+			 * Use native 64-bit division instead of __int128 software division,
+			 * which is ~5x faster on aarch64.
+			 */
+			if (typInfo.precision_ > 0 && typInfo.precision_ <= 18)
+				int_to_numeric_with_scale(FLBA_to_int64(value.ptr, typInfo.typeLength_), scale, (Numeric) out_buf);
+			else
+				int_to_numeric_with_scale(FLBA_to_int128(value.ptr, typInfo.typeLength_), scale, (Numeric) out_buf);
 			return NumericGetDatum(out_buf);
 		}
 	}
@@ -406,3 +429,108 @@ ParquetReader::readDecimal(std::shared_ptr<parquet::Scanner> &scanner, const Typ
 }
 
 void ParquetReader::decodeRecord() {}
+
+/*
+ * Per-type direct read functions.  Called via function pointer from
+ * populateRecord(), bypassing virtual dispatch and the type switch.
+ * Each covers the hot path for one physical Parquet type; complex types
+ * (TEXT, BPCHAR, UUID, TIMESTAMP, NUMERIC) still go through readPrimitive
+ * because they need buffer management or multi-step conversion.
+ */
+
+Datum
+ParquetReader::readBoolColumn(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	bool value;
+	((parquet::TypedScanner<parquet::BooleanType> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return BoolGetDatum(value);
+}
+
+Datum
+ParquetReader::readInt16Column(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	int32_t value;
+	((parquet::TypedScanner<parquet::Int32Type> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return Int16GetDatum((int16) value);
+}
+
+Datum
+ParquetReader::readInt32Column(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	int32_t value;
+	((parquet::TypedScanner<parquet::Int32Type> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return Int32GetDatum(value);
+}
+
+Datum
+ParquetReader::readInt64Column(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	int64_t value;
+	((parquet::TypedScanner<parquet::Int64Type> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return Int64GetDatum(value);
+}
+
+Datum
+ParquetReader::readFloat4Column(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	float value;
+	((parquet::TypedScanner<parquet::FloatType> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return Float4GetDatum(value);
+}
+
+Datum
+ParquetReader::readFloat8Column(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	double value;
+	((parquet::TypedScanner<parquet::DoubleType> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return Float8GetDatum(value);
+}
+
+Datum
+ParquetReader::readDateColumn(BaseFileReader *r, int idx, bool &isNull)
+{
+	auto *self = static_cast<ParquetReader *>(r);
+	int32_t value;
+	((parquet::TypedScanner<parquet::Int32Type> *)self->scanners_[idx].get())->NextValue(&value, &isNull);
+	return DateADTGetDatum(value + (UNIX_EPOCH_JDATE - POSTGRES_EPOCH_JDATE));
+}
+
+/*
+ * Resolve which direct read function to use for a column.  Returns NULL
+ * for complex types that need buffer management or multi-step conversion;
+ * those fall back to readPrimitive() via virtual dispatch.
+ */
+ReadColumnFn
+ParquetReader::resolveReadFn(const TypeInfo &typInfo)
+{
+	switch (typInfo.pgTypeId_)
+	{
+		case BOOLOID:
+			return readBoolColumn;
+		case INT2OID:
+			return readInt16Column;
+		case INT4OID:
+			return readInt32Column;
+		case TIMEOID:
+		case INT8OID:
+			return readInt64Column;
+		case FLOAT4OID:
+			return readFloat4Column;
+		case FLOAT8OID:
+			return readFloat8Column;
+		case DATEOID:
+			return readDateColumn;
+		default:
+			/*
+			 * BPCHAR, TEXT, BYTEA, UUID, TIMESTAMP, NUMERIC — these need
+			 * buffer_ access or multi-step logic, handled by readPrimitive.
+			 */
+			return nullptr;
+	}
+}

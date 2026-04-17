@@ -33,7 +33,7 @@ public:
 
     void freeDataBuffer();
 
-    dataBuffer *getDataBuffer(int column);
+    inline dataBuffer *getDataBuffer(int column) { return mDataBuffer[column]; }
 
 private:
     std::vector<dataBuffer*> mDataBuffer;

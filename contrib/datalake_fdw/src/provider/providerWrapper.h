@@ -41,6 +41,8 @@ void destroyHandler(providerWrapper provider);
 
 void destroyProvider(providerWrapper provider);
 
+void *getProviderRowReader(providerWrapper provider);
+
 #ifdef __cplusplus
 }
 #endif

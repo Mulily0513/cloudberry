@@ -1,10 +1,19 @@
 # contrib/datalake_fdw/Makefile
 
 MODULE_big = datalake_fdw
+
 OBJS = 	src/datalake_fdw.o \
 		src/datalake_def.o \
 		src/datalake_fragment.o \
 		src/datalake_option.o \
+		src/iceberg_volume_fdw/iceberg_volume_option.o \
+		src/iceberg_volume_fdw/iceberg_volume_fdw.o \
+		src/iceberg_volume_fdw/iceberg_toolkit_volume_fdw.o \
+		src/iceberg_catalog_fdw/iceberg_catalog_fdw.o \
+		src/iceberg_catalog_fdw/iceberg_catalog_option.o \
+		src/iceberg_catalog_fdw/iceberg_toolkit_catalog_fdw.o \
+		src/common/iceberg_toolkit_common.o \
+		src/common/fdwFunction.o \
 		src/common/dataBufferArray.o \
 		src/common/dataBufferArray_c.o \
 		src/common/datalakeBuffer.o \
@@ -20,6 +29,7 @@ OBJS = 	src/datalake_fdw.o \
 		src/common/grammar_convert.o \
 		src/common/exttable.o \
 		src/common/gopherresowner.o \
+		src/common/parser_option.o \
 		src/dlproxy/deparse.o \
 		src/dlproxy/filters.o \
 		src/dlproxy/headers.o \
@@ -31,6 +41,8 @@ OBJS = 	src/datalake_fdw.o \
 		src/dlproxy/protocol.o \
 		src/dlproxy/uriparser.o \
 		src/dlproxy/utils.o \
+		src/dlproxy/icebergOptions.o \
+		src/dlproxy/icebergConfig.o \
 		src/provider/parquet/read/parquetRead.o \
 		src/provider/parquet/read/parquetInputStream.o \
 		src/provider/parquet/read/parquetFileReader.o \
@@ -98,7 +110,26 @@ OBJS = 	src/datalake_fdw.o \
 		src/provider/providerWrapper.o \
 		src/provider/provider.o \
 		src/hdw_gopher_cache/hdw_gopher_cache.o \
-		src/common/fileMetadata.o
+		src/am_iceberg/pg_iceberg_guc.o \
+		src/am_iceberg/pg_iceberg_ddl.o \
+		src/am_iceberg/pg_iceberg_am.o \
+		src/am_iceberg/pg_iceberg_am_handler.o \
+		src/am_iceberg/pg_iceberg_catalog.o \
+		src/am_iceberg/pg_iceberg_metadata.o \
+		src/am_iceberg/pg_iceberg_deletion_queue.o \
+		src/am_iceberg/pg_iceberg_catalog_helper.o \
+		src/am_iceberg/pg_iceberg_catalog_utils.o \
+		src/am_iceberg/pg_iceberg_options.o \
+		src/am_iceberg/pg_iceberg_metadata_tracker.o \
+		src/am_iceberg/pg_iceberg_rewrite_plan.o \
+		src/common/fileMetadata.o \
+		src/components/agent_cli/src/agent_c_api.o \
+		src/components/agent_cli/src/agent_client.o \
+		src/components/agent_cli/src/http_client.o \
+		src/components/agent_cli/src/agent_types.o \
+		src/components/agent_cli/src/json_builder.o \
+		src/components/agent_cli/src/agent_cjson_builder.o \
+		src/components/agent_cli/src/logger.o
 
 # Avoid building LLVM Bitcode for datalake_fdw module.
 with_llvm = no
@@ -121,7 +152,7 @@ else
     $(info Please specify JANSSON_STATIC_PATH with: make JANSSON_STATIC_PATH="/path/to/lib")
 endif
 
-PG_CPPFLAGS = -DSNAPPY_CODEC_AVAILABLE
+PG_CPPFLAGS = -DSNAPPY_CODEC_AVAILABLE -Isrc/iceberg_catalog_fdw -Isrc/components/agent_cli/c_interface -Isrc/components/agent_cli/include
 
 EXTENSION = datalake_fdw
 DATA = datalake_fdw--1.0.sql
@@ -150,6 +181,13 @@ REGRESS_OPTS += --init-file=test/init_file
 arrow_dist_dir = $(abspath $(top_builddir)/contrib/apache-arrow/dist)
 
 PG_CPPFLAGS += -fPIC -I$(arrow_dist_dir)/include -I../../src/interfaces
+
+# Override -O0 from the global build for this performance-critical module.
+# The datalake_fdw hot paths (numeric conversion, row population, vector access)
+# benefit significantly from inlining and loop optimizations.
+PG_CFLAGS += -O2
+PG_CXXFLAGS += -O2
+
 PG_CFLAGS += -Wno-error=stringop-overflow
 PG_CFLAGS += -I $(shell pg_config --includedir) -I../../src/interfaces
 PG_LDFLAGS += $(shell pg_config --ldflags) -L$(arrow_dist_dir)/lib

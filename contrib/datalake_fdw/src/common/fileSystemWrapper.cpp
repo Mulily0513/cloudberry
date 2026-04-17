@@ -493,7 +493,8 @@ gopherConfig* datalakeCreateGopherConfig(void *opt)
 		{
 			conf->ufs_type = OSS;
 		}
-		else if (pg_strcasecmp(strConvertLow(options->gopherType), "s3") == 0)
+		else if (pg_strcasecmp(strConvertLow(options->gopherType), "s3") == 0 ||
+				pg_strcasecmp(strConvertLow(options->gopherType), "s3a") == 0)
 		{
 			conf->ufs_type = S3A;
 		}
@@ -526,14 +527,19 @@ gopherConfig* datalakeCreateGopherConfig(void *opt)
 		if (options->host)
 		{
 			char endpoint[1024] = {0};
+			std::string hostStr = options->host;
+
+			// Strip protocol prefix (http:// or https://)
+			if (hostStr.find("http://") == 0)
+				hostStr = hostStr.substr(7);
+			else if (hostStr.find("https://") == 0)
+				hostStr = hostStr.substr(8);
+
 			if (options->port > 0)
 			{
 				char port[100] = {0};
 				sprintf(port, "%d", options->port);
-				std::string portStr = port;
-				std::string ss = ":";
-				portStr = ss + portStr;
-				std::string hostStr = options->host;
+				std::string portStr = ":" + std::string(port);
 				size_t pos = hostStr.find(portStr);
 				if (pos > 0)
 				{
@@ -542,11 +548,11 @@ gopherConfig* datalakeCreateGopherConfig(void *opt)
 						"datalake support config host and port.",
 							options->port, options->host));
 				}
-				snprintf(endpoint, 1024, "%s:%d", options->host, options->port);
+				snprintf(endpoint, 1024, "%s:%d", hostStr.c_str(), options->port);
 			}
 			else
 			{
-				snprintf(endpoint, 1024, "%s", options->host);
+				snprintf(endpoint, 1024, "%s", hostStr.c_str());
 			}
 			conf->endpoint = pstrdup(endpoint);
 		}

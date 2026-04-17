@@ -12,9 +12,9 @@ void hudiRead::createHandler(void *sstate)
 
 int64_t hudiRead::read(void *values, void *nulls)
 {
-    protocolContext->record = (DatalakeInternalRecord *) palloc0(sizeof(DatalakeInternalRecord));
-    protocolContext->record->nulls = (bool *)nulls;
-    protocolContext->record->values = (Datum *)values;
+    record_.nulls = (bool *)nulls;
+    record_.values = (Datum *)values;
+    protocolContext->record = &record_;
 
     return datalakeRowReaderNext(protocolContext->file->reader, protocolContext->record);
 }
@@ -22,6 +22,11 @@ int64_t hudiRead::read(void *values, void *nulls)
 void hudiRead::destroyHandler()
 {
     releaseResources();
+    /*
+     * record_ is a C++ member (not palloc'd), so clear the pointer
+     * before datalakeCleanupContext() which would pfree() it.
+     */
+    protocolContext->record = NULL;
     datalakeCleanupContext(protocolContext);
 }
 

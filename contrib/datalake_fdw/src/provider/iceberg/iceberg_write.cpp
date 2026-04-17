@@ -15,32 +15,38 @@ namespace Internal {
 void icebergWrite::createHandler(void *sstate)
 {
 	ss = (dataLakeFdwScanState*)sstate;
-    gopherConfig *conf = datalakeCreateGopherConfig((void*)(ss->options->gopher));
-    fileStream = datalakeCreateFileSystem(conf);
-    datalakeFreeGopherConfig(conf);
+	gopherConfig *conf = datalakeCreateGopherConfig((void*)(ss->options->gopher));
+	fileStream = datalakeCreateFileSystem(conf);
+	datalakeFreeGopherConfig(conf);
 	prefix = (char*)lfirst(list_head(ss->fragments));
 	initWriteOption();
-    file_name = generateWriteFileName(prefix, "", "parquet");
-	append_file_prefix = generateWriteFilePrefix(ss->options);
+	buildFilePrefix(ss->options);
+	generateNewFileName();
 	file_writer = std::make_unique<parquetFileWriter>();
 	file_writer->init(sstate, option);
 }
 
-std::string icebergWrite::generateWriteFilePrefix(dataLakeOptions *opt)
+void icebergWrite::buildFilePrefix(dataLakeOptions *opt)
 {
-	std::stringstream stream;
+	std::stringstream buf;
 	if (PROTOCOL_IS_HDFS(opt->protocol))
 	{
-		stream << opt->gopher->gopherType << "://" << opt->gopher->hdfs_namenode_host << ":" << opt->gopher->hdfs_namenode_port;
+		buf << opt->gopher->gopherType << "://" << opt->gopher->hdfs_namenode_host << ":" << opt->gopher->hdfs_namenode_port;
 	}
-	else if (PROTOCOL_IS_OSS(opt->protocol)) {
-		stream << opt->gopher->gopherType << "://" << opt->gopher->bucket << "/";
+	else if (PROTOCOL_IS_OSS(opt->protocol))
+	{
+		buf << opt->gopher->gopherType << "://" << opt->gopher->bucket;
 	}
 	else
 	{
 		elog(ERROR, "Datalake foreign table Error, gopher type %s is not supported for iceberg.", opt->gopher->gopherType);
 	}
-	return stream.str();
+	append_file_prefix = buf.str();
+}
+
+void icebergWrite::generateNewFileName()
+{
+	file_name = generateIcebergUuidFileName(prefix, "parquet");
 }
 
 void icebergWrite::appendFileMeta()
@@ -65,7 +71,7 @@ void icebergWrite::initWriteOption()
 
 int64_t icebergWrite::write(const void* buf, int64_t length)
 {
-    if (file_writer->isOpen() && option.writeFileSize > 0 && file_writer->getWrittenBytes() + length > option.writeFileSize)
+	if (file_writer->isOpen() && option.writeFileSize > 0 && file_writer->getWrittenBytes() + length > option.writeFileSize)
 	{
 		file_writer->closeParquetWriter();
 		appendFileMeta();
@@ -74,8 +80,8 @@ int64_t icebergWrite::write(const void* buf, int64_t length)
 
 	if (!file_writer->isOpen())
 	{
-		file_name = generateWriteFileName(prefix, "", "parquet");
-        file_writer->createParquetWriter(fileStream, file_name);
+		generateNewFileName();
+		file_writer->createParquetWriter(fileStream, file_name);
 		tuple_num = 0;
 	}
 	int64_t len = file_writer->write(buf, length);
@@ -85,27 +91,49 @@ int64_t icebergWrite::write(const void* buf, int64_t length)
 
 void icebergWrite::destroyHandler()
 {
-    if (file_writer->isOpen())
-    {
-        file_writer->closeParquetWriter();
-        appendFileMeta();
-    }
-    datalakeDestroyFileSystem(fileStream);
-    fileStream = NULL;
+	if (file_writer->isOpen())
+	{
+		file_writer->closeParquetWriter();
+		appendFileMeta();
+	}
+	datalakeDestroyFileSystem(fileStream);
+	fileStream = NULL;
 
 	if (fileMetas != NIL)
 	{
-		ListCell *lc = NULL;
-		int i;
-		foreach_with_count (lc, fileMetas, i)
+		if (ss->collect_qe_metadata)
 		{
-			FileFragment *meta = (FileFragment *)lfirst(lc);
-			bytea *msg = FDW_serializeMeta(meta);
-			FDW_SendMeta(msg);
-			pfree(msg);
-			pfree(meta->filePath);
+			/*
+			 * Local collection path: transfer FileFragment ownership
+			 * to ss->local_meta_list.  No serialize/deserialize round-trip.
+			 * appendFileMeta() allocates in CurrentMemoryContext->parent,
+			 * which outlives this function.
+			 */
+			ListCell *lc = NULL;
+			int i;
+			foreach_with_count (lc, fileMetas, i)
+			{
+				FileFragment *meta = (FileFragment *)lfirst(lc);
+				ss->local_meta_list = lappend(ss->local_meta_list, meta);
+			}
+			/* Free list spine only; FileFragment ownership transferred */
+			list_free(fileMetas);
 		}
-		list_free_deep(fileMetas);
+		else
+		{
+			/* Normal network send path */
+			ListCell *lc = NULL;
+			int i;
+			foreach_with_count (lc, fileMetas, i)
+			{
+				FileFragment *meta = (FileFragment *)lfirst(lc);
+				bytea *msg = FDW_serializeMeta(meta, ss->rel->rd_id);
+				FDW_SendMeta(msg);
+				pfree(msg);
+				pfree(meta->filePath);
+			}
+			list_free_deep(fileMetas);
+		}
 	}
 }
 }

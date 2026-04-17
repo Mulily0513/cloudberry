@@ -137,6 +137,7 @@
 #define DATALAKE_OPTION_CACHE_ENABLED "cache_enabled"
 #define DATALAKE_OPTION_QUERY_TYPE "query_type"
 #define DATALAKE_OPTION_METADATA_TABLE_ENABLE "metadata_table_enable"
+#define DATALAKE_OPTION_CATALOG_DEFAULT_IMPL "catalog_default_impl"
 
 
 #define FORMAT_IS_CSV(format) (format == DL_CSV_TABLE)
@@ -157,15 +158,15 @@
 
 #define PROTOCOL_IS_HDFS(protocol) (protocol == DL_HDFS_PROTOCOL)
 
-#define PROTOCOL_IS_S3(protocol) (protocol == DL_OSS_PROTOCOL_S3)
+#define PROTOCOL_IS_S3(protocol) (protocol == DL_OSS_PROTOCOL_S3A)
 
 #define PROTOCOL_IS_OSS(protocol) (protocol == DL_OSS_PROTOCOL_ALI || \
 	protocol == DL_OSS_PROTOCOL_COS || \
 	protocol == DL_OSS_PROTOCOL_QINGSTORE || \
-	protocol == DL_OSS_PROTOCOL_S3B || \
+	protocol == DL_OSS_PROTOCOL_S3AV2 || \
 	protocol == DL_OSS_PROTOCOL_HUAWEI || \
 	protocol == DL_OSS_PROTOCOL_KS3 || \
-	protocol == DL_OSS_PROTOCOL_S3)
+	protocol == DL_OSS_PROTOCOL_S3A)
 
 #define PARQUET_SUPPORT_COMPRESS(compress) (compress == UNCOMPRESS || \
 	compress == SNAPPY || compress == GZIP || \
@@ -181,6 +182,19 @@
 	(partitionkey != NULL) && (datasource != NULL) \
 
 
+
+
+
+/* iceberg table options */
+#define DATALAKE_ICEBERG_TABLE_NAME "table_name"
+#define DATALAKE_ICEBERG_TABLE_NAMESPCE_NAME "namespace_name"
+#define DATALAKE_ICEBERG_TABLE_BASE_LOCATION "base_location"
+
+/*
+ * datalake_fdw private BeginForeignModify flag.
+ * Enable QE-local metadata collection for vacuum rewrite path.
+ */
+#define DATALAKE_FDW_EFLAG_COLLECT_QE_METADATA 0x40000000
 
 enum datalakePrivatePartitionDataIndex
 {
@@ -259,6 +273,10 @@ typedef struct gopherOptions
 	char*	ftp_path;
 	char*	ftp_username;
 	char*	ftp_password;
+
+	/* database install dir */
+	// database_install_dir for datalake_agent load libgopherClient.so used
+	char*	database_install_dir;
 }gopherOptions;
 
 typedef struct hiveOptions
@@ -300,7 +318,6 @@ typedef struct dataLakeOptions
 	CompressType compress;
 	/* parser filePath get prefix */
 	char		*prefix;
-	bool		readFdw;
 	int64_t		fileSizeLimit;
 	bool		vectorization;
 	/* iceberg & hudi options */
@@ -316,6 +333,9 @@ typedef struct dataLakeOptions
 	char		*scope;
 	char		*polaris_server_url;
 	char		*polaris_server_realm;
+	/* iceberg catalog default impl */
+	bool		set_catalog_defualt_impl;
+	int			nJunkInfo;
 } dataLakeOptions;
 
 typedef struct dataLakeFdwPlanState
@@ -369,6 +389,15 @@ typedef struct dataLakeFdwScanState
 	TupleDesc				scan_tupdesc;
 	CmdType					cmd;
 	dataLakeModifyState		*modify_state;
+	bool					collect_qe_metadata;	/* QE local meta collection */
+	List					*local_meta_list;		/* QE: collected FileFragment list */
+
+	/*
+	 * Fast-path scan cache: direct pointer to innermost row reader,
+	 * bypassing all C++ provider layers per row.  Set after first
+	 * successful read in iterateScanStatus().
+	 */
+	void					*fastScanReader;	/* DatalakeRowReader* */
 } dataLakeFdwScanState;
 
 /* iceberg update */
@@ -389,6 +418,9 @@ typedef struct IcebergFileIndexMap IcebergFileIndexMap;  /* Forward declaration 
 
 /* Global file index map for Iceberg update/delete operations */
 extern IcebergFileIndexMap *datalake_iceberg_file_index_map;
+
+/* GUC variables */
+extern char *datalake_agent_server_url;
 
 /*
  * Global reference to the full fragment list from BeginForeignScan.

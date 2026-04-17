@@ -1,5 +1,6 @@
 #include <sys/time.h>
 #include <sstream>
+#include <uuid/uuid.h>
 #include "src/provider/orc/read/orcReadRecordBatch.h"
 #include "src/provider/parquet/read/parquetRead.h"
 #include "src/provider/parquet/write/parquetWrite.h"
@@ -12,6 +13,9 @@
 #include "src/provider/avro/write/avroWrite.h"
 #include "src/provider/iceberg/iceberg_read.h"
 #include "src/provider/iceberg/iceberg_write.h"
+
+
+
 
 extern "C" {
 #include "utils/builtins.h"
@@ -251,4 +255,28 @@ std::string Provider::generateWriteFileName(const std::string &writePrefix, cons
 	std::string result = fileName.str();
 	pfree(uuid);
 	return result;
+}
+
+std::string Provider::generateIcebergUuidFileName(const std::string &writePrefix, const std::string &suffix)
+{
+	std::stringstream fileName;
+	if (!writePrefix.empty())
+	{
+		fileName << writePrefix;
+		if (fileName.str().back() != '/')
+		{
+			fileName << "/";
+		}
+	}
+	// Generate UUID-based filename
+	char uuid_str[37] = {0};
+	uuid_t uuid;
+	uuid_generate_time(uuid);
+	uuid_unparse(uuid, uuid_str);
+	fileName << uuid_str;
+	if (!suffix.empty())
+	{
+		fileName << "." << suffix;
+	}
+	return fileName.str();
 }

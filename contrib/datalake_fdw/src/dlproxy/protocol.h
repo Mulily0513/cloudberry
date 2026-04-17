@@ -48,6 +48,9 @@ typedef struct
 	char           *relName;
 	char           *schemaName;
 	List		   *file_list;
+	/* Fields for request body support */
+	char           *request_body;     /* JSON configuration or other request body */
+	size_t          request_body_len; /* Length of request body */
 } datalake_gphadoop_context;
 
 typedef struct
@@ -78,6 +81,7 @@ extern IcebergTableStatistics*
 iceberg_get_current_snapshot_statistics(Oid relid,
 									 List *locations);
 
+
 extern List *
 hudi_get_external_fragments(Oid relid,
 							Index relno,
@@ -99,8 +103,8 @@ internal_commit_external_write(Oid relid,
 							   List *file_list,
 							   List *locations);
 
-extern void 
-internal_commit_external_update(Oid relid, 
+extern void
+internal_commit_external_update(Oid relid,
 							   List *file_list,
 							   List *locations);
 
@@ -108,6 +112,7 @@ extern IcebergTableStatistics*
 internal_get_current_snapshot_statistics(Oid relid,
 									  List *locations,
 									  parse_callback parseFn);
+
 
 extern void
 datalake_destroy_context(datalake_gphadoop_context *context, bool afterError);

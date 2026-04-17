@@ -176,7 +176,7 @@ get_partition_values(Relation relation, dataLakeOptions *options)
 			options->hiveOption->datasource,
 			(options->gopher->enableCache) ? "true" : "false",
 			(options->hiveOption->transactional) ? "true" : "false",
-			partitionkey.data);	
+			partitionkey.data);
 	}
 	else
 	{

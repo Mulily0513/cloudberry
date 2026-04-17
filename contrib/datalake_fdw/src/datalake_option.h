@@ -19,4 +19,13 @@ void datalakeFreeDatalakeOptions(dataLakeOptions *options);
 void datalakeCheckValidRecordBatchOpt(dataLakeOptions *options);
 
 char* datalakeGetCompressionName(CompressType compress);
+
+void DatalakeGetGopherSocketPath(char *dest);
+
+void DatalakeGetGopherPlasmaSocketPath(char *dest);
+
+void DatalakeGetGopherMetaPath(char *dest);
+
+char* getOptionFromList(List *options, const char *option);
+
 #endif							/* DATALAKE_OPTION_H */

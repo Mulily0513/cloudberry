@@ -26,6 +26,7 @@ public:
 
 private:
 	DatalakeProtocolContext *protocolContext;
+	DatalakeInternalRecord record_ = {};	/* reused across rows, avoids per-row palloc */
 };
 
 }

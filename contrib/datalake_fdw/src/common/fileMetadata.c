@@ -2,13 +2,24 @@
 #include "lib/stringinfo.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
-#include "libpq/libpq-fe.h"
 #include "libpq/libpq-int.h"
 #include "access/xact.h"
-#include "cdb/cdbdisp.h"
 #include "cdb/cdbvars.h"
 #include "cdb/cdbdispatchresult.h"
 #include "utils/json.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
+
+/* QD-side: per-Oid metadata hash table (replaces former FDW_ResultMetaList) */
+typedef struct FDW_MetaMapEntry
+{
+	Oid		relid;			/* hash key — must be first field */
+	List   *meta_list;		/* List of FileFragment* */
+} FDW_MetaMapEntry;
+
+static HTAB *FDW_ResultMetaMap = NULL;
+static MemoryContext FDW_MetaMapContext = NULL;
+static MemoryContextCallback FDW_MetaMapCb;
 
 
 /*
@@ -166,21 +177,155 @@ advance_and_error:
 
 int	(*FDWRecvProtocol) (PGconn *conn, int msgLength) = RecvMetaMethod;
 
+/*
+ * MemoryContext reset callback: clear global pointers to avoid dangling refs
+ * after abort/commit.
+ */
+static void
+metaMapResetCb(void *arg)
+{
+	FDW_ResultMetaMap = NULL;
+	FDW_MetaMapContext = NULL;
+}
+
+void
+FDW_InitMetaMap(void)
+{
+	HASHCTL		hash_ctl;
+
+	if (FDW_ResultMetaMap != NULL)
+		return;  /* idempotent */
+
+	FDW_MetaMapContext = AllocSetContextCreate(
+		TopTransactionContext,
+		"FDW Meta Map Context",
+		ALLOCSET_SMALL_SIZES);
+
+	FDW_MetaMapCb.func = metaMapResetCb;
+	FDW_MetaMapCb.arg = NULL;
+	MemoryContextRegisterResetCallback(FDW_MetaMapContext, &FDW_MetaMapCb);
+
+	memset(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(FDW_MetaMapEntry);
+	hash_ctl.hcxt = FDW_MetaMapContext;
+	FDW_ResultMetaMap = hash_create("FDW Result Meta Map", 16, &hash_ctl,
+									HASH_CONTEXT | HASH_ELEM | HASH_BLOBS);
+}
+
+List *
+FDW_GetMetaList(Oid relid)
+{
+	FDW_MetaMapEntry *entry;
+
+	if (FDW_ResultMetaMap == NULL)
+		return NIL;
+
+	entry = (FDW_MetaMapEntry *) hash_search(FDW_ResultMetaMap,
+											  &relid, HASH_FIND, NULL);
+	if (entry == NULL)
+		return NIL;
+
+	return entry->meta_list;
+}
+
+void
+FDW_ClearMetaList(Oid relid)
+{
+	FDW_MetaMapEntry *entry;
+
+	if (FDW_ResultMetaMap == NULL)
+		return;
+
+	entry = (FDW_MetaMapEntry *) hash_search(FDW_ResultMetaMap,
+											  &relid, HASH_FIND, NULL);
+	if (entry != NULL)
+	{
+		FDW_FreeMetaList(entry->meta_list);
+		entry->meta_list = NIL;
+		hash_search(FDW_ResultMetaMap, &relid, HASH_REMOVE, NULL);
+	}
+}
+
+void
+FDW_FreeMetaList(List *meta_list)
+{
+	ListCell   *lc;
+
+	foreach(lc, meta_list)
+	{
+		FileFragment *meta = (FileFragment *) lfirst(lc);
+		if (meta == NULL)
+			continue;
+		if (meta->filePath)
+			pfree(meta->filePath);
+		pfree(meta);
+	}
+	list_free(meta_list);
+}
+
+
 void
 FDW_SendMeta(bytea *msg)
 {
 	StringInfoData buf;
 
-	if (msg)
-	{
-		pq_beginmessage(&buf, 'f');
-		pq_sendint32(&buf, VARSIZE_ANY(msg));
-		pq_sendbytes(&buf, (const char *) msg, VARSIZE_ANY(msg));
-		pq_endmessage(&buf);
-		pq_flush();
-	}
+	if (msg == NULL)
+		return;
+
+	pq_beginmessage(&buf, 'f');
+	pq_sendint32(&buf, VARSIZE_ANY_EXHDR(msg));
+	pq_sendbytes(&buf, VARDATA_ANY(msg), VARSIZE_ANY_EXHDR(msg));
+	pq_endmessage(&buf);
+	pq_flush();
 }
 
+
+/*
+ * Deserialize all tuples from a PGresult and route them into
+ * FDW_ResultMetaMap by the relid embedded in each wire-format tuple.
+ */
+static void
+FDW_deserializeMetaToMap(PGresult *res)
+{
+	for (int i = 0; i < PQntuples(res); i++)
+	{
+		char	   *ptr = res->tuples[i][0].value;
+		Oid			relid;
+		bool		found;
+		FDW_MetaMapEntry *map_entry;
+
+		FileFragment *meta = makeNode(FileFragment);
+
+		/* read relid first */
+		memcpy(&relid, ptr, sizeof(Oid));
+		ptr += sizeof(Oid);
+
+		memcpy(&(meta->fileSize), ptr, sizeof(int64_t));
+		ptr += sizeof(int64_t);
+		memcpy(&(meta->recordCount), ptr, sizeof(int64_t));
+		ptr += sizeof(int64_t);
+		memcpy(&(meta->format), ptr, sizeof(FileFormat));
+		ptr += sizeof(FileFormat);
+		memcpy(&(meta->content), ptr, sizeof(FileContent));
+		ptr += sizeof(FileContent);
+
+		size_t		slen;
+		memcpy(&slen, ptr, sizeof(size_t));
+		ptr += sizeof(size_t);
+
+		meta->filePath = (char *) palloc(slen + 1);
+		memcpy(meta->filePath, ptr, slen);
+		meta->filePath[slen] = '\0';
+
+		/* store into hash table by relid */
+		map_entry = (FDW_MetaMapEntry *) hash_search(FDW_ResultMetaMap,
+													  &relid, HASH_ENTER, &found);
+		if (!found)
+			map_entry->meta_list = NIL;
+		map_entry->meta_list = lappend(map_entry->meta_list, meta);
+	}
+}
 
 void FDW_RecvMeta(CdbDispatcherState * ds)
 {
@@ -188,6 +333,10 @@ void FDW_RecvMeta(CdbDispatcherState * ds)
 		goto chain;
 
 	if (IsAbortInProgress())
+		goto chain;
+
+	/* hash table not initialized — skip (avoids dangling pointer after abort) */
+	if (FDW_ResultMetaMap == NULL)
 		goto chain;
 
 	CdbDispatchCmdAsync *pParams = (CdbDispatchCmdAsync *) ds->dispatchParams;
@@ -206,8 +355,7 @@ void FDW_RecvMeta(CdbDispatcherState * ds)
 
 			if (PQresultStatus(res) == PGRES_TUPLES_OK)
 			{
-				List *meta_list = FDW_deserializeMeta(res);
-				FDW_ResultMetaList = list_concat(FDW_ResultMetaList, meta_list);
+				FDW_deserializeMetaToMap(res);
 			}
 		}
 	}
@@ -218,21 +366,26 @@ chain:
 }
 
 /*
- * Wire format (fixed-size fields first, variable-length string last):
- *   [int64_t fileSize][int64_t recordCount][FileFormat format][FileContent content][size_t slen][char filePath[slen]]
+ * Wire format:
+ *   [Oid relid][int64_t fileSize][int64_t recordCount]
+ *   [FileFormat format][FileContent content][size_t slen][char filePath[slen]]
  */
-bytea *FDW_serializeMeta(void *msg)
+bytea *FDW_serializeMeta(void *msg, Oid relid)
 {
 	FileFragment *meta = (FileFragment *) msg;
 	bytea	   *result;
 
 	size_t		slen = strlen(meta->filePath);
-	size_t		size = 2 * sizeof(int64_t) + sizeof(FileFormat) + sizeof(FileContent) + sizeof(size_t) + slen;
+	size_t		size = sizeof(Oid) + 2 * sizeof(int64_t) +
+					   sizeof(FileFormat) + sizeof(FileContent) +
+					   sizeof(size_t) + slen;
 
 	result = (bytea*)palloc0(size + VARHDRSZ);
 	SET_VARSIZE(result, size + VARHDRSZ);
 
 	char	   *ptr = VARDATA(result);
+	memcpy(ptr, &relid, sizeof(Oid));
+	ptr += sizeof(Oid);
 	memcpy(ptr, &(meta->fileSize), sizeof(int64_t));
 	ptr += sizeof(int64_t);
 	memcpy(ptr, &(meta->recordCount), sizeof(int64_t));
@@ -244,40 +397,8 @@ bytea *FDW_serializeMeta(void *msg)
 	memcpy(ptr, &slen, sizeof(size_t));
 	ptr += sizeof(size_t);
 	memcpy(ptr, meta->filePath, slen);
+
 	return result;
-}
-
-List *FDW_deserializeMeta(struct pg_result *res)
-{
-	if (PQntuples(res) == 0 || PQnfields(res) == 0)
-	{
-		return NULL;
-	}
-
-	List *meta_list = NIL;
-	int ntups = PQntuples(res);
-
-	for (int i = 0; i < ntups; i++)
-	{
-		bytea *msg = (bytea *) PQgetvalue(res, i, 0);
-		FileFragment *meta = (FileFragment*)palloc(sizeof(FileFragment));
-		char	   *ptr = VARDATA(msg);
-		size_t		slen;
-
-		memcpy(&(meta->fileSize), ptr, sizeof(int64_t));
-		ptr += sizeof(int64_t);
-		memcpy(&(meta->recordCount), ptr, sizeof(int64_t));
-		ptr += sizeof(int64_t);
-		memcpy(&(meta->format), ptr, sizeof(FileFormat));
-		ptr += sizeof(FileFormat);
-		memcpy(&(meta->content), ptr, sizeof(FileContent));
-		ptr += sizeof(FileContent);
-		memcpy(&slen, ptr, sizeof(size_t));
-		ptr += sizeof(size_t);
-		meta->filePath = pnstrdup(ptr, slen);
-		meta_list = lappend(meta_list, meta);
-	}
-	return meta_list;
 }
 
 /*
@@ -308,33 +429,33 @@ FDW_serialize_file_list_to_json(List *file_list, StringInfoData *output)
 {
     ListCell   *lc;
     int         file_count = 0;
-    
+
     if (file_list == NIL)
     {
         initStringInfo(output);
         appendStringInfoString(output, "{\"files\":[]}");
         return;
     }
-    
+
     initStringInfo(output);
     appendStringInfoChar(output, '{');
     appendStringInfoString(output, "\"files\":[");
-    
+
     foreach_with_count(lc, file_list, file_count)
     {
         FileFragment *file = (FileFragment *) lfirst(lc);
         const char  *format_str;
         const char  *content_str;
-        
+
         if (file_count > 0)
             appendStringInfoChar(output, ',');
-        
+
         appendStringInfoChar(output, '{');
-        
+
         /* filePath - use escape_json to handle special characters */
         appendStringInfoString(output, "\"filePath\":");
         escape_json(output, file->filePath);
-        
+
         /* format */
         switch (file->format)
         {
@@ -344,7 +465,7 @@ FDW_serialize_file_list_to_json(List *file_list, StringInfoData *output)
             default: format_str = "UNKNOWN"; break;
         }
         appendStringInfo(output, ",\"format\":\"%s\"", format_str);
-        
+
         /* content */
         switch (file->content)
         {
@@ -355,15 +476,15 @@ FDW_serialize_file_list_to_json(List *file_list, StringInfoData *output)
             default: content_str = "UNKNOWN"; break;
         }
         appendStringInfo(output, ",\"content\":\"%s\"", content_str);
-        
+
         /* fileSize */
         appendStringInfo(output, ",\"fileSize\":%ld", (long)file->fileSize);
-        
+
         /* recordCount */
         appendStringInfo(output, ",\"recordCount\":%ld", (long)file->recordCount);
-        
+
         appendStringInfoChar(output, '}');
     }
-    
+
     appendStringInfoString(output, "]}");
 }

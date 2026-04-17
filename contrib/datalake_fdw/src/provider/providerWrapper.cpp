@@ -4,6 +4,7 @@
 
 extern "C" {
 #include "utils/elog.h"
+#include "src/provider/common/utils.h"
 
 bool external_table_debug = false;
 bool external_table_new_text = false;
@@ -100,6 +101,24 @@ int64_t readFromProviderWithTid(providerWrapper provider, void *values, void *nu
 		elog(ERROR, "Datalake foreign table read from oss with tid failed.");
 	}
 	return res;
+}
+
+/*
+ * Get the DatalakeRowReader pointer for fast-path scan bypass.
+ * Returns NULL if the provider doesn't have one (non-Iceberg/Hudi).
+ */
+void *getProviderRowReader(providerWrapper provider) {
+	try
+	{
+		Provider *ctx = provider->getContext();
+		DatalakeProtocolContext *pctx = (DatalakeProtocolContext *) ctx->getProtocolContext();
+		if (pctx && pctx->file && pctx->file->reader)
+			return (void *) pctx->file->reader;
+	}
+	catch (...)
+	{
+	}
+	return NULL;
 }
 
 void setPartitionValue(providerWrapper provider, void *values, void *nulls) {

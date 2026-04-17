@@ -20,8 +20,8 @@ void icebergPosDeleteWrite::createHandler(void *sstate)
 	datalakeFreeGopherConfig(conf);
 	prefix = (char*)lfirst(list_head(ss->fragments));
 	initWriteOption();
-	file_name = generateWriteFileName(prefix, "", "parquet");
-	append_file_prefix = generateWriteFilePrefix(ss->options);
+	buildFilePrefix(ss->options);
+	generateNewFileName();
 	file_writer = std::make_unique<parquetFileWriter>();
 	file_writer->init(ss->modify_state->us_slot->tts_tupleDescriptor, MetadataSchemaBuilder::transformToParquetSchema(POS_DELETE_SCHEMA), option);
 }

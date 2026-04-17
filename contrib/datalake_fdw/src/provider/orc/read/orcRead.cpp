@@ -276,6 +276,15 @@ bool orcRead::getNextGroup()
 			fileReader.readInterface.createRowReader(fileReader.readInterface.tempStripes[stripeIndex]->getOffset(),
 				fileReader.readInterface.tempStripes[stripeIndex]->getLength());
 			fileReader.readInterface.getTransactionTableType();
+
+			/* Check schema compatibility after type is initialized.
+			 * Only check once per file (first stripe). This mirrors
+			 * parquetRead::checkSchemaCompatibility() placement. */
+			if (stripeIndex == 0)
+			{
+				fileReader.checkFileSchemaCompatibility(tupdesc, nColumnsToRead);
+			}
+
 			stripeIndex++;
 			continue;
 		}

@@ -12,6 +12,38 @@ RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
 
+-- Iceberg Catalog FDW functions
+CREATE FUNCTION iceberg_catalog_fdw_handler()
+RETURNS fdw_handler
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION iceberg_catalog_fdw_validator(text[], oid)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+
+CREATE FOREIGN DATA WRAPPER iceberg_catalog_fdw
+    HANDLER iceberg_catalog_fdw_handler
+    VALIDATOR iceberg_catalog_fdw_validator;
+
+-- Iceberg Volume FDW functions
+CREATE FUNCTION iceberg_volume_fdw_handler()
+RETURNS fdw_handler
+AS '$libdir/datalake_fdw.so'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION iceberg_volume_fdw_validator(text[], oid)
+RETURNS void
+AS '$libdir/datalake_fdw.so'
+LANGUAGE C STRICT;
+
+CREATE FOREIGN DATA WRAPPER iceberg_volume_fdw
+    HANDLER iceberg_volume_fdw_handler
+    VALIDATOR iceberg_volume_fdw_validator;
+
+
 CREATE FUNCTION gp_toolkit.__gopher_cache_free_relation_name(text)
 RETURNS bool
 AS '$libdir/datalake_fdw.so' , 'hdw_gopher_cache_free_relation_name_wrapper'
@@ -29,3 +61,163 @@ CREATE FUNCTION datalake_acquire_sample_rows(oid, int, boolean, text)
 RETURNS setof record
 AS 'MODULE_PATHNAME','datalake_acquire_sample_rows'
 LANGUAGE C STRICT EXECUTE ON ALL SEGMENTS;
+
+-- Iceberg Toolkit Functions
+-- Core functions for Iceberg catalog and volume operations
+
+-- Create schema
+CREATE SCHEMA IF NOT EXISTS iceberg_toolkit;
+
+-- Catalog operations (create_table, get_fragment)
+CREATE OR REPLACE FUNCTION iceberg_toolkit.catalog_fdw(
+    operation text,
+    name_space text,
+    table_name text,
+    catalog_server_name text,
+    catalog_table_name text,
+    volume_server_name text,
+    volume_table_name text,
+    append_json_string text
+)
+RETURNS text
+AS '$libdir/datalake_fdw.so', 'iceberg_toolkit_catalog_fdw'
+LANGUAGE C STRICT;
+
+-- Volume operations (read data)
+CREATE OR REPLACE FUNCTION iceberg_toolkit.volume_fdw(
+    operation text,
+    name_space text,
+    table_name text,
+    row_limit integer,
+    catalog_server_name text,
+    catalog_table_name text,
+    volume_server_name text,
+    volume_table_name text
+)
+RETURNS SETOF record
+AS '$libdir/datalake_fdw.so', 'iceberg_toolkit_volume_fdw'
+LANGUAGE C STRICT;
+
+-- Convenience functions
+CREATE OR REPLACE FUNCTION iceberg_toolkit.create_table(
+    table_name text,
+    name_space text,
+    catalog_server text,
+    catalog_table text,
+    volume_server text,
+    volume_table text
+)
+RETURNS text
+AS $$
+    SELECT iceberg_toolkit.catalog_fdw(
+        'create_table', name_space, table_name,
+        catalog_server, catalog_table, volume_server, volume_table, ""
+    );
+$$ LANGUAGE SQL;
+
+CREATE OR REPLACE FUNCTION iceberg_toolkit.get_fragments(
+    table_name text,
+    name_space text,
+    catalog_server text,
+    catalog_table text,
+    volume_server text,
+    volume_table text
+)
+RETURNS text
+AS $$
+    SELECT iceberg_toolkit.catalog_fdw(
+        'get_fragment', name_space, table_name,
+        catalog_server, catalog_table, volume_server, volume_table, ""
+    );
+$$ LANGUAGE SQL;
+
+CREATE OR REPLACE FUNCTION iceberg_toolkit.polaris_list_catalogs(
+    datalake_agent_url text,
+    polaris_url text,
+    client_id text,
+    client_secret text,
+    scope text DEFAULT 'PRINCIPAL_ROLE:ALL'
+)
+RETURNS text
+AS '$libdir/datalake_fdw.so', 'polaris_list_catalogs'
+LANGUAGE C STRICT;
+
+CREATE OR REPLACE FUNCTION iceberg_toolkit.polaris_list_namespaces(
+    datalake_agent_url text,
+    polaris_url text,
+    client_id text,
+    client_secret text,
+    catalog_name text,
+    scope text DEFAULT 'PRINCIPAL_ROLE:ALL'
+)
+RETURNS text
+AS '$libdir/datalake_fdw.so', 'polaris_list_namespaces'
+LANGUAGE C STRICT;
+
+-- Permissions
+GRANT USAGE ON SCHEMA iceberg_toolkit TO public;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA iceberg_toolkit TO public;
+
+-- -- Grant permissions
+-- GRANT USAGE ON SCHEMA iceberg_toolkit TO public;
+-- GRANT EXECUTE ON FUNCTION iceberg_toolkit.catalog_fdw(text, text, text, text, text, text) TO public;
+
+-- ============================================================================
+-- Iceberg Schema and Metadata Table Setup
+-- ============================================================================
+
+-------------------------------------
+-- Table AM interface functions
+-------------------------------------
+CREATE FUNCTION pg_iceberg_tableam_handler(internal)
+RETURNS table_am_handler
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE ACCESS METHOD iceberg TYPE TABLE
+HANDLER pg_iceberg_tableam_handler;
+
+-- Force the OID of the 'iceberg' access method to 8320 to match ICEBERG_AM_OID in rel.h
+CREATE FUNCTION pg_iceberg_set_am_oid_local(oid)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_iceberg_set_am_oid_local'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION pg_iceberg_fix_oid(oid)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_iceberg_fix_oid'
+LANGUAGE C STRICT;
+
+SELECT pg_iceberg_fix_oid(8320);
+
+-- Clean up
+DROP FUNCTION pg_iceberg_fix_oid(oid);
+DROP FUNCTION pg_iceberg_set_am_oid_local(oid);
+
+-- Internal helper used by C code to dispatch location option upsert to QEs
+CREATE FUNCTION pg_catalog.pg_iceberg_upsert_location_option_local(oid, text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_iceberg_upsert_location_option_local'
+LANGUAGE C STRICT;
+
+
+-- Create iceberg schema to organize all iceberg-related objects
+CREATE SCHEMA iceberg;
+
+-- Function to create iceberg.pg_iceberg_metadata catalog table
+CREATE FUNCTION iceberg.pg_iceberg_create_metadata_table()
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+-- Create the iceberg.pg_iceberg_metadata catalog table
+SELECT iceberg.pg_iceberg_create_metadata_table();
+
+-- Function to create iceberg.pg_iceberg_deletion_queue catalog table
+CREATE FUNCTION iceberg.pg_iceberg_create_deletion_queue_table()
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+-- Create the iceberg.pg_iceberg_deletion_queue catalog table
+SELECT iceberg.pg_iceberg_create_deletion_queue_table();

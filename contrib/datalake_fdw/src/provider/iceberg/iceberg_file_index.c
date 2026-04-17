@@ -181,24 +181,7 @@ icebergClearFileIndexMap(IcebergFileIndexMap *map)
 	map->numFiles = 0;
 }
 
-void
-icebergEncodeTID(ItemPointer tid, uint32 fileId, int64 rowOffset)
-{
-	BlockNumber blkno;
-	OffsetNumber offset;
-
-	Assert(fileId <= ICEBERG_MAX_FILE_ID);
-	Assert(rowOffset >= 0 && rowOffset <= ICEBERG_MAX_ROW_OFFSET);
-
-	/* Encode: BlockNumber = (fileId << 12) | (rowOffset >> 16) */
-	blkno = (fileId << ICEBERG_ROW_OFFSET_HIGH_BITS) |
-			((rowOffset >> ICEBERG_ROW_OFFSET_LOW_BITS) & ICEBERG_ROW_OFFSET_HIGH_MASK);
-
-	/* Encode: OffsetNumber = rowOffset & 0xFFFF */
-	offset = (OffsetNumber)(rowOffset & ICEBERG_ROW_OFFSET_LOW_MASK);
-
-	ItemPointerSet(tid, blkno, offset);
-}
+/* icebergEncodeTID moved to iceberg_file_index.h as static inline */
 
 /* Decode TID into file ID and row offset */
 void

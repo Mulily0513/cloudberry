@@ -20,9 +20,6 @@ public:
 	virtual void createHandler(void *sstate);
 	virtual int64_t write(const void *values, int64_t length);
 	virtual void destroyHandler();
-protected:
-	void initWriteOption();
-	std::string generateWriteFilePrefix(dataLakeOptions *opt);
 
 protected:
 	std::string prefix;
@@ -33,8 +30,13 @@ protected:
 	std::unique_ptr<parquetFileWriter> file_writer;
 	dataLakeFdwScanState *ss;
 	int sliceIdx = 0;
-	List *fileMetas = NIL;
-	int64_t tuple_num = 0;
+	List *fileMetas;
+	int64_t tuple_num;
+
+protected:
+	void initWriteOption();
+	void buildFilePrefix(dataLakeOptions *opt);
+	void generateNewFileName();
 
 private:
 	virtual void appendFileMeta();

@@ -14,6 +14,35 @@ DatalakeRowReader *datalakeCreateRowReader(MemoryContext mcxt,
 						   DLTblFmt format,
 						   ExternalTableMetadata *tableOptions);
 bool datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record);
+
+/*
+ * Deep fast-path inline: call the innermost format reader (e.g. parquet_next)
+ * directly, bypassing 3 layers of function-pointer indirection per row:
+ *   datalakeRowReaderNext → icebergTaskReaderNext → fileReaderNext
+ *
+ * Returns true if a row was read; false means the caller must fall back
+ * to datalakeRowReaderNext() for file switching.
+ *
+ * The cached function pointer was set by C code in row_reader.c (same
+ * compilation unit as the struct definitions) after traversing:
+ *   IcebergTaskReader → FileReader → formatReader->Next + dataReader
+ */
+static inline bool
+datalakeRowReaderFastNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
+{
+	if (likely(reader->deepNext != NULL))
+	{
+		if (reader->deepNext(reader->deepReader, record))
+		{
+			record->fileId = reader->deepFileId;
+			return true;
+		}
+		/* Current file exhausted, clear cache */
+		reader->deepNext = NULL;
+		reader->deepReader = NULL;
+	}
+	return false;
+}
 void datalakeRowReaderClose(DatalakeRowReader *reader);
 
 /*

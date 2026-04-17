@@ -36,6 +36,8 @@ add_projection_index_header(CHURL_HEADERS headers,
 static void
 add_projection_desc_httpheader(CHURL_HEADERS headers, List *retrieved_attrs);
 
+static void add_file_list_httpheader(CHURL_HEADERS headers, List *file_list);
+
 /*
  * Add key/value pairs to connection header.
  * These values are the context of the query and used
@@ -83,6 +85,12 @@ datalake_build_http_headers(DlProxyInputData *input, transform_callback transfor
 			elog(DEBUG2,
 				 "Query will not be optimized to use projection information");
 		}
+	}
+
+	if (input->file_list != NIL)
+	{
+		/* add file list to headers */
+		add_file_list_httpheader(headers, input->file_list);
 	}
 
 	/* GP cluster configuration */
@@ -342,6 +350,70 @@ add_projection_desc_httpheader(CHURL_HEADERS headers, List *retrieved_attrs)
 	/* Convert the number of projection columns to a string */
 	pg_ltoa(retrieved_attrs->length, long_number);
 	datalake_churl_headers_append(headers, "X-GP-ATTRS-PROJ", long_number);
+}
+
+static char*
+get_file_foramt_name(FileFormat format)
+{
+	switch (format)
+	{
+		case PARQUET:
+			return "parquet";
+		case ORC:
+			return "orc";
+		case AVRO:
+			return "avro";
+		default:
+			return "unknown";
+	}
+}
+
+void add_file_list_httpheader(CHURL_HEADERS headers, List *file_list)
+{
+	int				i;
+	StringInfoData	formatter;
+	ListCell   	   *lc = NULL;
+
+	initStringInfo(&formatter);
+	foreach_with_count(lc, file_list, i)
+	{
+		FileFragment *file = (FileFragment *) lfirst(lc);
+		char temp_buf[16];
+
+		/* Add a key/value pair for file name */
+		resetStringInfo(&formatter);
+		appendStringInfo(&formatter, "X-GP-FILE-PATH%u", i);
+		datalake_churl_headers_append(headers, formatter.data, file->filePath);
+		
+		/* Add a key/value pair for file format */
+		resetStringInfo(&formatter);
+		appendStringInfo(&formatter, "X-GP-FILE-FORMAT%u", i);
+		datalake_churl_headers_append(headers, formatter.data, get_file_foramt_name(file->format));
+
+		resetStringInfo(&formatter);
+		appendStringInfo(&formatter, "X-GP-FILE-CONTENT%u", i);
+		datalake_churl_headers_append(headers, formatter.data,
+			(file->content == DATA) ? "DATA_FILE" :
+			(file->content == POSITION_DELETES) ? "POSITION_DELETE" :
+			"unknown");
+
+
+		/* Add a key/value pair for file size*/
+		resetStringInfo(&formatter);
+		appendStringInfo(&formatter, "X-GP-FILE-SIZE%u", i);
+		pg_lltoa(file->fileSize, temp_buf);
+		datalake_churl_headers_append(headers, formatter.data, temp_buf);
+
+		/* Add a key/value pair for row count*/
+		resetStringInfo(&formatter);
+		appendStringInfo(&formatter, "X-GP-ROW-COUNT%u", i);
+		pg_lltoa(file->recordCount, temp_buf);
+		datalake_churl_headers_append(headers, formatter.data, temp_buf);
+	}
+	char file_count[7];
+	pg_itoa(i, file_count);
+	datalake_churl_headers_append(headers, "X-GP-FILE-COUNT", file_count);
+	resetStringInfo(&formatter);
 }
 
 /*

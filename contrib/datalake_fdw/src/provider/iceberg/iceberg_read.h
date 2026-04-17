@@ -26,8 +26,11 @@ public:
 
 	virtual void destroyHandler();
 
+	virtual void *getProtocolContext() { return (void *) protocolContext; }
+
 private:
 	DatalakeProtocolContext *protocolContext;
+	DatalakeInternalRecord record_ = {};	/* reused across rows, avoids per-row palloc */
 };
 
 }

@@ -33,11 +33,6 @@ void dataBufferArray::copyToDataBuffer(char *data, int size, int column)
     ptr->buffer[size] = '\0';
 }
 
-dataBuffer *dataBufferArray::getDataBuffer(int column)
-{
-    return mDataBuffer[column];
-}
-
 void dataBufferArray::resizeDataBuffer(int column, int length)
 {
     MemoryContext old = MemoryContextSwitchTo(alloc_ctx);

@@ -73,7 +73,7 @@ hdw_free_all_ao_cache(PG_FUNCTION_ARGS)
 	if (Gp_role == GP_ROLE_EXECUTE && GpIdentity.segindex == -1)
 		elog(ERROR, "This query is not currently supported by GPDB.");
 
-	if(GopherRemoveFileMetaUnderAllUfsPath("/", 1, 1) == -1)
+	if(GopherRemoveFileMetaUnderAllUfsPath("/", 1, 0) == -1)
 	{
 		ereport(ERROR, (errcode(ERRCODE_GP_COMMAND_ERROR), errmsg("could not delete gopher cache")));
 	}

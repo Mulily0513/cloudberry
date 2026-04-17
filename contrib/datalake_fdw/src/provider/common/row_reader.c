@@ -12,6 +12,7 @@
 #include "src/provider/iceberg/iceberg_delete_index.h"
 #include "src/provider/hudi/hudi_task_reader.h"
 #include "row_reader.h"
+#include "file_reader.h"
 #include "src/common/dataBufferArray_c.h"
 #include "src/datalake_def.h"
 
@@ -129,7 +130,7 @@ static Reader deltaLakeHandler = {
 };
 
 typedef struct FileMapEntry {
-    char    *filename;
+    char    filename[MAXPGPATH];  /* key: inline string storage */
     int     file_id;
 } FileMapEntry;
 
@@ -215,6 +216,17 @@ bool
 datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 {
 	/*
+	 * Save caller's CurrentMemoryContext so we can restore it before we return.
+	 * Internally we switch to reader->taskMcxt around per-task setup; if we let
+	 * that switch leak out, the caller (executor) ends up running in taskMcxt
+	 * and any TupleTableSlot it allocates during ExecForeignUpdate gets stored
+	 * in taskMcxt -- which is then reset on the next call here, wiping the
+	 * slot memory while the slot is still referenced from estate->es_tupleTable
+	 * (use-after-free, manifests as 0x7F7F7F7F NodeTag at ExecResetTupleTable).
+	 */
+	MemoryContext caller_cxt = CurrentMemoryContext;
+
+	/*
 	 * For Iceberg tables, lazily initialize fileIndexMap on first iteration.
 	 * This ensures we only build the index when actually needed (i.e., during UPDATE/DELETE),
 	 * avoiding unnecessary overhead for plain SELECT queries.
@@ -232,23 +244,56 @@ datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 	 * hash table of (dataFilePath -> bitmap), so each task can look up its
 	 * delete set in O(1) instead of re-reading all delete files.
 	 */
-	if (FORMAT_IS_ICEBERG(reader->format) && reader->deleteIndex == NULL)
+	if (FORMAT_IS_ICEBERG(reader->format) && !reader->deleteIndexBuilt)
 	{
 		reader->deleteIndex = icebergBuildDeleteIndex(TopMemoryContext,
 													  reader->gopherFilesystem,
 													  reader->fileScanTasks);
+		reader->deleteIndexBuilt = true;
 	}
 
 	while (true)
 	{
 		if (reader->handler->Next(reader->curReader, record))
 		{
+			/*
+			 * Cache the innermost format reader for deep fast path.
+			 * Traverse: curReader (IcebergTaskReader) → dataReader
+			 * (FileReader) → formatReader->Next (parquet_next) +
+			 * dataReader (BaseFileReader*).
+			 *
+			 * This is done in C code (same compilation unit as struct
+			 * definitions) to avoid C/C++ ABI mismatch issues.
+			 */
+			if (FORMAT_IS_ICEBERG(reader->format) &&
+				reader->deepNext == NULL &&
+				reader->deleteIndex == NULL)
+			{
+				IcebergTaskReader *taskReader = (IcebergTaskReader *) reader->curReader;
+				if (taskReader && taskReader->dataReader)
+				{
+					FileReader *fileReader = (FileReader *) taskReader->dataReader;
+					if (fileReader->formatReader &&
+						fileReader->formatReader->Next &&
+						fileReader->dataReader)
+					{
+						reader->deepNext = fileReader->formatReader->Next;
+						reader->deepReader = fileReader->dataReader;
+						reader->deepFileId = taskReader->fileId;
+					}
+				}
+			}
+			MemoryContextSwitchTo(caller_cxt);
 			return true;
 		}
 		else if (list_length(reader->fileScanTasks) > 0)
 		{
 			DatalakeReaderInitInfo initInfo;
 			FileScanTask *curTask;
+
+			/* Clear deep cache — old file's reader is about to be freed */
+			reader->deepNext = NULL;
+			reader->deepReader = NULL;
 
 			reader->handler->Close(reader->curReader);
 			MemoryContextSwitchTo(reader->curMcxt);
@@ -289,10 +334,12 @@ datalakeRowReaderNext(DatalakeRowReader *reader, DatalakeInternalRecord *record)
 			reader->handler->Close(reader->curReader);
 			MemoryContextSwitchTo(reader->curMcxt);
 			reader->curReader = NULL;
+			MemoryContextSwitchTo(caller_cxt);
 			return false;
 		}
 	}
 
+	MemoryContextSwitchTo(caller_cxt);
 	return false;
 }
 
@@ -326,6 +373,14 @@ flatCombinedTasks(List *combinedScanTasks, List **fileScanTasks)
 		foreach(lci, combinedScanTask)
 		{
 			FileScanTask *task = (FileScanTask *) lfirst(lci);
+
+			/*
+			 * Deep-copy the FileScanTask into the current memory context
+			 * (TopMemoryContext).  The original nodes were deserialized in
+			 * MessageContext on QE, which is reset before the first scan
+			 * iteration, leaving dangling pointers.
+			 */
+			task = copyObject(task);
 
 			*fileScanTasks = lappend(*fileScanTasks, task);
 		}
@@ -451,7 +506,7 @@ icebergFileIndexMapInitialize(DatalakeRowReader *reader)
 	filePathToIdMap = hash_create("Iceberg file path to ID map",
 	                              1024,
 	                              &hashCtl,
-	                              HASH_ELEM | HASH_COMPARE | HASH_FUNCTION | HASH_CONTEXT);
+	                              HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 
 	/*
 	 * If the map was pre-populated from all fragments, build a reverse
@@ -610,7 +665,12 @@ datalakeProtocolImportStart(dataLakeFdwScanState *scanstate, DatalakeProtocolCon
 		List *combinedScanTask = (List *) lfirst(lc);
 
 		if (GpIdentity.segindex == (idx % numSegments))
-			combinedScanTasks = lappend(combinedScanTasks, combinedScanTask);
+		{
+			if (list_length(combinedScanTask) > 0)
+			{
+				combinedScanTasks = lappend(combinedScanTasks, combinedScanTask);
+			}
+		}
 	}
 
 	context->rowContext = AllocSetContextCreate(CurrentMemoryContext,

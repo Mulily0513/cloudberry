@@ -68,6 +68,7 @@ private:
     std::unique_ptr<::parquet::ParquetFileReader> parquet_reader;
     std::shared_ptr<::parquet::RowGroupReader> row_group_reader;
     std::vector<std::shared_ptr<::parquet::Scanner>> scanners;
+    std::vector<const ::parquet::ColumnDescriptor*> columnDescriptors;
     std::string name;
 	std::shared_ptr<gopherReadFileSystem> fileStream;
 

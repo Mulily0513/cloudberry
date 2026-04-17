@@ -32,6 +32,15 @@ union ReaderValue
 	double  doubleValue;
 };
 
+class BaseFileReader;
+
+/*
+ * Per-column function pointer that reads one value from the underlying
+ * file format, bypassing virtual dispatch and type-switch overhead.
+ * Set during createMapping(); NULL for unmapped columns.
+ */
+typedef Datum (*ReadColumnFn)(BaseFileReader *reader, int scannerIdx, bool &isNull);
+
 class BaseFileReader
 {
 protected:
@@ -43,7 +52,9 @@ protected:
 		int columnIndex_;
 		TIMEUNIT timeUnit_;
 		int scale_;			/* Decimal scale (NUMERIC only) */
+		int precision_;		/* Decimal precision (NUMERIC only) */
 		int typeLength_;	/* Fixed-length byte size (BPCHAR/FLBA only) */
+		ReadColumnFn readFn_;	/* Direct read function, bypasses virtual+switch */
 	};
 
 	int curGroup_;

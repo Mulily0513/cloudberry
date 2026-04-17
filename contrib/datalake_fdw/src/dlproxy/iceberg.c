@@ -5,6 +5,7 @@
 #include "nodes/nodes.h"
 #include "headers.h"
 #include "protocol.h"
+#include "iceberg_common.h"
 #include "cdb/cdbtm.h"
 #include "cdb/cdbvars.h"
 #include "utils/guc.h"
@@ -90,8 +91,8 @@ parseDeletes(json_t *jdeletes)
 	return deletes;
 }
 
-static List *
-parseFragmentResponse(char *buffer, size_t buffer_size)
+List *
+parseIcebergFragmentResponse(char *buffer, size_t buffer_size)
 {
 	List         *result = NIL;
 	json_t       *jroot;
@@ -235,7 +236,7 @@ iceberg_get_external_fragments(Oid relid,
 												restrictInfo,
 												targetList,
 												locations,
-												parseFragmentResponse);
+												parseIcebergFragmentResponse);
 	}
 
 	/*
@@ -304,14 +305,14 @@ iceberg_get_external_fragments(Oid relid,
 					/* Cache hit: reparse from cached JSON */
 					elog(DEBUG1, "iceberg fragment cache hit for relid %u (snapshot " INT64_FORMAT ")",
 						 relid, cachedSnapshotId);
-					result = parseFragmentResponse(cached->raw_json, cached->raw_json_size);
+					result = parseIcebergFragmentResponse(cached->raw_json, cached->raw_json_size);
 				}
 				else
 				{
 					/* Cache miss: parse response and store in cache */
 					elog(DEBUG1, "iceberg fragment cache miss for relid %u (snapshot " INT64_FORMAT ")",
 						 relid, respSnapshotId);
-					result = parseFragmentResponse(context->buffer, context->buffer_pos);
+					result = parseIcebergFragmentResponse(context->buffer, context->buffer_pos);
 
 					if (respSnapshotId >= 0)
 						iceberg_fragment_cache_store(relid, respSnapshotId,

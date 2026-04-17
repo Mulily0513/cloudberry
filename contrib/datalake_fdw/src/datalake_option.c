@@ -107,6 +107,7 @@ static const struct datalakeFdwOption valid_foreign_options[] = {
 	{DATALAKE_OPTION_QUERY_TYPE, ForeignTableRelationId},
 	{DATALAKE_OPTION_METADATA_TABLE_ENABLE, ForeignTableRelationId},
 	{DATALAKE_OPTION_PARTITION_VALUE, ForeignTableRelationId},
+	{DATALAKE_OPTION_CATALOG_DEFAULT_IMPL, ForeignTableRelationId},
 	{NULL, InvalidOid}
 };
 
@@ -163,8 +164,8 @@ struct FdwProtocolOption
 static const struct FdwProtocolOption protocol_mapping[] = {
 	{DATALAKE_HDFS_PROTOCOL, DL_HDFS_PROTOCOL},
 	{DATALAKE_FTP_PROTOCOL, DL_FTP_PROTOCOL},
-	{DATALAKE_OSS_PROTOCOL_S3, DL_OSS_PROTOCOL_S3},
-	{DATALAKE_OSS_PROTOCOL_S3B, DL_OSS_PROTOCOL_S3B},
+	{DATALAKE_OSS_PROTOCOL_S3, DL_OSS_PROTOCOL_S3A},
+	{DATALAKE_OSS_PROTOCOL_S3B, DL_OSS_PROTOCOL_S3AV2},
 	{DATALAKE_OSS_PROTOCOL_ALI, DL_OSS_PROTOCOL_ALI},
 	{DATALAKE_OSS_PROTOCOL_COS, DL_OSS_PROTOCOL_COS},
 	{DATALAKE_OSS_PROTOCOL_QINGSTORE, DL_OSS_PROTOCOL_QINGSTORE},
@@ -223,7 +224,7 @@ static CompressType datalakeGetCompression(const char* compress)
 	return UNSUPPORTCOMPRESS;
 }
 
-static char* getOptionFromList(List *options, const char *option)
+char* getOptionFromList(List *options, const char *option)
 {
 	ListCell   *lc;
 	foreach(lc, options)
@@ -527,6 +528,18 @@ void parseForeignTableOptions(dataLakeOptions* opt, List *options)
 		if (pg_strcasecmp(def->defname, DATALAKE_OPTION_METADATA_TABLE_ENABLE) == 0)
 		{
 			opt->metadata_table_enable = pstrdup(defGetString(def));
+		}
+
+		if (pg_strcasecmp(def->defname, DATALAKE_OPTION_CATALOG_DEFAULT_IMPL) == 0)
+		{
+			if (pg_strcasecmp(defGetString(def), "true") == 0)
+			{
+				opt->set_catalog_defualt_impl = true;
+			}
+			else
+			{
+				opt->set_catalog_defualt_impl = false;
+			}
 		}
 	}
 	opt->hiveOption->partitiontable = IS_PARTITION_TABLE(opt->hiveOption->hivePartitionKey, opt->hiveOption->datasource)? true : false;

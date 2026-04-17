@@ -53,6 +53,7 @@ freeFDWTableMeta(FDW_TableMeta *meta)
 	pfree(meta);
 }
 
+
 typedef struct datalakeCombinedScanTask
 {
 	List *fileTasks;
@@ -85,4 +86,3 @@ extern void
 datalakeFreePartitionList(List *partitions);
 
 #endif   /* DATALAKE_H */
-

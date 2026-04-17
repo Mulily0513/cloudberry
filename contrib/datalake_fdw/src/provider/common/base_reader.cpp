@@ -27,15 +27,29 @@ void BaseFileReader::populateRecord(DatalakeInternalRecord *record)
 	for (size_t attr = 0; attr < size; attr++)
 	{
 		TypeInfo &typInfo = typeMap_[attr];
-		if (typInfo.columnIndex_ < 0 || typInfo.fileTypeId_ == InvalidOid)
+
+		/*
+		 * When readFn_ is set (Parquet path), call it directly to avoid
+		 * virtual dispatch + type switch on every column of every row.
+		 * The NULL readFn_ case handles unmapped columns and the Avro
+		 * fallback path.
+		 */
+		if (typInfo.readFn_)
+		{
+			isNull = false;
+			record->values[attr] = typInfo.readFn_(this, typInfo.columnIndex_, isNull);
+			record->nulls[attr] = isNull;
+		}
+		else if (typInfo.columnIndex_ < 0 || typInfo.fileTypeId_ == InvalidOid)
 		{
 			record->nulls[attr] = true;
-			continue;
 		}
-
-		isNull = false;
-		record->values[attr] = readPrimitive(typInfo, isNull);
-		record->nulls[attr] = isNull;
+		else
+		{
+			isNull = false;
+			record->values[attr] = readPrimitive(typInfo, isNull);
+			record->nulls[attr] = isNull;
+		}
 	}
 
 	record->position = rowPositions_[curGroup_] + curRow_;
@@ -80,6 +94,7 @@ BaseFileReader::transformTimestamp(int64 timestamp, TIMEUNIT timeUnit)
 		case TIMEUNIT_NANOS:
 			return timestamp / 1000000000;
 		default:
-			throw Error("Unknown timestamp precision");
+			/* Fallback: assume microseconds (Iceberg standard) */
+			return timestamp / 1000000;
 	}
 }

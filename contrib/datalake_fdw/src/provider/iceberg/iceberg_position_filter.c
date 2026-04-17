@@ -209,12 +209,24 @@ locationFilter(void **bitmap, char *dataFilePath, int dataFilePathLen, Datum fil
 	char *filePathName = VARDATA_ANY(filePathField);
 	int64 position = DatumGetInt64(positionField);
 
+	if (client_min_messages <= DEBUG1)
+	{
+		elog(DEBUG1, "locationFilter: dataFilePath='%.*s' (len=%d), deleteFilePath='%.*s' (len=%d), position=%ld",
+			 dataFilePathLen, dataFilePath, dataFilePathLen,
+			 filePathSize, filePathName, filePathSize, position);
+	}
+
 	if (datalakeCharSeqEquals(filePathName, filePathSize, dataFilePath, dataFilePathLen))
 	{
 		if (*bitmap == NULL)
 			*bitmap = datalakeCreateBitmap();
 
 		datalakeBitmapAdd(*bitmap, (uint64) position);
+		elog(DEBUG1, "locationFilter: added position %ld to delete bitmap", position);
+	}
+	else
+	{
+		elog(DEBUG1, "locationFilter: path mismatch, position %ld NOT added", position);
 	}
 
 	pfree(DatumGetPointer(filePathField));

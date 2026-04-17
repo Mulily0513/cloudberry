@@ -40,11 +40,16 @@ public:
 
 	virtual void destroyHandler();
 
+	/* For fast-path scan bypass — returns NULL by default */
+	virtual void *getProtocolContext() { return NULL; }
+
 	virtual CompressType getCompressType(char* type);
 
 	virtual const char* getReadFileName();
 
 	virtual std::string generateWriteFileName(const std::string &writePrefix, const std::string &compress, const std::string &suffix);
+
+	virtual std::string generateIcebergUuidFileName(const std::string &writePrefix, const std::string &suffix);
 
 };
 

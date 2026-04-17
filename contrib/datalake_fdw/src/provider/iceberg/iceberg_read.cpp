@@ -17,30 +17,44 @@ void icebergRead::createHandler(void *sstate)
 
 int64_t icebergRead::read(void *values, void *nulls)
 {
-    protocolContext->record = (DatalakeInternalRecord *) palloc0(sizeof(DatalakeInternalRecord));
-    protocolContext->record->nulls = (bool *)nulls;
-    protocolContext->record->values = (Datum *)values;
+    record_.nulls = (bool *)nulls;
+    record_.values = (Datum *)values;
+    protocolContext->record = &record_;
 
+    /* Fast path: bypass datalakeRowReaderNext overhead */
+    if (datalakeRowReaderFastNext(protocolContext->file->reader, protocolContext->record))
+        return 1;
+
+    /* Slow path: file switch or first call */
     return datalakeRowReaderNext(protocolContext->file->reader, protocolContext->record);
 }
 
 int64_t icebergRead::read(void *values, void *nulls, void *tid)
 {
     ItemPointer tidPtr = (ItemPointer)tid;
-    int64_t result;
 
-    protocolContext->record = (DatalakeInternalRecord *) palloc0(sizeof(DatalakeInternalRecord));
-    protocolContext->record->nulls = (bool *)nulls;
-    protocolContext->record->values = (Datum *)values;
+    record_.nulls = (bool *)nulls;
+    record_.values = (Datum *)values;
+    protocolContext->record = &record_;
 
-    result = datalakeRowReaderNext(protocolContext->file->reader, protocolContext->record);
+    /* Fast path: bypass datalakeRowReaderNext overhead */
+    if (datalakeRowReaderFastNext(protocolContext->file->reader, protocolContext->record))
+    {
+        if (tidPtr != NULL)
+        {
+            icebergEncodeTID(tidPtr, protocolContext->record->fileId,
+                             protocolContext->record->position);
+        }
+        return 1;
+    }
+
+    /* Slow path: file switch or first call */
+    int64_t result = datalakeRowReaderNext(protocolContext->file->reader, protocolContext->record);
 
     if (result && tidPtr != NULL)
     {
-        uint32 fileId = protocolContext->record->fileId;
-        int64_t position = protocolContext->record->position;
-
-        icebergEncodeTID(tidPtr, fileId, position);
+        icebergEncodeTID(tidPtr, protocolContext->record->fileId,
+                         protocolContext->record->position);
     }
 
     return result;
@@ -49,6 +63,11 @@ int64_t icebergRead::read(void *values, void *nulls, void *tid)
 void icebergRead::destroyHandler()
 {
     releaseResources();
+    /*
+     * record_ is a C++ member (not palloc'd), so clear the pointer
+     * before datalakeCleanupContext() which would pfree() it.
+     */
+    protocolContext->record = NULL;
     datalakeCleanupContext(protocolContext);
 }
 

@@ -45,6 +45,7 @@ void parquetFileWriter::createColumnBatch()
     fixByteArray = (parquet::FixedLenByteArray*)palloc(sizeof(parquet::FixedLenByteArray) * BATCH_WRITE_SIZE);
     definition_level = (int16_t*)palloc(sizeof(int16_t) * BATCH_WRITE_SIZE);
     int96Array = (parquet::Int96*)palloc(sizeof(parquet::Int96) * BATCH_WRITE_SIZE);
+    int64Array = (int64_t*)palloc(sizeof(int64_t) * BATCH_WRITE_SIZE);
 
     for (int i = 0; i < ncolumns; i++)
     {
@@ -188,8 +189,15 @@ std::shared_ptr<parquet::schema::GroupNode> parquetFileWriter::setupSchema()
             }
             case TIMESTAMPOID:
             case TIMESTAMPTZOID: {
+                /*
+                 * Iceberg spec requires INT64 microseconds since Unix epoch.
+                 * Use adjustedToUTC=true for Iceberg compatibility with
+                 * Spark/Trino/Flink.
+                 */
                 fields.push_back(::parquet::schema::PrimitiveNode::Make(columnName.c_str(),
-                    ::parquet::Repetition::OPTIONAL, ::parquet::Type::INT96, ::parquet::ConvertedType::NONE, -1, -1, -1, i + 1));
+                    ::parquet::Repetition::OPTIONAL,
+                    ::parquet::LogicalType::Timestamp(true, ::parquet::LogicalType::TimeUnit::MICROS),
+                    ::parquet::Type::INT64, -1, i + 1));
                 break;
             }
             case NUMERICOID: {
@@ -879,23 +887,24 @@ void parquetFileWriter::writeToBatch(int rows)
                 break;
             }
             case TIMESTAMPOID: {
+                /*
+                 * Write timestamp as INT64 microseconds since Unix epoch.
+                 * PG stores timestamps as microseconds since PG epoch (2000-01-01).
+                 * Convert: unix_usecs = pg_timestamp + UNIX_TO_PG_EPOCH_USECS
+                 */
+                static const int64_t UNIX_TO_PG_EPOCH_USECS =
+                    ((int64_t)(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE)) * SECS_PER_DAY * USECS_PER_SEC;
+
                 columnBatch<int64_t> * val = reinterpret_cast<columnBatch<int64_t>*>(batchField[i]);
-                parquet::Int96Writer* writer = static_cast<parquet::Int96Writer*>(rg_writer->column(i));
+                parquet::Int64Writer* writer = static_cast<parquet::Int64Writer*>(rg_writer->column(i));
                 std::vector<uint8_t> valid_bits(parquet_arrow::bit_util::BytesForBits(BATCH_WRITE_SIZE), 255);
                 for (int row = 0; row < rows; row++)
                 {
                     bool notNull = val->notNull[row];
                     if (notNull)
                     {
-                        int64_t timestamp = val->buffer[row];
-                        struct pg_tm tt, *tm = &tt;
-                        fsec_t fsec;
-                        timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL);
-                        int64_t second = (tm->tm_hour * 60 + tm->tm_min) * 60 + tm->tm_sec;
-                        int64_t nanoSecond = (second * 1000000 + fsec) * 1000;
-                        int32_t day = date2j(tm->tm_year, tm->tm_mon, tm->tm_mday);
-                        int96Array[row].value[2] = day;
-                        parquet::Int96SetNanoSeconds(int96Array[row], nanoSecond);
+                        int64_t pgTimestamp = val->buffer[row];
+                        int64Array[row] = pgTimestamp + UNIX_TO_PG_EPOCH_USECS;
                         definition_level[row] = 1;
                     }
                     else
@@ -904,7 +913,7 @@ void parquetFileWriter::writeToBatch(int rows)
                         parquet_arrow::bit_util::ClearBit(valid_bits.data(), row);
                     }
                 }
-                writer->WriteBatchSpaced(rows, definition_level, nullptr, valid_bits.data(), 0, int96Array);
+                writer->WriteBatchSpaced(rows, definition_level, nullptr, valid_bits.data(), 0, int64Array);
                 break;
             }
             case NUMERICOID: {

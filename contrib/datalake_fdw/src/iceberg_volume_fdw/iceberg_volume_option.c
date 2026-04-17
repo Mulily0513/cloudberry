@@ -1,0 +1,207 @@
+#include "iceberg_volume_option.h"
+#include "src/common/parser_option.h"
+#include "postgres.h"
+#include "fmgr.h"
+#include "foreign/foreign.h"
+#include "utils/builtins.h"
+#include "cdb/cdbutil.h"
+#include "utils/syscache.h"
+#include "catalog/pg_foreign_server.h"
+#include "catalog/pg_user_mapping.h"
+#include "utils/lsyscache.h"
+#include "catalog/pg_foreign_volume.h"
+#include "utils/array.h"
+#include "access/reloptions.h"
+#include "iceberg_volume_option.h"
+
+/* S3 volume server options */
+#define DATALAKE_ICEBERG_VOLUME_SERVER_TYPE "type"
+#define DATALAKE_ICEBERG_VOLUME_SERVER_TYPE_S3 "s3"
+#define DATALAKE_ICEBERG_VOLUME_SERVER_TYPE_ABFSS "abfss"
+#define DATALAKE_ICEBERG_VOLUME_ENDPOINT "endpoint"
+#define DATALAKE_ICEBERG_VOLUME_REGION "region"
+#define DATALAKE_ICEBERG_VOLUME_BUCKET_NAME "bucket_name"
+#define DATALAKE_ICEBERG_VOLUME_PATH_STYLE_ACCESS "path_style_access"
+
+/* hdfs volume server options */
+#define DATALAKE_ICEBERG_VOLUME_SERVER_TYPE_HDFS "hdfs"
+
+/* Polaris aws server option */
+#define DATALAKE_ICEBERG_VOLUME_ROLE_ARN "role_arn"
+#define DATALAKE_ICEBERG_VOLUME_EXTERNAL_ID "external_id"
+#define DATALAKE_ICEBERG_VOLUME_USER_ARN "user_arn"
+#define DATALAKE_ICEBERG_VOLUME_CURRENT_KMS_KEY "current_kms_key"
+#define DATALAKE_ICEBERG_VOLUME_ALLOWED_KMS_KEYS "allowed_kms_keys"
+#define DATALAKE_ICEBERG_VOLUME_STS_ENDPOINT "sts_endpoint"
+#define DATALAKE_ICEBERG_VOLUME_STS_UNAVAILABLE "sts_unavailable"
+#define DATALAKE_ICEBERG_VOLUME_ENDPOINT_INTERNAL "endpoint_internal"
+
+/* Polaris azure server option */
+#define DATALAKE_ICEBERG_VOLUME_TENANT_ID "tenant_id"
+#define DATALAKE_ICEBERG_VOLUME_MULTI_TENANT_APP_NAME "multi_tenant_app_name"
+#define DATALAKE_ICEBERG_VOLUME_CONSENT_URL "consent_url"
+#define DATALAKE_ICEBERG_VOLUME_HIERARCHICAL "hierarchical"
+
+/* S3 user mapping options */
+#define DATALAKE_ICEBERG_VOLUME_USERNAME "username"
+#define DATALAKE_ICEBERG_VOLUME_AWS_ACCESS_KEY_ID "access_key_id"
+#define DATALAKE_ICEBERG_VOLUME_AWS_SECRET_ACCESS_KEY "secret_access_key"
+
+/* Foreign volume options */
+#define DATALAKE_ICEBERG_VOLUME_BASE_PATH "base_path"
+#define DATALAKE_ICEBERG_VOLUME_ENABLE_CACHING "enable_caching"
+#define DATALAKE_ICEBERG_VOLUME_ALLOW_WRITES "allow_writes"
+#define DATALAKE_ICEBERG_CATALOG_FILEIOCONFIG "file_io_config"
+#define DATALAKE_ICEBERG_VOLUME_TABLE_IDENTIFIER "table_identifier"
+
+static void parseIcebergVolumeServerOptions(IcebergVolumeServerOptions *options, List *server_options)
+{
+    options->server_type = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_SERVER_TYPE);
+    options->server_name = getStringOption(server_options, "server_name");
+    options->endpoint = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_ENDPOINT);
+    options->region = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_REGION);
+    options->bucket_name = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_BUCKET_NAME);
+    options->path_style_access = getBoolOption(server_options, DATALAKE_ICEBERG_VOLUME_PATH_STYLE_ACCESS, false);
+
+    if (options->server_type != NULL && pg_strcasecmp(options->server_type, DATALAKE_ICEBERG_VOLUME_SERVER_TYPE_S3) == 0) {
+        /* AWS specific options */
+        options->role_arn = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_ROLE_ARN);
+        options->external_id = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_EXTERNAL_ID);
+        options->user_arn = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_USER_ARN);
+        options->current_kms_key = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_CURRENT_KMS_KEY);
+        options->allowed_kms_keys = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_ALLOWED_KMS_KEYS);
+        options->sts_endpoint = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_STS_ENDPOINT);
+        options->sts_unavailable = getBoolOption(server_options, DATALAKE_ICEBERG_VOLUME_STS_UNAVAILABLE, false);
+        options->endpoint_internal = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_ENDPOINT_INTERNAL);
+    }
+    else if (options->server_type != NULL && pg_strcasecmp(options->server_type, DATALAKE_ICEBERG_VOLUME_SERVER_TYPE_ABFSS) == 0) {
+        /* Azure specific options */
+        options->tenant_id = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_TENANT_ID);
+        options->multi_tenant_app_name = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_MULTI_TENANT_APP_NAME);
+        options->consent_url = getStringOption(server_options, DATALAKE_ICEBERG_VOLUME_CONSENT_URL);
+        options->hierarchical = getBoolOption(server_options, DATALAKE_ICEBERG_VOLUME_HIERARCHICAL, false);
+    }
+}
+
+static void parseIcebergVolumeUserMappingOptions(IcebergVolumeUserMappingOptions *options, List *user_options)
+{
+    options->username = getStringOption(user_options, DATALAKE_ICEBERG_VOLUME_USERNAME);
+    options->aws_access_key_id = getStringOption(user_options, DATALAKE_ICEBERG_VOLUME_AWS_ACCESS_KEY_ID);
+    options->aws_secret_access_key = getStringOption(user_options, DATALAKE_ICEBERG_VOLUME_AWS_SECRET_ACCESS_KEY);
+}
+
+static void parseIcebergForeignVolumeOptions(IcebergForeignVolumeOptions *options, List *foreign_options)
+{
+    options->base_path = getStringOption(foreign_options, DATALAKE_ICEBERG_VOLUME_BASE_PATH);
+    options->enable_caching = getBoolOption(foreign_options, DATALAKE_ICEBERG_VOLUME_ENABLE_CACHING, false);
+    options->allow_writes = getBoolOption(foreign_options, DATALAKE_ICEBERG_VOLUME_ALLOW_WRITES, false);
+    options->fileIOConfig = getStringOption(foreign_options, DATALAKE_ICEBERG_CATALOG_FILEIOCONFIG);
+    options->table_identifier = getStringOption(foreign_options, DATALAKE_ICEBERG_VOLUME_TABLE_IDENTIFIER);
+}
+
+IcebergVolumeOptions* getIcebergVolumeOptions(const char* volumeServerName, const char* volumeName)
+{
+
+    IcebergVolumeOptions *options = (IcebergVolumeOptions *) palloc0(sizeof(IcebergVolumeOptions));
+
+    /* Get foreign server */
+    ForeignServer *server = GetForeignServerByName(volumeServerName, false);
+
+    /* Get user mapping */
+    UserMapping *user = GetUserMapping(GetUserId(), server->serverid);
+
+    ForeignVolume* fvolume = GetForeignVolumeByName(volumeServerName, volumeName, false);
+
+    parseIcebergVolumeServerOptions(&options->volume_server, server->options);
+    parseIcebergVolumeUserMappingOptions(&options->volume_user, user->options);
+    parseIcebergForeignVolumeOptions(&options->foreign_volume, fvolume->options);
+
+    return options;
+}
+
+/*
+ * Build the volume-level base path URI for Iceberg builtin catalog.
+ *
+ * Build the volume base path URI from volume options.
+ * For object storage (s3a, s3, gs, ...): returns "<type>://bucket_name/base_path/"
+ * For HDFS: returns "hdfs:///base_path/"
+ * Returns a palloc'd string.
+ */
+char*
+buildVolumeBasePath(IcebergVolumeOptions *volumeOption)
+{
+    StringInfoData result;
+    const char *server_type;
+    const char *bucket;
+    const char *base_path;
+    bool        is_hdfs;
+
+    Assert(volumeOption != NULL);
+
+    server_type = volumeOption->volume_server.server_type;
+    bucket = volumeOption->volume_server.bucket_name;
+    base_path = volumeOption->foreign_volume.base_path;
+
+    if (server_type == NULL || *server_type == '\0')
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("volume server type is not specified")));
+
+    is_hdfs = (pg_strcasecmp(server_type, "hdfs") == 0);
+
+    initStringInfo(&result);
+
+    if (is_hdfs)
+    {
+        /*
+         * HDFS path: hdfs://<base_path>/
+         * No bucket concept; base_path is the warehouse directory.
+         */
+        appendStringInfoString(&result, "hdfs://");
+
+        if (base_path != NULL && *base_path != '\0')
+        {
+            /* Ensure leading slash */
+            if (*base_path != '/')
+                appendStringInfoChar(&result, '/');
+            appendStringInfoString(&result, base_path);
+        }
+    }
+    else
+    {
+        /*
+         * Object storage: <scheme>://bucket/base_path/
+         * Map user-facing type to Hadoop URI scheme:
+         *   s3, s3a → s3a (Hadoop S3A connector)
+         *   others  → pass through as-is
+         */
+        const char *scheme = server_type;
+        if (pg_strcasecmp(server_type, "s3") == 0)
+            scheme = "s3a";
+
+        if (bucket == NULL || *bucket == '\0')
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("bucket_name is required for volume server type \"%s\"",
+                            server_type)));
+
+        appendStringInfo(&result, "%s://%s", scheme, bucket);
+
+        if (base_path != NULL && *base_path != '\0')
+        {
+            const char *clean = base_path;
+
+            while (*clean == '/')
+                clean++;
+
+            if (*clean != '\0')
+                appendStringInfo(&result, "/%s", clean);
+        }
+    }
+
+    /* Ensure trailing slash */
+    if (result.len == 0 || result.data[result.len - 1] != '/')
+        appendStringInfoChar(&result, '/');
+
+    return result.data;
+}

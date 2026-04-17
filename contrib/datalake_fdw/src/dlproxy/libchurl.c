@@ -1307,43 +1307,59 @@ get_http_error_msg(long http_ret_code, char *msg, char *curl_error_buffer, char 
 	/* find the json_object_field_text function */
 	fmgr_info(F_JSON_OBJECT_FIELD_TEXT, json_object_field_text_fn);
 
-	if ((LOG >= log_min_messages) || (LOG >= client_min_messages))
+	/*
+	 * Use FunctionCallInvoke directly instead of FunctionCall2, because
+	 * json_object_field_text returns NULL (isnull=true) when the key does
+	 * not exist in the JSON, and FunctionCall2 would elog(ERROR) on NULL.
+	 */
 	{
-		/* get the "trace" field from the json error */
-		result = FunctionCall2(json_object_field_text_fn,
-			PointerGetDatum(error_text),
-			PointerGetDatum(cstring_to_text(ftracestr)));
+		LOCAL_FCINFO(fcinfo, 2);
 
-		if (DatumGetPointer(result) != NULL)
-			*trace_message = text_to_cstring(DatumGetTextP(result));
-	}
+		InitFunctionCallInfoData(*fcinfo, json_object_field_text_fn, 2, InvalidOid, NULL, NULL);
+		fcinfo->args[0].value = PointerGetDatum(error_text);
+		fcinfo->args[0].isnull = false;
 
-	/* get the "hint" field from the json error */
-	result = FunctionCall2(json_object_field_text_fn,
-		PointerGetDatum(error_text),
-		PointerGetDatum(cstring_to_text(fhintstr)));
-
-	if (DatumGetPointer(result) != NULL)
-		*hint_message = text_to_cstring(DatumGetTextP(result));
-
-	/* get the "message" field from the json error */
-	result = FunctionCall2(json_object_field_text_fn,
-		PointerGetDatum(error_text),
-		PointerGetDatum(cstring_to_text(fmessagestr)));
-
-	pfree(json_object_field_text_fn);
-
-	if (DatumGetPointer(result) != NULL)
-	{
-		char* parsed_message = text_to_cstring(DatumGetTextP(result));
-
-		end = strstr(parsed_message, "\n");
-		if (end != NULL)
+		if ((LOG >= log_min_messages) || (LOG >= client_min_messages))
 		{
-			ret = pnstrdup(parsed_message, end - parsed_message);
-			return ret;
+			/* get the "trace" field from the json error */
+			fcinfo->args[1].value = PointerGetDatum(cstring_to_text(ftracestr));
+			fcinfo->args[1].isnull = false;
+			fcinfo->isnull = false;
+			result = FunctionCallInvoke(fcinfo);
+
+			if (!fcinfo->isnull && DatumGetPointer(result) != NULL)
+				*trace_message = text_to_cstring(DatumGetTextP(result));
 		}
-		return parsed_message;
+
+		/* get the "hint" field from the json error */
+		fcinfo->args[1].value = PointerGetDatum(cstring_to_text(fhintstr));
+		fcinfo->args[1].isnull = false;
+		fcinfo->isnull = false;
+		result = FunctionCallInvoke(fcinfo);
+
+		if (!fcinfo->isnull && DatumGetPointer(result) != NULL)
+			*hint_message = text_to_cstring(DatumGetTextP(result));
+
+		/* get the "message" field from the json error */
+		fcinfo->args[1].value = PointerGetDatum(cstring_to_text(fmessagestr));
+		fcinfo->args[1].isnull = false;
+		fcinfo->isnull = false;
+		result = FunctionCallInvoke(fcinfo);
+
+		pfree(json_object_field_text_fn);
+
+		if (!fcinfo->isnull && DatumGetPointer(result) != NULL)
+		{
+			char* parsed_message = text_to_cstring(DatumGetTextP(result));
+
+			end = strstr(parsed_message, "\n");
+			if (end != NULL)
+			{
+				ret = pnstrdup(parsed_message, end - parsed_message);
+				return ret;
+			}
+			return parsed_message;
+		}
 	}
 
 	/*

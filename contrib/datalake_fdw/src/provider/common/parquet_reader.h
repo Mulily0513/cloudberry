@@ -30,6 +30,17 @@ private:
 	void filterRowGroupByOffset(int64_t startOffset, int64_t endOffset);
 	TIMEUNIT getTimeUnit(const parquet::ColumnDescriptor *field);
 
+	/* Per-type direct read functions — eliminate virtual + switch per column */
+	static Datum readBoolColumn(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readInt16Column(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readInt32Column(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readInt64Column(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readFloat4Column(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readFloat8Column(BaseFileReader *r, int idx, bool &isNull);
+	static Datum readDateColumn(BaseFileReader *r, int idx, bool &isNull);
+
+	ReadColumnFn resolveReadFn(const TypeInfo &typInfo);
+
 protected:
 	Datum readPrimitive(const TypeInfo &typInfo, bool &isNull);
 	Datum readDecimal(std::shared_ptr<parquet::Scanner> &scannner, const TypeInfo &typinfo, bool &isNull);

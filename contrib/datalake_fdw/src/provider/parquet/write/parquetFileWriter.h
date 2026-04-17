@@ -133,6 +133,7 @@ private:
     parquet::ByteArray* byteArray;
     parquet::FixedLenByteArray* fixByteArray;
     parquet::Int96* int96Array;
+    int64_t* int64Array;
     int16_t* definition_level;
 
     bool openState;
