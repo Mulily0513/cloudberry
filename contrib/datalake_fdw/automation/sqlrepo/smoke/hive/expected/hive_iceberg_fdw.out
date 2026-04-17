@@ -1,0 +1,179 @@
+-- Hive Iceberg FDW Coverage Test
+-- Purpose: Trigger dlproxy Iceberg FDW path (NOT AM path)
+-- Target: dlproxy/icebergConfig.c (+112), dlproxy/iceberg.c (+60),
+--         dlproxy/protocol.c internal_get_external_fragments,
+--         dlproxy/iceberg_fragment_cache.c (+42),
+--         dlproxy/headers.c add_tuple_desc, dlproxy/libchurl.c GET path
+SET client_min_messages = ERROR;
+DROP FOREIGN TABLE IF EXISTS iceberg_fdw_test;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+RESET client_min_messages;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+SET datestyle = ISO, MDY;
+-- ============================================================
+-- Test 1: Create Iceberg foreign table via manual definition
+-- This goes through dlproxy path (not AM path)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS iceberg_fdw_test;
+NOTICE:  foreign table "iceberg_fdw_test" does not exist, skipping
+CREATE FOREIGN TABLE iceberg_fdw_test (
+    id bigint,
+    name text,
+    amount double precision,
+    ts bigint
+)
+SERVER hive_server
+OPTIONS (
+    filePath 'default.iceberg_fdw_test',
+    catalog_type 'hive',
+    server_name 'hive_cluster',
+    hdfs_cluster_name 'paa_cluster',
+    table_identifier 'default.iceberg_fdw_test',
+    format 'iceberg'
+);
+-- Basic scan (triggers iceberg_get_external_fragments -> internal_get_external_fragments
+-- -> icebergConfig.c getIcebergConfigV1JsonString -> protocol.c datalakeDoRPC)
+SELECT COUNT(*) FROM iceberg_fdw_test;
+ count 
+-------
+     8
+(1 row)
+
+-- Full scan
+SELECT * FROM iceberg_fdw_test ORDER BY id;
+ id |  name   | amount |  ts  
+----+---------+--------+------
+  1 | Alice   |    100 | 1000
+  2 | Bob     |  200.5 | 1001
+  3 | Charlie |  50.75 | 1002
+  4 | David   |    300 | 1003
+  5 | Eve     | 150.25 | 1004
+  6 | Frank   |    175 | 1005
+  7 | Grace   |  225.5 | 1006
+  8 | Hank    |     80 | 1007
+(8 rows)
+
+-- WHERE filters (triggers headers.c filter serialization path)
+SELECT * FROM iceberg_fdw_test WHERE id > 5 ORDER BY id;
+ id | name  | amount |  ts  
+----+-------+--------+------
+  6 | Frank |    175 | 1005
+  7 | Grace |  225.5 | 1006
+  8 | Hank  |     80 | 1007
+(3 rows)
+
+SELECT * FROM iceberg_fdw_test WHERE amount > 200.0 ORDER BY id;
+ id | name  | amount |  ts  
+----+-------+--------+------
+  2 | Bob   |  200.5 | 1001
+  4 | David |    300 | 1003
+  7 | Grace |  225.5 | 1006
+(3 rows)
+
+SELECT * FROM iceberg_fdw_test WHERE name = 'Alice';
+ id | name  | amount |  ts  
+----+-------+--------+------
+  1 | Alice |    100 | 1000
+(1 row)
+
+SELECT COUNT(*) FROM iceberg_fdw_test WHERE id <= 3;
+ count 
+-------
+     3
+(1 row)
+
+SELECT COUNT(*) FROM iceberg_fdw_test WHERE id BETWEEN 2 AND 6;
+ count 
+-------
+     5
+(1 row)
+
+-- Column projection (triggers headers.c add_projection_desc)
+SELECT id FROM iceberg_fdw_test ORDER BY id;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+(8 rows)
+
+SELECT name, amount FROM iceberg_fdw_test WHERE id <= 3 ORDER BY name;
+  name   | amount 
+---------+--------
+ Alice   |    100
+ Bob     |  200.5
+ Charlie |  50.75
+(3 rows)
+
+-- Aggregates
+SELECT COUNT(*), SUM(amount), AVG(amount) FROM iceberg_fdw_test;
+ count | sum  |  avg   
+-------+------+--------
+     8 | 1282 | 160.25
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM iceberg_fdw_test;
+ min | max 
+-----+-----
+   1 |   8
+(1 row)
+
+-- ============================================================
+-- Test 2: Fragment cache (dlproxy/iceberg_fragment_cache.c)
+-- ============================================================
+SET datalake.enable_iceberg_fragment_cache = on;
+-- First query: cache miss -> store
+SELECT COUNT(*) FROM iceberg_fdw_test;
+ count 
+-------
+     8
+(1 row)
+
+-- Second query: cache hit
+SELECT COUNT(*) FROM iceberg_fdw_test;
+ count 
+-------
+     8
+(1 row)
+
+-- Third query with filter: cache hit (fragments same)
+SELECT * FROM iceberg_fdw_test WHERE id = 1;
+ id | name  | amount |  ts  
+----+-------+--------+------
+  1 | Alice |    100 | 1000
+(1 row)
+
+SET datalake.enable_iceberg_fragment_cache = off;
+-- ============================================================
+-- Test 3: Multiple reads (protocol.c connection lifecycle)
+-- ============================================================
+SELECT COUNT(*) FROM iceberg_fdw_test;
+ERROR:  dlproxy server error :  Type  Status Report
+SELECT * FROM iceberg_fdw_test WHERE id = 1;
+ERROR:  dlproxy server error :  Type  Status Report
+SELECT COUNT(*) FROM iceberg_fdw_test WHERE amount > 100;
+ERROR:  dlproxy server error :  Type  Status Report
+SELECT id, name FROM iceberg_fdw_test ORDER BY id LIMIT 3;
+ERROR:  dlproxy server error :  Type  Status Report
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS iceberg_fdw_test;

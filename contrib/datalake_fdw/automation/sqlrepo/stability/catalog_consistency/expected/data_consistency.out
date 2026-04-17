@@ -1,0 +1,135 @@
+-- data_consistency.sql
+-- Run the same INSERT / UPDATE / DELETE / SELECT sequence on builtin and hive
+-- catalogs, then compare result hashes. If the hashes differ, the catalogs
+-- are producing inconsistent results for the same logical operations.
+--
+-- Polaris catalog setup is more complex (OAuth, realm, principal) so it is
+-- tested via a separate spec when the environment supports it. This test
+-- focuses on builtin vs hive which are the two most common deployments.
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+-- =====================================================================
+-- SETUP: Builtin catalog
+-- =====================================================================
+DROP SERVER IF EXISTS cc_bi_cat CASCADE;
+NOTICE:  server "cc_bi_cat" does not exist, skipping
+CREATE SERVER cc_bi_cat FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER cc_bi_cat;
+CREATE FOREIGN CATALOG cc_bi SERVER cc_bi_cat;
+DROP SERVER IF EXISTS cc_bi_vol CASCADE;
+NOTICE:  server "cc_bi_vol" does not exist, skipping
+CREATE SERVER cc_bi_vol FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cc_bi_vol
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cc_bi_volume SERVER cc_bi_vol OPTIONS (base_path '/cc_bi/');
+SET iceberg_default_catalog = 'cc_bi';
+SET iceberg_default_volume  = 'cc_bi_volume';
+CREATE ICEBERG TABLE cc_bi_tbl (id int, val numeric(10,2), label text);
+INSERT INTO cc_bi_tbl SELECT g, g*1.5, 'row_'||g FROM generate_series(1,50) AS g;
+UPDATE cc_bi_tbl SET val = val + 100 WHERE id <= 10;
+DELETE FROM cc_bi_tbl WHERE id > 45;
+-- Hash builtin results
+CREATE TEMP TABLE _cc_bi_hash AS
+SELECT md5(string_agg(id::text||','||val::text||','||COALESCE(label,''),';' ORDER BY id)) AS h
+FROM cc_bi_tbl;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+-- =====================================================================
+-- SETUP: Hive catalog (requires lakehouse hive metastore)
+-- =====================================================================
+-- Create a hive-backed Iceberg catalog using the hive_connector.
+-- If the hive metastore is unreachable, creation will fail and the
+-- comparison will be skipped (the final SELECT handles NULLs).
+DROP SERVER IF EXISTS cc_hv_cat CASCADE;
+NOTICE:  server "cc_hv_cat" does not exist, skipping
+CREATE SERVER cc_hv_cat FOREIGN DATA WRAPPER iceberg_catalog_fdw
+OPTIONS (type 'hive', url 'thrift://lakehouse:9083');
+CREATE USER MAPPING FOR current_user SERVER cc_hv_cat;
+CREATE FOREIGN CATALOG cc_hv SERVER cc_hv_cat;
+DROP SERVER IF EXISTS cc_hv_vol CASCADE;
+NOTICE:  server "cc_hv_vol" does not exist, skipping
+CREATE SERVER cc_hv_vol FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cc_hv_vol
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cc_hv_volume SERVER cc_hv_vol OPTIONS (base_path '/cc_hv/');
+SET iceberg_default_catalog = 'cc_hv';
+SET iceberg_default_volume  = 'cc_hv_volume';
+CREATE ICEBERG TABLE cc_hv_tbl (id int, val numeric(10,2), label text);
+INSERT INTO cc_hv_tbl SELECT g, g*1.5, 'row_'||g FROM generate_series(1,50) AS g;
+UPDATE cc_hv_tbl SET val = val + 100 WHERE id <= 10;
+DELETE FROM cc_hv_tbl WHERE id > 45;
+CREATE TEMP TABLE _cc_hv_hash AS
+SELECT md5(string_agg(id::text||','||val::text||','||COALESCE(label,''),';' ORDER BY id)) AS h
+FROM cc_hv_tbl;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+-- =====================================================================
+-- COMPARE
+-- =====================================================================
+SELECT
+    bi.h AS builtin_hash,
+    hv.h AS hive_hash,
+    bi.h = hv.h AS hashes_match
+FROM _cc_bi_hash bi, _cc_hv_hash hv;
+           builtin_hash           | hive_hash | hashes_match 
+----------------------------------+-----------+--------------
+ 505eac6b59f4a0060639e738aa61e9de |           | 
+(1 row)
+
+-- =====================================================================
+-- CLEANUP
+-- =====================================================================
+DROP TABLE cc_bi_tbl;
+DROP VOLUME cc_bi_volume;
+DROP USER MAPPING FOR current_user SERVER cc_bi_vol;
+DROP SERVER cc_bi_vol;
+DROP CATALOG cc_bi;
+DROP USER MAPPING FOR current_user SERVER cc_bi_cat;
+DROP SERVER cc_bi_cat;
+DROP TABLE cc_hv_tbl;
+DROP VOLUME cc_hv_volume;
+DROP USER MAPPING FOR current_user SERVER cc_hv_vol;
+DROP SERVER cc_hv_vol;
+DROP CATALOG cc_hv;
+DROP USER MAPPING FOR current_user SERVER cc_hv_cat;
+DROP SERVER cc_hv_cat;

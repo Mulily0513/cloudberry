@@ -1,0 +1,461 @@
+-- FDW Hive Extended Coverage Test
+-- Purpose: Maximize coverage of dlproxy, grammar_convert, logicalType, filters, partition_selector
+-- Target: filters.c, protocol.c, libchurl.c, headers.c, grammar_convert.c,
+--         logicalType.cpp, partition_selector.c, datalake_option.c, datalake_fdw.c
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+NOTICE:  foreign-data wrapper "datalake_fdw" does not exist, skipping
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+SET datestyle = ISO, MDY;
+-- ============================================================
+-- Test 1: All data types (grammar_convert + logicalType coverage)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_all_types;
+NOTICE:  foreign table "fdw_all_types" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_all_types', 'paa_cluster', 'fdw_all_types', 'hive_server');
+ERROR:  failed to sync table "fdw_coverage_test.test_all_types": NoSuchObjectException(message:hive.fdw_coverage_test.test_all_types table not found)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result.read(ThriftHiveMetastore.java)
+	at org.apache.thrift.TServiceClient.receiveBase(TServiceClient.java:86)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.recv_get_table_req(ThriftHiveMetastore.java:2079)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.get_table_req(ThriftHiveMetastore.java:2066)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility2xx.getTable(HiveMetaStoreClientCompatibility2xx.java:70)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility1xx.getTable(HiveMetaStoreCli (hive_connector.c:278)
+SELECT * FROM fdw_all_types ORDER BY col_int;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types ORDER BY col_int;
+                      ^
+SELECT COUNT(*) FROM fdw_all_types;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT COUNT(*) FROM fdw_all_types;
+                             ^
+-- Type-specific filters (exercises filters.c type branches)
+SELECT * FROM fdw_all_types WHERE col_tinyint = 1;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_tinyint = 1;
+                      ^
+SELECT * FROM fdw_all_types WHERE col_smallint > 100 ORDER BY col_smallint;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_smallint > 100 ORDER B...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_int >= 1000 ORDER BY col_int;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_int >= 1000 ORDER BY c...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_bigint < 20000 ORDER BY col_bigint;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_bigint < 20000 ORDER B...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_float > 2.0;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_float > 2.0;
+                      ^
+SELECT * FROM fdw_all_types WHERE col_double <= 3.0 ORDER BY col_double;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_double <= 3.0 ORDER BY...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_decimal > 0 ORDER BY col_decimal;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_decimal > 0 ORDER BY c...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_string = 'hello';
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_string = 'hello';
+                      ^
+SELECT * FROM fdw_all_types WHERE col_boolean = true;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_boolean = true;
+                      ^
+SELECT * FROM fdw_all_types WHERE col_date > '2024-03-01' ORDER BY col_date;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_date > '2024-03-01' OR...
+                      ^
+-- NULL filters
+SELECT * FROM fdw_all_types WHERE col_string IS NULL;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_string IS NULL;
+                      ^
+SELECT * FROM fdw_all_types WHERE col_string IS NOT NULL ORDER BY col_int;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_string IS NOT NULL ORD...
+                      ^
+-- Combined filters (AND, OR)
+SELECT * FROM fdw_all_types WHERE col_int > 500 AND col_boolean = true;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_int > 500 AND col_bool...
+                      ^
+SELECT * FROM fdw_all_types WHERE col_tinyint = 1 OR col_tinyint = 2 ORDER BY col_tinyint;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_tinyint = 1 OR col_tin...
+                      ^
+-- NOT equal
+SELECT * FROM fdw_all_types WHERE col_string != 'hello' AND col_string IS NOT NULL;
+ERROR:  relation "fdw_all_types" does not exist
+LINE 1: SELECT * FROM fdw_all_types WHERE col_string != 'hello' AND ...
+                      ^
+DROP FOREIGN TABLE fdw_all_types;
+ERROR:  foreign table "fdw_all_types" does not exist
+-- ============================================================
+-- Test 2: Multi-partition table (partition_selector extended)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_multi_part;
+NOTICE:  foreign table "fdw_multi_part" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_multi_part', 'paa_cluster', 'fdw_multi_part', 'hive_server');
+ERROR:  failed to sync table "fdw_coverage_test.test_multi_part": NoSuchObjectException(message:hive.fdw_coverage_test.test_multi_part table not found)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result.read(ThriftHiveMetastore.java)
+	at org.apache.thrift.TServiceClient.receiveBase(TServiceClient.java:86)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.recv_get_table_req(ThriftHiveMetastore.java:2079)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.get_table_req(ThriftHiveMetastore.java:2066)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility2xx.getTable(HiveMetaStoreClientCompatibility2xx.java:70)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility1xx.getTable(HiveMetaStoreCl (hive_connector.c:278)
+-- Full scan
+SELECT * FROM fdw_multi_part ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part ORDER BY id;
+                      ^
+SELECT COUNT(*) FROM fdw_multi_part;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT COUNT(*) FROM fdw_multi_part;
+                             ^
+-- Single partition filter
+SELECT * FROM fdw_multi_part WHERE year = 2024 ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE year = 2024 ORDER BY id;
+                      ^
+SELECT * FROM fdw_multi_part WHERE month = '01' ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE month = '01' ORDER BY id;
+                      ^
+-- Multi-partition filter
+SELECT * FROM fdw_multi_part WHERE year = 2024 AND month = '02' ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE year = 2024 AND month = '...
+                      ^
+SELECT * FROM fdw_multi_part WHERE year = 2023 ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE year = 2023 ORDER BY id;
+                      ^
+-- Partition + data filter combined
+SELECT * FROM fdw_multi_part WHERE year = 2024 AND id > 3 ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE year = 2024 AND id > 3 OR...
+                      ^
+-- IN filter on partition key
+SELECT * FROM fdw_multi_part WHERE month IN ('01', '03') ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE month IN ('01', '03') ORD...
+                      ^
+-- Range filter on partition key
+SELECT * FROM fdw_multi_part WHERE year >= 2024 ORDER BY id;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT * FROM fdw_multi_part WHERE year >= 2024 ORDER BY id;
+                      ^
+-- Count by partition
+SELECT year, month, COUNT(*) FROM fdw_multi_part GROUP BY year, month ORDER BY year, month;
+ERROR:  relation "fdw_multi_part" does not exist
+LINE 1: SELECT year, month, COUNT(*) FROM fdw_multi_part GROUP BY ye...
+                                          ^
+DROP FOREIGN TABLE fdw_multi_part;
+ERROR:  foreign table "fdw_multi_part" does not exist
+-- ============================================================
+-- Test 3: ORC with type filters (orcRead + filters.c)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_orc_types;
+NOTICE:  foreign table "fdw_orc_types" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_orc_types', 'paa_cluster', 'fdw_orc_types', 'hive_server');
+ERROR:  failed to sync table "fdw_coverage_test.test_orc_types": NoSuchObjectException(message:hive.fdw_coverage_test.test_orc_types table not found)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result.read(ThriftHiveMetastore.java)
+	at org.apache.thrift.TServiceClient.receiveBase(TServiceClient.java:86)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.recv_get_table_req(ThriftHiveMetastore.java:2079)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.get_table_req(ThriftHiveMetastore.java:2066)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility2xx.getTable(HiveMetaStoreClientCompatibility2xx.java:70)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility1xx.getTable(HiveMetaStoreCli (hive_connector.c:278)
+SELECT * FROM fdw_orc_types ORDER BY id;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types ORDER BY id;
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_int > 100;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_int > 100;
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_float < 2.0;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_float < 2.0;
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_str = 'orc_a';
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_str = 'orc_a';
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_bool = true;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_bool = true;
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_date > '2024-01-01';
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_date > '2024-01-01';
+                      ^
+SELECT * FROM fdw_orc_types WHERE val_int IS NULL;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: SELECT * FROM fdw_orc_types WHERE val_int IS NULL;
+                      ^
+-- EXPLAIN on ORC table
+EXPLAIN (COSTS OFF) SELECT * FROM fdw_orc_types WHERE id = 1;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: EXPLAIN (COSTS OFF) SELECT * FROM fdw_orc_types WHERE id = 1...
+                                          ^
+EXPLAIN (COSTS OFF) SELECT * FROM fdw_orc_types WHERE val_str = 'orc_a' AND val_bool = true;
+ERROR:  relation "fdw_orc_types" does not exist
+LINE 1: EXPLAIN (COSTS OFF) SELECT * FROM fdw_orc_types WHERE val_st...
+                                          ^
+DROP FOREIGN TABLE fdw_orc_types;
+ERROR:  foreign table "fdw_orc_types" does not exist
+-- ============================================================
+-- Test 4: Text with new text path (textFileRead coverage)
+-- ============================================================
+SET datalake.external_table_new_text = on;
+DROP FOREIGN TABLE IF EXISTS fdw_text_new;
+NOTICE:  foreign table "fdw_text_new" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_text', 'paa_cluster', 'fdw_text_new', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_text_new ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_text_new;
+ count 
+-------
+     3
+(1 row)
+
+DROP FOREIGN TABLE fdw_text_new;
+-- Read same table with old text path for comparison
+SET datalake.external_table_new_text = off;
+DROP FOREIGN TABLE IF EXISTS fdw_text_old;
+NOTICE:  foreign table "fdw_text_old" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_text', 'paa_cluster', 'fdw_text_old', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_text_old ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+DROP FOREIGN TABLE fdw_text_old;
+-- ============================================================
+-- Test 5: Avro table sync (avroRead coverage via Hive)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_avro2;
+NOTICE:  foreign table "fdw_hive_avro2" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_avro', 'paa_cluster', 'fdw_hive_avro2', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_avro2 ORDER BY id;
+ id | name  
+----+-------
+  1 | avro1
+  2 | avro2
+  3 | avro3
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_avro2;
+ count 
+-------
+     3
+(1 row)
+
+SELECT * FROM fdw_hive_avro2 WHERE id > 1 ORDER BY id;
+ id | name  
+----+-------
+  2 | avro2
+  3 | avro3
+(2 rows)
+
+DROP FOREIGN TABLE fdw_hive_avro2;
+-- ============================================================
+-- Test 6: FDW planner/cost estimation (datalake_fdw.c coverage)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_plan_test;
+NOTICE:  foreign table "fdw_plan_test" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_parquet', 'paa_cluster', 'fdw_plan_test', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- Various EXPLAIN modes
+EXPLAIN (COSTS OFF) SELECT * FROM fdw_plan_test;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Foreign Scan on fdw_plan_test
+ Optimizer: GPORCA
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT id FROM fdw_plan_test WHERE id = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Foreign Scan on fdw_plan_test
+         Filter: (id = 1)
+ Optimizer: GPORCA
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM fdw_plan_test WHERE id > 0 AND name = 'alice';
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Foreign Scan on fdw_plan_test
+         Filter: ((id > 0) AND (name = 'alice'::text))
+ Optimizer: GPORCA
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT COUNT(*) FROM fdw_plan_test;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Foreign Scan on fdw_plan_test
+ Optimizer: GPORCA
+(4 rows)
+
+-- Join with local table (exercises FDW planner paths)
+CREATE TEMP TABLE local_join (id int, extra text);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO local_join VALUES (1, 'local1'), (2, 'local2'), (3, 'local3');
+SELECT f.id, f.name, l.extra FROM fdw_plan_test f JOIN local_join l ON f.id = l.id ORDER BY f.id;
+ id |  name   | extra  
+----+---------+--------
+  1 | alice   | local1
+  2 | bob     | local2
+  3 | charlie | local3
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT f.id, f.name FROM fdw_plan_test f JOIN local_join l ON f.id = l.id;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (id = l.id)
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: id
+               ->  Foreign Scan on fdw_plan_test f
+         ->  Hash
+               ->  Seq Scan on local_join l
+ Optimizer: GPORCA
+(9 rows)
+
+DROP TABLE local_join;
+DROP FOREIGN TABLE fdw_plan_test;
+-- ============================================================
+-- Test 7: Multiple GUC variations on Hive tables
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_guc_hive;
+NOTICE:  foreign table "fdw_guc_hive" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_parquet', 'paa_cluster', 'fdw_guc_hive', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- Filter pushdown on/off
+SET datalake.disable_filter_pushdown = off;
+SELECT * FROM fdw_guc_hive WHERE id = 1;
+ id | name  | val  
+----+-------+------
+  1 | alice | 10.5
+(1 row)
+
+SET datalake.disable_filter_pushdown = on;
+SELECT * FROM fdw_guc_hive WHERE id = 1;
+ id | name  | val  
+----+-------+------
+  1 | alice | 10.5
+(1 row)
+
+SET datalake.disable_filter_pushdown = off;
+-- Debug mode
+SET datalake.external_table_debug = on;
+SELECT COUNT(*) FROM fdw_guc_hive;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_debug = off;
+-- Cache disabled
+SET datalake.disable_cache_file = on;
+SELECT COUNT(*) FROM fdw_guc_hive;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.disable_cache_file = off;
+-- Limit segments
+SET datalake.external_table_limit_segment_num = 1;
+SELECT COUNT(*) FROM fdw_guc_hive;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_limit_segment_num = 0;
+-- List in master
+SET datalake.enable_list_in_master = on;
+SELECT COUNT(*) FROM fdw_guc_hive;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.enable_list_in_master = off;
+-- Ignore hidden files
+SET datalake.external_table_ignore_hidden_file = on;
+SELECT COUNT(*) FROM fdw_guc_hive;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_ignore_hidden_file = off;
+-- ANALYZE
+ANALYZE fdw_guc_hive;
+DROP FOREIGN TABLE fdw_guc_hive;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP USER MAPPING IF EXISTS FOR gpadmin SERVER hive_server;
+DROP SERVER IF EXISTS hive_server;

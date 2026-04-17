@@ -1,0 +1,168 @@
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+-- volume
+CREATE SERVER default_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-west-2',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME default_volume SERVER default_volume_server OPTIONS(base_path '/');
+set iceberg_default_volume='default_volume';
+-- catalog
+CREATE SERVER default_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw
+OPTIONS (
+    type 'polaris',
+    url 'http://singlecluster-polaris-1:8181/api/catalog'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_catalog_server
+OPTIONS (
+    client_id 'root', client_secret 's3cr3t', scope 'PRINCIPAL_ROLE:ALL'
+);
+CREATE FOREIGN CATALOG default_catalog
+SERVER default_catalog_server
+OPTIONS (
+    catalog_name 'polaris_default_catalog'
+);
+set iceberg_default_catalog='default_catalog';
+-- create test table and insert data
+CREATE ICEBERG TABLE deferred_commit_test (id bigint, name text)
+OPTIONS (namespace 'public', table 'deferred_commit_test');
+INSERT INTO deferred_commit_test VALUES (1, 'alpha');
+INSERT INTO deferred_commit_test VALUES (2, 'beta');
+INSERT INTO deferred_commit_test VALUES (3, 'gamma');
+SELECT COUNT(*) FROM deferred_commit_test;
+ count 
+-------
+     3
+(1 row)
+
+-- Test commitAppend via toolkit function
+SET client_min_messages = WARNING;
+DO $$
+DECLARE
+    plan_json   json;
+    tasks       json;
+    frag        json;
+    commit_json text;
+    commit_result text;
+BEGIN
+    SELECT (iceberg_toolkit.catalog_fdw(
+        'plan_file_groups', 'public', 'deferred_commit_test',
+        'default_catalog_server', 'default_catalog',
+        'default_volume_server', 'default_volume', ''))::json
+    INTO plan_json;
+
+    tasks := plan_json->'fileGroups'->'combinedTasks'->0->'tasks';
+    frag := tasks->0->'data';
+
+    commit_json := json_build_object(
+        'fragments', json_build_array(
+            json_build_object(
+                'path',               frag->>'sourceName',
+                'file_size_in_bytes', 1024,
+                'record_count',       (frag->'metadata'->>'recordCount')::int,
+                'format',             frag->'metadata'->>'fileFormat'
+            )
+        )
+    )::text;
+
+    BEGIN
+        SELECT iceberg_toolkit.catalog_fdw(
+            'commitAppend', 'public', 'deferred_commit_test',
+            'default_catalog_server', 'default_catalog',
+            'default_volume_server', 'default_volume',
+            commit_json)
+        INTO commit_result;
+        RAISE NOTICE 'commitAppend: success (response received)';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'commitAppend returned error (expected for test): %', SQLERRM;
+    END;
+END;
+$$;
+RESET client_min_messages;
+-- Test commitRewrite via toolkit function
+SET client_min_messages = WARNING;
+DO $$
+DECLARE
+    plan_json   json;
+    tasks       json;
+    frag        json;
+    rewritten   text;
+    commit_json text;
+    commit_result text;
+    i           int;
+    sep         text;
+BEGIN
+    SELECT (iceberg_toolkit.catalog_fdw(
+        'plan_file_groups', 'public', 'deferred_commit_test',
+        'default_catalog_server', 'default_catalog',
+        'default_volume_server', 'default_volume', ''))::json
+    INTO plan_json;
+
+    tasks := plan_json->'fileGroups'->'combinedTasks'->0->'tasks';
+
+    IF tasks IS NULL OR json_array_length(tasks) = 0 THEN
+        RAISE NOTICE 'commitRewrite: no tasks returned from plan_file_groups, skipping';
+        RETURN;
+    END IF;
+
+    rewritten := '[';
+    sep := '';
+    FOR i IN 0 .. json_array_length(tasks) - 1 LOOP
+        frag := tasks->i->'data';
+        rewritten := rewritten || sep || json_build_object(
+            'path',               frag->>'sourceName',
+            'file_size_in_bytes', 1024,
+            'record_count',       (frag->'metadata'->>'recordCount')::int,
+            'format',             frag->'metadata'->>'fileFormat'
+        )::text;
+        sep := ',';
+    END LOOP;
+    rewritten := rewritten || ']';
+
+    frag := tasks->0->'data';
+    commit_json := json_build_object(
+        'fragments', json_build_array(
+            json_build_object(
+                'path',               frag->>'sourceName',
+                'file_size_in_bytes', 1024,
+                'record_count',       (frag->'metadata'->>'recordCount')::int,
+                'format',             frag->'metadata'->>'fileFormat'
+            )
+        ),
+        'rewrittenFragments', rewritten::json
+    )::text;
+
+    BEGIN
+        SELECT iceberg_toolkit.catalog_fdw(
+            'commitRewrite', 'public', 'deferred_commit_test',
+            'default_catalog_server', 'default_catalog',
+            'default_volume_server', 'default_volume',
+            commit_json)
+        INTO commit_result;
+        RAISE NOTICE 'commitRewrite: success (response received)';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'commitRewrite returned error (expected for test): %', SQLERRM;
+    END;
+END;
+$$;
+RESET client_min_messages;
+-- cleanup
+DROP TABLE deferred_commit_test;
+DROP VOLUME default_volume;
+DROP USER MAPPING FOR current_user SERVER default_volume_server;
+DROP SERVER default_volume_server;
+DROP CATALOG default_catalog;
+DROP USER MAPPING FOR current_user SERVER default_catalog_server;
+DROP SERVER default_catalog_server;

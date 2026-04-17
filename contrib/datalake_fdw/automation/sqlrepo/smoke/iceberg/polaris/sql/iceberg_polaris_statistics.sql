@@ -1,0 +1,69 @@
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- volume
+CREATE SERVER default_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-west-2',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+
+CREATE FOREIGN VOLUME default_volume SERVER default_volume_server OPTIONS(base_path '/');
+set iceberg_default_volume='default_volume';
+
+-- catalog
+CREATE SERVER default_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw
+OPTIONS (
+    type 'polaris',
+    url 'http://singlecluster-polaris-1:8181/api/catalog'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_catalog_server
+OPTIONS (
+    client_id 'root', client_secret 's3cr3t', scope 'PRINCIPAL_ROLE:ALL'
+);
+CREATE FOREIGN CATALOG default_catalog
+SERVER default_catalog_server
+OPTIONS (
+    catalog_name 'polaris_default_catalog'
+);
+set iceberg_default_catalog='default_catalog';
+
+-- create iceberg table and insert data
+CREATE ICEBERG TABLE stats_test_table (
+    id bigint,
+    name text)
+OPTIONS (namespace 'public', table 'stats_test_table');
+
+INSERT INTO stats_test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+
+-- get statistics via toolkit function
+-- extract total-records (deterministic) and verify total-files-size > 0
+-- (total-files-size varies between runs due to Parquet metadata differences)
+SELECT
+    result::json->'fragments'->>'total-records' AS total_records,
+    (result::json->'fragments'->>'total-files-size')::bigint > 0 AS has_file_size
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'get_statistics', 'public', 'stats_test_table',
+        'default_catalog_server', 'default_catalog',
+        'default_volume_server', 'default_volume', '') AS result
+) t;
+
+-- cleanup
+DROP TABLE stats_test_table;
+DROP VOLUME default_volume;
+DROP USER MAPPING FOR current_user SERVER default_volume_server;
+DROP SERVER default_volume_server;
+DROP CATALOG default_catalog;
+DROP USER MAPPING FOR current_user SERVER default_catalog_server;
+DROP SERVER default_catalog_server;

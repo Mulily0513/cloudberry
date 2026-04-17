@@ -1,0 +1,155 @@
+-- 02_subqueries.sql
+-- Test subquery support
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+\i ../../../lib/sql/hive_server_setup.sql
+-- hive_server_setup.sql
+-- Hive server configuration for datalake_fdw tests
+-- Requires: common_setup.sql to be loaded first
+--
+-- This file creates the hive_server foreign server using the public.create_foreign_server() function
+-- Default configuration uses Docker service names from docker-compose.yml
+-- Create server and user mapping for hive
+-- Parameters: server_name, user, wrapper, cluster_name
+-- The public.create_foreign_server() function handles all necessary setup
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ERROR:  server "hive_server" already exists
+CONTEXT:  SQL statement "CREATE SERVER hive_server FOREIGN DATA WRAPPER datalake_fdw OPTIONS (hdfs_namenodes 'lakehouse', hdfs_port '8020', protocol 'hdfs', hdfs_auth_method 'simple', hadoop_rpc_protection 'authentication')"
+-- Log server creation
+SELECT test_log('Hive server setup completed');
+NOTICE:  [TEST] Hive server setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+-- Create test schema
+DROP SCHEMA IF EXISTS feature_test CASCADE;
+NOTICE:  schema "feature_test" does not exist, skipping
+CREATE SCHEMA feature_test;
+SELECT test_log('Feature Test: Subqueries');
+NOTICE:  [TEST] Feature Test: Subqueries
+ test_log 
+----------
+ 
+(1 row)
+
+-- Setup
+SELECT public.sync_hive_table('hive_cluster','default','test_orc','paa_cluster', 'feature_test.test_table', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- Test 1: Subquery in WHERE clause
+SELECT test_log('Test 1: Subquery in WHERE');
+NOTICE:  [TEST] Test 1: Subquery in WHERE
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) as rows_above_avg
+FROM feature_test.test_table
+WHERE id > (SELECT AVG(id) FROM feature_test.test_table);
+ rows_above_avg 
+----------------
+              0
+(1 row)
+
+-- Test 2: Subquery with IN
+SELECT test_log('Test 2: Subquery with IN');
+NOTICE:  [TEST] Test 2: Subquery with IN
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) as matching_rows
+FROM feature_test.test_table
+WHERE id IN (SELECT id FROM feature_test.test_table WHERE id < 10);
+ matching_rows 
+---------------
+             1
+(1 row)
+
+-- Test 3: Correlated subquery
+SELECT test_log('Test 3: Correlated subquery');
+NOTICE:  [TEST] Test 3: Correlated subquery
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id, name,
+    (SELECT COUNT(*) FROM feature_test.test_table t2 WHERE t2.id <= t1.id) as running_count
+FROM feature_test.test_table t1
+ORDER BY id LIMIT 5;
+ id | name | running_count 
+----+------+---------------
+  1 | test |             1
+    | test |             0
+(2 rows)
+
+-- Test 4: Subquery in FROM clause
+SELECT test_log('Test 4: Derived table');
+NOTICE:  [TEST] Test 4: Derived table
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT AVG(cnt) as avg_count
+FROM (
+    SELECT id, COUNT(*) as cnt
+    FROM feature_test.test_table
+    GROUP BY id
+) sub;
+       avg_count        
+------------------------
+ 1.00000000000000000000
+(1 row)
+
+-- Cleanup
+DROP SCHEMA feature_test CASCADE;
+NOTICE:  drop cascades to foreign table feature_test.test_table

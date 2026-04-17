@@ -1,0 +1,128 @@
+-- Iceberg HDFS Volume Test
+-- Purpose: Exercise HDFS volume server_type path in option parsing
+-- Target: iceberg_volume_option.c (HDFS branch in parseIcebergVolumeServerOptions)
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- catalog setup
+CREATE SERVER hdfs_vol_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER hdfs_vol_catalog_server;
+CREATE FOREIGN CATALOG hdfs_vol_catalog SERVER hdfs_vol_catalog_server;
+SET iceberg_default_catalog = 'hdfs_vol_catalog';
+
+-- ============================================================
+-- Test 1: HDFS volume server (Simple auth)
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER hdfs_vol_server
+        FOREIGN DATA WRAPPER iceberg_volume_fdw
+        OPTIONS (
+            type ''hdfs'',
+            hdfs_namenodes ''lakehouse:8020'',
+            hdfs_auth_method ''simple'',
+            hadoop_rpc_protection ''authentication''
+        )';
+
+    EXECUTE 'CREATE USER MAPPING FOR current_user
+        SERVER hdfs_vol_server
+        OPTIONS (
+            username ''gpadmin''
+        )';
+
+    EXECUTE 'CREATE FOREIGN VOLUME hdfs_vol
+        SERVER hdfs_vol_server
+        OPTIONS (
+            base_path ''/iceberg-warehouse/'',
+            allow_writes ''true''
+        )';
+
+    RAISE NOTICE 'HDFS volume created successfully';
+
+    -- Try table operations
+    EXECUTE 'SET iceberg_default_volume = ''hdfs_vol''';
+    BEGIN
+        EXECUTE 'CREATE ICEBERG TABLE hdfs_vol_test (id bigint, val text)';
+        EXECUTE 'INSERT INTO hdfs_vol_test VALUES (1, ''hdfs_test'')';
+        EXECUTE 'SELECT COUNT(*) FROM hdfs_vol_test';
+        RAISE NOTICE 'HDFS table operations succeeded';
+        EXECUTE 'DROP TABLE hdfs_vol_test';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'HDFS table operation error (expected if HDFS unavailable): %', regexp_replace(split_part(SQLERRM, E'\n', 1), '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID', 'g');
+    END;
+
+    -- Cleanup HDFS objects
+    EXECUTE 'DROP VOLUME hdfs_vol';
+    EXECUTE 'DROP USER MAPPING FOR current_user SERVER hdfs_vol_server';
+    EXECUTE 'DROP SERVER hdfs_vol_server';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'HDFS volume setup error (expected if HDFS unavailable): %', regexp_replace(split_part(SQLERRM, E'\n', 1), '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID', 'g');
+    -- Attempt cleanup
+    BEGIN
+        EXECUTE 'DROP TABLE IF EXISTS hdfs_vol_test';
+        EXECUTE 'DROP VOLUME IF EXISTS hdfs_vol';
+        EXECUTE 'DROP USER MAPPING IF EXISTS FOR current_user SERVER hdfs_vol_server';
+        EXECUTE 'DROP SERVER IF EXISTS hdfs_vol_server';
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END;
+$$;
+
+-- ============================================================
+-- Test 2: HDFS HA volume server
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER hdfs_ha_vol_server
+        FOREIGN DATA WRAPPER iceberg_volume_fdw
+        OPTIONS (
+            type ''hdfs'',
+            hdfs_namenodes ''mycluster'',
+            hdfs_auth_method ''simple'',
+            hadoop_rpc_protection ''authentication'',
+            is_ha_supported ''true'',
+            dfs_nameservices ''mycluster'',
+            dfs_ha_namenodes ''nn1,nn2'',
+            dfs_namenode_rpc_address ''lakehouse:8020,lakehouse:8020'',
+            dfs_client_failover_proxy_provider ''org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider''
+        )';
+
+    EXECUTE 'CREATE USER MAPPING FOR current_user
+        SERVER hdfs_ha_vol_server
+        OPTIONS (
+            username ''gpadmin''
+        )';
+
+    EXECUTE 'CREATE FOREIGN VOLUME hdfs_ha_vol
+        SERVER hdfs_ha_vol_server
+        OPTIONS (
+            base_path ''/iceberg-ha-warehouse/'',
+            allow_writes ''true''
+        )';
+
+    RAISE NOTICE 'HDFS HA volume created successfully';
+
+    -- Cleanup
+    EXECUTE 'DROP VOLUME hdfs_ha_vol';
+    EXECUTE 'DROP USER MAPPING FOR current_user SERVER hdfs_ha_vol_server';
+    EXECUTE 'DROP SERVER hdfs_ha_vol_server';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'HDFS HA volume setup error (expected if HDFS unavailable): %', regexp_replace(split_part(SQLERRM, E'\n', 1), '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID', 'g');
+    BEGIN
+        EXECUTE 'DROP VOLUME IF EXISTS hdfs_ha_vol';
+        EXECUTE 'DROP USER MAPPING IF EXISTS FOR current_user SERVER hdfs_ha_vol_server';
+        EXECUTE 'DROP SERVER IF EXISTS hdfs_ha_vol_server';
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END;
+$$;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP CATALOG hdfs_vol_catalog;
+DROP USER MAPPING FOR current_user SERVER hdfs_vol_catalog_server;
+DROP SERVER hdfs_vol_catalog_server;

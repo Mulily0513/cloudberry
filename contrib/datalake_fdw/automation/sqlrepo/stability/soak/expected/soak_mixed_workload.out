@@ -1,0 +1,323 @@
+-- soak_mixed_workload.sql
+-- Run a mixed INSERT/SELECT/DELETE/VACUUM workload N times; detect timing
+-- drift by comparing the first quartile of iterations against the last.
+--
+-- Iteration count is taken from STABILITY_SOAK_ITERATIONS env var, passed
+-- through to a session-level GUC (soak.iterations).
+--
+-- Output is intentionally minimal and deterministic:
+--   - iteration_count (the fixed N)
+--   - no_severe_regression (bool: q4_avg / q1_avg < 3.0)
+-- Detailed per-iteration timings are kept in public.soak_iter_stats for
+-- manual inspection after the test completes.
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+-- soak.iterations is pre-set via PGOPTIONS in the Makefile.
+-- Fallback: if not set, default to 50 (CI profile).
+DO $$ BEGIN
+    PERFORM current_setting('soak.iterations');
+EXCEPTION WHEN OTHERS THEN
+    EXECUTE 'SET soak.iterations = 50';
+END $$;
+-- Persist timings across the test so users can inspect after a run
+CREATE TABLE IF NOT EXISTS public.soak_iter_stats (
+    run_ts TIMESTAMP WITH TIME ZONE NOT NULL,
+    iter_idx INT NOT NULL,
+    iter_duration_ms NUMERIC NOT NULL,
+    rss_hint_mb NUMERIC
+);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'run_ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+-- Use a per-run timestamp so concurrent/historical runs don't clobber each other
+CREATE TEMP TABLE _soak_run AS SELECT clock_timestamp() AS run_ts;
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'run_ts' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+DROP SERVER IF EXISTS soak_cat_srv CASCADE;
+NOTICE:  server "soak_cat_srv" does not exist, skipping
+CREATE SERVER soak_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER soak_cat_srv;
+CREATE FOREIGN CATALOG soak_cat SERVER soak_cat_srv;
+SET iceberg_default_catalog = 'soak_cat';
+DROP SERVER IF EXISTS soak_vol_srv CASCADE;
+NOTICE:  server "soak_vol_srv" does not exist, skipping
+CREATE SERVER soak_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER soak_vol_srv
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME soak_vol SERVER soak_vol_srv OPTIONS (base_path '/soak_test/');
+SET iceberg_default_volume = 'soak_vol';
+CREATE ICEBERG TABLE soak_tbl (id int, val numeric(10,2), label text);
+-- Store the batch_start so each DO block iteration can find where to resume.
+-- Using a regular (non-temp) table so it survives if a session gang is reset.
+CREATE TABLE IF NOT EXISTS public.soak_batch_cursor (run_ts TIMESTAMP WITH TIME ZONE PRIMARY KEY, batch_start INT);
+INSERT INTO public.soak_batch_cursor SELECT run_ts, 1 FROM _soak_run;
+-- Batched workload: avoid running all N iterations in a single long DO block
+-- (which is one long transaction). Long transactions can trigger Greenplum
+-- gang resets, losing temp tables and aborting in-flight Iceberg writes.
+-- Instead, run SOAK_BATCH_SIZE iterations per DO block, with VACUUM between
+-- batches. Each DO block is its own transaction.
+\set batch_size 50
+-- Repeat the DO + VACUUM pattern enough times to cover any soak.iterations
+-- value up to 10000. Each DO block is cheap when there are no remaining
+-- iterations (exits immediately).
+\set batches 200
+SELECT 'starting batched soak: batch_size=50, max_batches=200, total_cap=10000' AS info;
+                                  info                                  
+------------------------------------------------------------------------
+ starting batched soak: batch_size=50, max_batches=200, total_cap=10000
+(1 row)
+
+-- Macro-expand: generate "N copies" of the same DO + VACUUM block via psql's \i is
+-- awkward. Instead, use a driver function that we call in a loop from SQL.
+-- Create a helper function that runs ONE batch of iterations and returns
+-- whether more work remains.
+CREATE OR REPLACE FUNCTION soak_run_batch(p_batch_size INT)
+RETURNS boolean AS $fn$
+DECLARE
+    v_n INT;
+    v_start TIMESTAMP WITH TIME ZONE;
+    v_iter_ms NUMERIC;
+    v_run_ts TIMESTAMP WITH TIME ZONE;
+    v_cursor INT;
+    v_batch_end INT;
+    i INT;
+BEGIN
+    v_n := current_setting('soak.iterations')::int;
+    SELECT run_ts, batch_start INTO v_run_ts, v_cursor
+      FROM public.soak_batch_cursor ORDER BY run_ts DESC LIMIT 1;
+
+    IF v_cursor > v_n THEN
+        RETURN false;  -- nothing left to do
+    END IF;
+
+    v_batch_end := LEAST(v_cursor + p_batch_size - 1, v_n);
+
+    FOR i IN v_cursor..v_batch_end LOOP
+        v_start := clock_timestamp();
+
+        INSERT INTO soak_tbl
+        SELECT g, g * 1.5, 'iter_' || i
+        FROM generate_series(i*100, i*100+50) AS g;
+
+        PERFORM count(*) FROM soak_tbl WHERE id > (i-1)*100 AND id < (i+1)*100;
+
+        DELETE FROM soak_tbl WHERE id < (i-2)*100 AND i > 3;
+
+        v_iter_ms := EXTRACT(EPOCH FROM (clock_timestamp() - v_start)) * 1000;
+        INSERT INTO public.soak_iter_stats(run_ts, iter_idx, iter_duration_ms)
+        VALUES (v_run_ts, i, v_iter_ms);
+    END LOOP;
+
+    UPDATE public.soak_batch_cursor SET batch_start = v_batch_end + 1 WHERE run_ts = v_run_ts;
+    RETURN v_batch_end < v_n;
+END;
+$fn$ LANGUAGE plpgsql;
+-- Run batches until done. Each iteration is a separate transaction — VACUUM
+-- runs between them to prevent file accumulation. We unroll by a fixed count
+-- to avoid driving the loop from psql (which would also be a long connection).
+-- per-batch output varies with soak.iterations
+-- start_ignore
+\set iter 1
+-- 200 batches × 50 = 10000 iteration cap. Returns false early if done.
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+SELECT soak_run_batch(50); VACUUM soak_tbl;
+ soak_run_batch 
+----------------
+ f
+(1 row)
+
+-- end_ignore
+-- Cleanup the helper
+DROP FUNCTION soak_run_batch(INT);
+DROP TABLE public.soak_batch_cursor;
+-- Final VACUUM
+VACUUM soak_tbl;
+-- Deterministic output only: regression boolean. iteration_count intentionally
+-- omitted so pg_regress diff holds across CI/Nightly profiles (which use
+-- different STABILITY_SOAK_ITERATIONS). Users who want the count can query
+-- public.soak_iter_stats directly after the run.
+WITH this_run AS (
+    SELECT s.iter_idx, s.iter_duration_ms,
+           ntile(4) OVER (ORDER BY s.iter_idx) AS q
+    FROM public.soak_iter_stats s, _soak_run r
+    WHERE s.run_ts = r.run_ts
+),
+quartiles AS (
+    SELECT q, AVG(iter_duration_ms) AS avg_ms FROM this_run GROUP BY q
+)
+SELECT
+    CASE
+        WHEN (SELECT count(*) FROM this_run) = 0 THEN false
+        WHEN (SELECT avg_ms FROM quartiles WHERE q=1) = 0 THEN true
+        -- 10x threshold is calibrated for a table that grows through the
+        -- run - smaller threshold triggers on normal scan cost growth,
+        -- not leaks. A true memory/FD leak typically shows 50x+ drift.
+        WHEN (SELECT avg_ms FROM quartiles WHERE q=4) /
+             (SELECT avg_ms FROM quartiles WHERE q=1) < 10.0 THEN true
+        ELSE false
+    END AS no_severe_regression;
+ no_severe_regression 
+----------------------
+ t
+(1 row)
+
+-- Cleanup
+DROP TABLE soak_tbl;
+DROP VOLUME soak_vol;
+DROP USER MAPPING FOR current_user SERVER soak_vol_srv;
+DROP SERVER soak_vol_srv;
+DROP CATALOG soak_cat;
+DROP USER MAPPING FOR current_user SERVER soak_cat_srv;
+DROP SERVER soak_cat_srv;

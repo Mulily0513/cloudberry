@@ -1,0 +1,5 @@
+# Installed tools (extracted from download_cache)
+bin/
+hadoop-*/
+apache-hive-*/
+conf/

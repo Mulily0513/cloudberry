@@ -1,0 +1,193 @@
+-- Iceberg Deferred Commit Extended Test
+-- Purpose: Exercise metadata tracker paths including savepoints and abort
+-- Target: pg_iceberg_metadata_tracker.c (register_table, apply_updates_with_rebase,
+--         savepoint handling, Xact abort callback)
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+-- catalog + volume setup
+CREATE SERVER defcom_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER defcom_catalog_server;
+CREATE FOREIGN CATALOG defcom_catalog SERVER defcom_catalog_server;
+SET iceberg_default_catalog = 'defcom_catalog';
+CREATE SERVER defcom_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER defcom_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME defcom_volume SERVER defcom_volume_server OPTIONS(base_path '/defcom_volume/');
+SET iceberg_default_volume = 'defcom_volume';
+-- ============================================================
+-- Test 1: Multiple INSERTs in one transaction (file accumulation)
+-- ============================================================
+CREATE ICEBERG TABLE defcom_accum (id bigint, val text);
+BEGIN;
+INSERT INTO defcom_accum VALUES (1, 'first');
+INSERT INTO defcom_accum VALUES (2, 'second');
+INSERT INTO defcom_accum VALUES (3, 'third');
+INSERT INTO defcom_accum VALUES (4, 'fourth');
+INSERT INTO defcom_accum VALUES (5, 'fifth');
+COMMIT;
+-- All 5 rows should be committed
+SELECT COUNT(*) FROM defcom_accum;
+ count 
+-------
+     5
+(1 row)
+
+SELECT * FROM defcom_accum ORDER BY id;
+ id |  val   
+----+--------
+  1 | first
+  2 | second
+  3 | third
+  4 | fourth
+  5 | fifth
+(5 rows)
+
+DROP TABLE defcom_accum;
+-- ============================================================
+-- Test 2: SAVEPOINT and ROLLBACK TO SAVEPOINT
+-- ============================================================
+CREATE ICEBERG TABLE defcom_savepoint (id bigint, val text);
+BEGIN;
+INSERT INTO defcom_savepoint VALUES (1, 'before_sp');
+INSERT INTO defcom_savepoint VALUES (2, 'before_sp');
+SAVEPOINT sp1;
+INSERT INTO defcom_savepoint VALUES (3, 'after_sp');
+DELETE FROM defcom_savepoint WHERE id = 1;
+-- Rollback to savepoint - should undo the INSERT(3) and DELETE(1)
+ROLLBACK TO sp1;
+-- Continue with more work after rollback
+INSERT INTO defcom_savepoint VALUES (4, 'after_rollback');
+COMMIT;
+-- Should have rows 1, 2, 4 (not 3; row 1 should be restored)
+SELECT * FROM defcom_savepoint ORDER BY id;
+ id |      val       
+----+----------------
+  1 | before_sp
+  2 | before_sp
+  4 | after_rollback
+(3 rows)
+
+DROP TABLE defcom_savepoint;
+-- ============================================================
+-- Test 3: Transaction abort (error mid-transaction)
+-- ============================================================
+CREATE ICEBERG TABLE defcom_abort (id bigint, val text);
+INSERT INTO defcom_abort VALUES (1, 'original');
+-- Transaction with error - all changes should be rolled back
+DO $$
+BEGIN
+    INSERT INTO defcom_abort VALUES (2, 'will_be_aborted');
+    UPDATE defcom_abort SET val = 'modified' WHERE id = 1;
+    -- Force error
+    PERFORM 1/0;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Transaction aborted: %', SQLERRM;
+END;
+$$;
+NOTICE:  Transaction aborted: division by zero
+-- Only original row should exist, unmodified
+SELECT * FROM defcom_abort ORDER BY id;
+ id |   val    
+----+----------
+  1 | original
+(1 row)
+
+DROP TABLE defcom_abort;
+-- ============================================================
+-- Test 4: Read-your-own-writes (RYOW) within transaction
+-- ============================================================
+CREATE ICEBERG TABLE defcom_ryow (id bigint, val text);
+BEGIN;
+INSERT INTO defcom_ryow VALUES (1, 'inserted_in_txn');
+-- Should see the inserted row within same transaction
+SELECT COUNT(*) AS within_txn FROM defcom_ryow;
+ within_txn 
+------------
+          1
+(1 row)
+
+INSERT INTO defcom_ryow VALUES (2, 'second_in_txn');
+SELECT COUNT(*) AS after_second_insert FROM defcom_ryow;
+ after_second_insert 
+---------------------
+                   2
+(1 row)
+
+COMMIT;
+-- Verify after commit
+SELECT * FROM defcom_ryow ORDER BY id;
+ id |       val       
+----+-----------------
+  1 | inserted_in_txn
+  2 | second_in_txn
+(2 rows)
+
+DROP TABLE defcom_ryow;
+-- ============================================================
+-- Test 5: Mixed INSERT + UPDATE + DELETE in one transaction
+-- ============================================================
+CREATE ICEBERG TABLE defcom_mixed (id bigint, val text);
+INSERT INTO defcom_mixed VALUES (1, 'orig1'), (2, 'orig2'), (3, 'orig3');
+BEGIN;
+INSERT INTO defcom_mixed VALUES (4, 'new4');
+UPDATE defcom_mixed SET val = 'updated1' WHERE id = 1;
+DELETE FROM defcom_mixed WHERE id = 2;
+INSERT INTO defcom_mixed VALUES (5, 'new5');
+UPDATE defcom_mixed SET val = 'updated3' WHERE id = 3;
+COMMIT;
+-- Should have: 1(updated), 3(updated), 4(new), 5(new); not 2(deleted)
+SELECT * FROM defcom_mixed ORDER BY id;
+ id |   val    
+----+----------
+  1 | updated1
+  3 | updated3
+  4 | new4
+  5 | new5
+(4 rows)
+
+DROP TABLE defcom_mixed;
+-- ============================================================
+-- Test 6: Nested savepoints
+-- ============================================================
+CREATE ICEBERG TABLE defcom_nested_sp (id bigint);
+BEGIN;
+INSERT INTO defcom_nested_sp VALUES (1);
+SAVEPOINT sp1;
+INSERT INTO defcom_nested_sp VALUES (2);
+SAVEPOINT sp2;
+INSERT INTO defcom_nested_sp VALUES (3);
+-- Rollback sp2, keeping sp1
+ROLLBACK TO sp2;
+INSERT INTO defcom_nested_sp VALUES (4);
+COMMIT;
+-- Should have: 1, 2, 4 (not 3)
+SELECT * FROM defcom_nested_sp ORDER BY id;
+ id 
+----
+  1
+  2
+  4
+(3 rows)
+
+DROP TABLE defcom_nested_sp;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME defcom_volume;
+DROP USER MAPPING FOR current_user SERVER defcom_volume_server;
+DROP SERVER defcom_volume_server;
+DROP CATALOG defcom_catalog;
+DROP USER MAPPING FOR current_user SERVER defcom_catalog_server;
+DROP SERVER defcom_catalog_server;

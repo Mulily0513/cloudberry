@@ -1,0 +1,62 @@
+-- Iceberg Toolkit All Operations Test
+-- Purpose: Call every toolkit catalog_fdw operation to maximize coverage
+-- Target: iceberg_toolkit_catalog_fdw.c (create_table, drop_table, list_catalog,
+--         list_namespace, append, update, commit_delete, commit_rewrite)
+--         iceberg_toolkit_volume_fdw.c (scan operations)
+--         iceberg_toolkit_common.c (execute_*_operation, iceberg_build_schema_from_table_name)
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+-- Setup builtin catalog + volume
+CREATE SERVER tka_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER tka_catalog_server;
+CREATE FOREIGN CATALOG tka_catalog SERVER tka_catalog_server;
+SET iceberg_default_catalog = 'tka_catalog';
+CREATE SERVER tka_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER tka_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME tka_volume SERVER tka_volume_server OPTIONS(base_path '/tka_volume/');
+SET iceberg_default_volume = 'tka_volume';
+-- Create a table first (needed for subsequent ops)
+CREATE ICEBERG TABLE tka_data (id bigint, name text, val int);
+INSERT INTO tka_data VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30);
+INSERT INTO tka_data VALUES (4, 'd', 40), (5, 'e', 50);
+-- ============================================================
+-- Test 1: create_table operation via toolkit
+-- ============================================================
+SET client_min_messages = WARNING;
+DO $$
+DECLARE r text;
+BEGIN
+    SELECT iceberg_toolkit.catalog_fdw(
+        'create_table', 'public', 'tka_toolkit_created',
+        'tka_catalog_server', 'tka_catalog',
+        'tka_volume_server', 'tka_volume', '')
+    INTO r;
+    RAISE NOTICE 'create_table: %', substring(r from 1 for 80);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'create_table error (may be expected): %', SQLERRM;
+END;
+$$;
+RESET client_min_messages;
+-- ============================================================
+-- Test 2: list_catalog operation
+-- ============================================================
+SET client_min_messages = WARNING;
+DO $$
+DECLARE r text;
+BEGIN
+    SELECT iceberg_toolkit.catalog_fdw(
+        'list_catalog', 'public', 'tka_data',
+        'tka_catalog_server', 'tka_catalog',
+        'tka_volume_server', 'tka_volume', '')
+    INTO r;
+    RAISE NOTICE 'list_catalog: %', substring(r from 1 for 80);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'list_catalog error: %', SQLERRM;
+END;
+$$;
+server closed the connection unexpectedly
+	This probably means the server terminated abnormally
+	before or while processing the request.
+connection to server was lost

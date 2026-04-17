@@ -1,0 +1,134 @@
+-- FDW Parquet Read/Write Test
+-- Purpose: Exercise the FDW path (not AM path) for Parquet format
+-- Target: datalake_fdw.c (BeginForeignScan/Modify), fdwFunction.c,
+--         parquetWrite.cpp, parquetRead.cpp, protocol.c, headers.c
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_pq_server CASCADE;
+NOTICE:  server "fdw_pq_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_pq_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_pq_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: Basic Parquet write + read round-trip
+-- ============================================================
+CREATE FOREIGN TABLE fdw_pq_w1 (id int, name text, amount decimal(10,2))
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/basic/', format 'parquet');
+INSERT INTO fdw_pq_w1 SELECT i, 'item_' || i, i * 10.50 FROM generate_series(1, 10) i;
+DROP FOREIGN TABLE fdw_pq_w1;
+CREATE FOREIGN TABLE fdw_pq_r1 (id int, name text, amount decimal(10,2))
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/basic/', format 'parquet');
+SELECT COUNT(*) FROM fdw_pq_r1;
+ count 
+-------
+    10
+(1 row)
+
+SELECT * FROM fdw_pq_r1 ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | item_1  |  10.50
+  2 | item_2  |  21.00
+  3 | item_3  |  31.50
+  4 | item_4  |  42.00
+  5 | item_5  |  52.50
+  6 | item_6  |  63.00
+  7 | item_7  |  73.50
+  8 | item_8  |  84.00
+  9 | item_9  |  94.50
+ 10 | item_10 | 105.00
+(10 rows)
+
+DROP FOREIGN TABLE fdw_pq_r1;
+-- ============================================================
+-- Test 2: Multi-column with diverse types
+-- ============================================================
+CREATE FOREIGN TABLE fdw_pq_w2 (
+    col_int int, col_bigint bigint, col_text text,
+    col_decimal decimal(15,2), col_bool boolean, col_date date
+)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/types/', format 'parquet');
+INSERT INTO fdw_pq_w2 VALUES
+    (1, 9223372036854775807, 'hello', 99999.99, true, '2024-01-15'),
+    (2, -9223372036854775808, 'world', -99999.99, false, '1970-01-01'),
+    (3, 0, '', 0.00, true, '2024-12-31');
+DROP FOREIGN TABLE fdw_pq_w2;
+CREATE FOREIGN TABLE fdw_pq_r2 (
+    col_int int, col_bigint bigint, col_text text,
+    col_decimal decimal(15,2), col_bool boolean, col_date date
+)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/types/', format 'parquet');
+SELECT * FROM fdw_pq_r2 ORDER BY col_int;
+ col_int |      col_bigint      | col_text | col_decimal | col_bool |  col_date  
+---------+----------------------+----------+-------------+----------+------------
+       1 |  9223372036854775807 | hello    |    99999.99 | t        | 01-15-2024
+       2 | -9223372036854775808 | world    |   -99999.99 | f        | 01-01-1970
+       3 |                    0 |          |        0.00 | t        | 12-31-2024
+(3 rows)
+
+DROP FOREIGN TABLE fdw_pq_r2;
+-- ============================================================
+-- Test 3: NULL values
+-- ============================================================
+CREATE FOREIGN TABLE fdw_pq_w3 (id int, name text, val int)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/nulls/', format 'parquet');
+INSERT INTO fdw_pq_w3 VALUES (1, 'has_all', 100), (2, NULL, 200), (3, 'no_val', NULL), (4, NULL, NULL);
+DROP FOREIGN TABLE fdw_pq_w3;
+CREATE FOREIGN TABLE fdw_pq_r3 (id int, name text, val int)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/nulls/', format 'parquet');
+SELECT * FROM fdw_pq_r3 ORDER BY id;
+ id |  name   | val 
+----+---------+-----
+  1 | has_all | 100
+  2 |         | 200
+  3 | no_val  |    
+  4 |         |    
+(4 rows)
+
+SELECT COUNT(*) AS total, COUNT(name) AS non_null_names, COUNT(val) AS non_null_vals FROM fdw_pq_r3;
+ total | non_null_names | non_null_vals 
+-------+----------------+---------------
+     4 |              2 |             2
+(1 row)
+
+DROP FOREIGN TABLE fdw_pq_r3;
+-- ============================================================
+-- Test 4: Bulk insert (1000 rows)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_pq_w4 (id int, val text)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/bulk/', format 'parquet');
+INSERT INTO fdw_pq_w4 SELECT i, 'row_' || i FROM generate_series(1, 1000) i;
+DROP FOREIGN TABLE fdw_pq_w4;
+CREATE FOREIGN TABLE fdw_pq_r4 (id int, val text)
+SERVER fdw_pq_server
+OPTIONS (filePath '/warehouse/fdw-test/parquet/bulk/', format 'parquet');
+SELECT COUNT(*) FROM fdw_pq_r4;
+ count 
+-------
+  1000
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM fdw_pq_r4;
+ min | max  
+-----+------
+   1 | 1000
+(1 row)
+
+DROP FOREIGN TABLE fdw_pq_r4;
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_pq_server;
+DROP SERVER fdw_pq_server;

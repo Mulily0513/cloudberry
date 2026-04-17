@@ -1,0 +1,119 @@
+-- Iceberg Hive Catalog Options Test
+-- Purpose: Exercise Hive-specific option parsing paths
+-- Target: iceberg_catalog_option.c (parseHiveCatalogServerOptions,
+--         parseHiveUserMappingOptions, parseIcebergCatalogUserMappingOptions hive branch)
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- ============================================================
+-- Test 1: Hive catalog server with type + url
+-- ============================================================
+CREATE SERVER hiveopt_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw
+OPTIONS (
+    type 'hive',
+    url 'thrift://lakehouse:9083'
+);
+
+-- ============================================================
+-- Test 2: Hive user mapping with simple auth
+-- ============================================================
+CREATE USER MAPPING FOR current_user
+SERVER hiveopt_catalog_server
+OPTIONS (
+    username 'hiveuser',
+    auth_method 'simple'
+);
+
+-- ============================================================
+-- Test 3: Foreign catalog with all options
+-- ============================================================
+CREATE FOREIGN CATALOG hiveopt_catalog
+SERVER hiveopt_catalog_server
+OPTIONS (
+    catalog_name 'hive_test_cat',
+    default_namespace 'default',
+    enable_metadata_cache 'true',
+    metadata_cache_ttl '600',
+    auto_refresh_metadata 'true',
+    warehouse_location_prefix 's3://warehouse/hive_test/'
+);
+
+SET iceberg_default_catalog = 'hiveopt_catalog';
+
+-- ============================================================
+-- Test 4: Volume setup with Hive catalog
+-- Purpose: verify volume option parsing works with hive catalog type.
+-- NOTE: actual table CRUD via hive catalog is tested in iceberg_hive.sql.
+-- This test only verifies option setup succeeds without errors.
+-- ============================================================
+CREATE SERVER hiveopt_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER hiveopt_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME hiveopt_volume SERVER hiveopt_volume_server OPTIONS(base_path '/hiveopt_volume/');
+SET iceberg_default_volume = 'hiveopt_volume';
+
+-- Verify volume setup succeeded by checking GUC
+SHOW iceberg_default_volume;
+
+-- ============================================================
+-- Test 5: Hive catalog server with Kerberos options
+-- (option parsing is exercised even if Kerberos auth fails at runtime)
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER hiveopt_krb_server
+        FOREIGN DATA WRAPPER iceberg_catalog_fdw
+        OPTIONS (
+            type ''hive'',
+            url ''thrift://lakehouse:9083'',
+            auth_method ''kerberos''
+        )';
+
+    EXECUTE 'CREATE USER MAPPING FOR current_user
+        SERVER hiveopt_krb_server
+        OPTIONS (
+            username ''gpadmin'',
+            auth_method ''kerberos'',
+            krb_service_principal ''hive/lakehouse@EXAMPLE.COM'',
+            krb_client_principal ''gpadmin/master@EXAMPLE.COM'',
+            krb_client_keytab ''/tmp/gpadmin.keytab''
+        )';
+
+    RAISE NOTICE 'Kerberos server and user mapping created successfully';
+
+    -- Cleanup kerberos server
+    EXECUTE 'DROP USER MAPPING FOR current_user SERVER hiveopt_krb_server';
+    EXECUTE 'DROP SERVER hiveopt_krb_server';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Kerberos setup error (may be expected): %', SQLERRM;
+    -- Attempt cleanup
+    BEGIN
+        EXECUTE 'DROP USER MAPPING IF EXISTS FOR current_user SERVER hiveopt_krb_server';
+        EXECUTE 'DROP SERVER IF EXISTS hiveopt_krb_server';
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END;
+$$;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME hiveopt_volume;
+DROP USER MAPPING FOR current_user SERVER hiveopt_volume_server;
+DROP SERVER hiveopt_volume_server;
+DROP CATALOG hiveopt_catalog;
+DROP USER MAPPING FOR current_user SERVER hiveopt_catalog_server;
+DROP SERVER hiveopt_catalog_server;

@@ -1,0 +1,144 @@
+-- iceberg_plan_stability.sql
+-- Capture EXPLAIN (COSTS off) for a set of representative queries on an
+-- Iceberg table. pg_regress will fail diff if the PLAN SHAPE changes between
+-- runs, detecting optimizer regressions (e.g., loss of predicate pushdown
+-- or switch from HashAgg to GroupAgg).
+--
+-- Note: we use bare EXPLAIN (not perf_capture_explain) so the plan text is
+-- part of the pg_regress diff - expected/ captures the blessed plan.
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+DROP SERVER IF EXISTS pl_cat_srv CASCADE;
+NOTICE:  server "pl_cat_srv" does not exist, skipping
+CREATE SERVER pl_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER pl_cat_srv;
+CREATE FOREIGN CATALOG pl_cat SERVER pl_cat_srv;
+SET iceberg_default_catalog = 'pl_cat';
+DROP SERVER IF EXISTS pl_vol_srv CASCADE;
+NOTICE:  server "pl_vol_srv" does not exist, skipping
+CREATE SERVER pl_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER pl_vol_srv
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME pl_vol SERVER pl_vol_srv OPTIONS (base_path '/pl_test/');
+SET iceberg_default_volume = 'pl_vol';
+CREATE ICEBERG TABLE plan_tbl (id int, cat text, val numeric(10,2));
+INSERT INTO plan_tbl SELECT g, 'cat_' || (g % 5), g*1.1
+FROM generate_series(1, 1000) AS g;
+-- Representative query shapes. COSTS off + VERBOSE off keeps output stable
+-- across runs - no estimate numbers, no buffer counts.
+\echo '--- q1: full scan count ---'
+--- q1: full scan count ---
+EXPLAIN (COSTS off, VERBOSE off) SELECT COUNT(*) FROM plan_tbl;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on plan_tbl
+ Optimizer: GPORCA
+(4 rows)
+
+\echo '--- q2: filter with pushdown candidate ---'
+--- q2: filter with pushdown candidate ---
+EXPLAIN (COSTS off, VERBOSE off) SELECT * FROM plan_tbl WHERE id = 500;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Seq Scan on plan_tbl
+         Filter: (id = 500)
+ Optimizer: GPORCA
+(4 rows)
+
+\echo '--- q3: range filter ---'
+--- q3: range filter ---
+EXPLAIN (COSTS off, VERBOSE off)
+    SELECT COUNT(*) FROM plan_tbl WHERE id BETWEEN 100 AND 200;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on plan_tbl
+               Filter: ((id >= 100) AND (id <= 200))
+ Optimizer: GPORCA
+(5 rows)
+
+\echo '--- q4: group by ---'
+--- q4: group by ---
+EXPLAIN (COSTS off, VERBOSE off)
+    SELECT cat, COUNT(*), SUM(val) FROM plan_tbl GROUP BY cat ORDER BY cat;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: cat
+   ->  GroupAggregate
+         Group Key: cat
+         ->  Sort
+               Sort Key: cat
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: cat
+                     ->  Seq Scan on plan_tbl
+ Optimizer: GPORCA
+(10 rows)
+
+\echo '--- q5: order by limit ---'
+--- q5: order by limit ---
+EXPLAIN (COSTS off, VERBOSE off)
+    SELECT id, val FROM plan_tbl ORDER BY val DESC LIMIT 10;
+                   QUERY PLAN                   
+------------------------------------------------
+ Limit
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Merge Key: val
+         ->  Sort
+               Sort Key: val DESC
+               ->  Seq Scan on plan_tbl
+ Optimizer: GPORCA
+(7 rows)
+
+-- Cleanup
+DROP TABLE plan_tbl;
+DROP VOLUME pl_vol;
+DROP USER MAPPING FOR current_user SERVER pl_vol_srv;
+DROP SERVER pl_vol_srv;
+DROP CATALOG pl_cat;
+DROP USER MAPPING FOR current_user SERVER pl_cat_srv;
+DROP SERVER pl_cat_srv;

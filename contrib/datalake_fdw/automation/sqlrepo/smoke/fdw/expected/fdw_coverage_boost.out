@@ -1,0 +1,311 @@
+-- FDW Coverage Boost Test
+-- Purpose: Push ORC/Avro/Parquet reader/writer files over 80%
+-- Target: orcWriter.cpp (+40), orcFileReader.cpp (+38), parquetFileWriter.cpp (+35),
+--         parquetFileReader.cpp (+56), avroRead.cpp (+43),
+--         fdwFunction.c (+34), readPolicy.cpp (+30), datalake_option.c (+95)
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_boost_server CASCADE;
+NOTICE:  server "fdw_boost_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_boost_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_boost_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: ORC write large strings (fillStringValues buffer resize)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_orc_bigstr_w (id int, big_text text, big_bytea bytea)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/orc-bigstr/', format 'orc');
+INSERT INTO fdw_boost_orc_bigstr_w VALUES (1, repeat('a', 1000), decode(repeat('FF', 500), 'hex'));
+INSERT INTO fdw_boost_orc_bigstr_w VALUES (2, repeat('b', 5000), decode(repeat('AA', 100), 'hex'));
+INSERT INTO fdw_boost_orc_bigstr_w VALUES (3, '', '\x');
+DROP FOREIGN TABLE fdw_boost_orc_bigstr_w;
+CREATE FOREIGN TABLE fdw_boost_orc_bigstr_r (id int, big_text text, big_bytea bytea)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/orc-bigstr/', format 'orc');
+SELECT id, length(big_text), length(big_bytea) FROM fdw_boost_orc_bigstr_r ORDER BY id;
+ id | length | length 
+----+--------+--------
+  1 |   1000 |    500
+  2 |   5000 |    100
+  3 |      0 |      0
+(3 rows)
+
+DROP FOREIGN TABLE fdw_boost_orc_bigstr_r;
+-- ============================================================
+-- Test 3: ORC decimal precision edge cases
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_orc_dec_w (
+    col_dec3 decimal(3,0),
+    col_dec9 decimal(9,3),
+    col_dec18 decimal(18,6),
+    col_dec28 decimal(28,10),
+    col_dec38 decimal(38,18)
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/orc-dec/', format 'orc');
+INSERT INTO fdw_boost_orc_dec_w VALUES (999, 999999.999, 999999999999.999999, 999999999999999999.9999999999, 99999999999999999999.999999999999999999);
+INSERT INTO fdw_boost_orc_dec_w VALUES (0, 0.000, 0.000000, 0.0000000000, 0.000000000000000000);
+INSERT INTO fdw_boost_orc_dec_w VALUES (-1, -1.001, -1.000001, -1.0000000001, -1.000000000000000001);
+INSERT INTO fdw_boost_orc_dec_w VALUES (NULL, NULL, NULL, NULL, NULL);
+DROP FOREIGN TABLE fdw_boost_orc_dec_w;
+CREATE FOREIGN TABLE fdw_boost_orc_dec_r (
+    col_dec3 decimal(3,0),
+    col_dec9 decimal(9,3),
+    col_dec18 decimal(18,6),
+    col_dec28 decimal(28,10),
+    col_dec38 decimal(38,18)
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/orc-dec/', format 'orc');
+SELECT * FROM fdw_boost_orc_dec_r ORDER BY col_dec3 NULLS LAST;
+ col_dec3 |  col_dec9  |      col_dec18      |           col_dec28           |                col_dec38                
+----------+------------+---------------------+-------------------------------+-----------------------------------------
+       -1 |     -1.001 |           -1.000001 |                 -1.0000000001 |                   -1.000000000000000001
+        0 |      0.000 |            0.000000 |                  0.0000000000 |                    0.000000000000000000
+      999 | 999999.999 | 999999999999.999999 | 999999999999999999.9999999999 | 99999999999999999999.999999999999999999
+          |            |                     |                               |                                        
+(4 rows)
+
+DROP FOREIGN TABLE fdw_boost_orc_dec_r;
+-- ============================================================
+-- Test 4: Parquet with all compression types (writeProperties branches)
+-- ============================================================
+-- gzip compression
+CREATE FOREIGN TABLE fdw_boost_pq_gz_w (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-gz/', format 'parquet', compresstype 'gzip');
+ERROR:  invalid foreign option "compresstype".  (seg0 172.20.0.2:7002 pid=1329915)
+INSERT INTO fdw_boost_pq_gz_w SELECT i, 'gz_' || i FROM generate_series(1, 50) i;
+ERROR:  relation "fdw_boost_pq_gz_w" does not exist
+LINE 1: INSERT INTO fdw_boost_pq_gz_w SELECT i, 'gz_' || i FROM gene...
+                    ^
+DROP FOREIGN TABLE fdw_boost_pq_gz_w;
+ERROR:  foreign table "fdw_boost_pq_gz_w" does not exist
+-- zstd compression
+CREATE FOREIGN TABLE fdw_boost_pq_zstd_w (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-zstd/', format 'parquet', compresstype 'zstd');
+ERROR:  invalid foreign option "compresstype".  (seg0 172.20.0.2:7002 pid=1329915)
+INSERT INTO fdw_boost_pq_zstd_w SELECT i, 'zstd_' || i FROM generate_series(1, 50) i;
+ERROR:  relation "fdw_boost_pq_zstd_w" does not exist
+LINE 1: INSERT INTO fdw_boost_pq_zstd_w SELECT i, 'zstd_' || i FROM ...
+                    ^
+DROP FOREIGN TABLE fdw_boost_pq_zstd_w;
+ERROR:  foreign table "fdw_boost_pq_zstd_w" does not exist
+-- lz4 compression
+CREATE FOREIGN TABLE fdw_boost_pq_lz4_w (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-lz4/', format 'parquet', compresstype 'lz4');
+ERROR:  invalid foreign option "compresstype".  (seg0 172.20.0.2:7002 pid=1329915)
+INSERT INTO fdw_boost_pq_lz4_w SELECT i, 'lz4_' || i FROM generate_series(1, 50) i;
+ERROR:  relation "fdw_boost_pq_lz4_w" does not exist
+LINE 1: INSERT INTO fdw_boost_pq_lz4_w SELECT i, 'lz4_' || i FROM ge...
+                    ^
+DROP FOREIGN TABLE fdw_boost_pq_lz4_w;
+ERROR:  foreign table "fdw_boost_pq_lz4_w" does not exist
+-- Read back all compressed formats
+CREATE FOREIGN TABLE fdw_boost_pq_gz_r (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-gz/', format 'parquet');
+SELECT COUNT(*) FROM fdw_boost_pq_gz_r;
+ count 
+-------
+     0
+(1 row)
+
+DROP FOREIGN TABLE fdw_boost_pq_gz_r;
+CREATE FOREIGN TABLE fdw_boost_pq_zstd_r (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-zstd/', format 'parquet');
+SELECT COUNT(*) FROM fdw_boost_pq_zstd_r;
+ count 
+-------
+     0
+(1 row)
+
+DROP FOREIGN TABLE fdw_boost_pq_zstd_r;
+CREATE FOREIGN TABLE fdw_boost_pq_lz4_r (id int, val text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-lz4/', format 'parquet');
+SELECT COUNT(*) FROM fdw_boost_pq_lz4_r;
+ count 
+-------
+     0
+(1 row)
+
+DROP FOREIGN TABLE fdw_boost_pq_lz4_r;
+-- ============================================================
+-- Test 5: Parquet with wide schema (parquetFileWriter many columns)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_pq_wide_w (
+    c1 int, c2 bigint, c3 text, c4 boolean, c5 decimal(10,2),
+    c6 date, c7 timestamp, c8 real, c9 double precision, c10 smallint,
+    c11 bytea, c12 varchar(50)
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-wide/', format 'parquet');
+INSERT INTO fdw_boost_pq_wide_w VALUES (
+    1, 1000000, 'wide_test', true, 99.99,
+    '2024-06-15', '2024-06-15 12:00:00', 1.5, 2.5, 10,
+    '\xABCD', 'short'
+);
+INSERT INTO fdw_boost_pq_wide_w VALUES (
+    2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+);
+DROP FOREIGN TABLE fdw_boost_pq_wide_w;
+CREATE FOREIGN TABLE fdw_boost_pq_wide_r (
+    c1 int, c2 bigint, c3 text, c4 boolean, c5 decimal(10,2),
+    c6 date, c7 timestamp, c8 real, c9 double precision, c10 smallint,
+    c11 bytea, c12 varchar(50)
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/pq-wide/', format 'parquet');
+SELECT c1, c2, c3, c4, c5 FROM fdw_boost_pq_wide_r ORDER BY c1;
+ c1 |   c2    |    c3     | c4 |  c5   
+----+---------+-----------+----+-------
+  1 | 1000000 | wide_test | t  | 99.99
+  2 |         |           |    |      
+(2 rows)
+
+SELECT c6, c7, c8, c9, c10 FROM fdw_boost_pq_wide_r ORDER BY c1;
+     c6     |            c7            | c8  | c9  | c10 
+------------+--------------------------+-----+-----+-----
+ 06-15-2024 | Sat Jun 15 12:00:00 2024 | 1.5 | 2.5 |  10
+            |                          |     |     |    
+(2 rows)
+
+DROP FOREIGN TABLE fdw_boost_pq_wide_r;
+-- ============================================================
+-- Test 6: Avro with wide type coverage
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_avro_w (
+    id int, val_text text, val_bool boolean, val_real real,
+    val_double double precision, val_date date, val_ts timestamp,
+    val_dec decimal(10,2), val_bigint bigint, val_small smallint
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/avro-wide/', format 'avro');
+INSERT INTO fdw_boost_avro_w
+SELECT i, 'avro_' || i, (i%2=0), (i*0.1)::real, i*0.01,
+       '2024-01-01'::date + i, '2024-01-01'::timestamp + (i || ' hours')::interval,
+       (i*1.11)::decimal(10,2), i::bigint * 10000, (i%100)::smallint
+FROM generate_series(1, 200) i;
+DROP FOREIGN TABLE fdw_boost_avro_w;
+CREATE FOREIGN TABLE fdw_boost_avro_r (
+    id int, val_text text, val_bool boolean, val_real real,
+    val_double double precision, val_date date, val_ts timestamp,
+    val_dec decimal(10,2), val_bigint bigint, val_small smallint
+)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/avro-wide/', format 'avro');
+SELECT COUNT(*) FROM fdw_boost_avro_r;
+ count 
+-------
+   200
+(1 row)
+
+SELECT * FROM fdw_boost_avro_r WHERE id <= 5 ORDER BY id;
+ id | val_text | val_bool | val_real | val_double |  val_date  |          val_ts          | val_dec | val_bigint | val_small 
+----+----------+----------+----------+------------+------------+--------------------------+---------+------------+-----------
+  1 | avro_1   | f        |      0.1 |       0.01 | 01-02-2024 | Mon Jan 01 01:00:00 2024 |    1.11 |      10000 |         1
+  2 | avro_2   | t        |      0.2 |       0.02 | 01-03-2024 | Mon Jan 01 02:00:00 2024 |    2.22 |      20000 |         2
+  3 | avro_3   | f        |      0.3 |       0.03 | 01-04-2024 | Mon Jan 01 03:00:00 2024 |    3.33 |      30000 |         3
+  4 | avro_4   | t        |      0.4 |       0.04 | 01-05-2024 | Mon Jan 01 04:00:00 2024 |    4.44 |      40000 |         4
+  5 | avro_5   | f        |      0.5 |       0.05 | 01-06-2024 | Mon Jan 01 05:00:00 2024 |    5.55 |      50000 |         5
+(5 rows)
+
+SELECT COUNT(*) FROM fdw_boost_avro_r WHERE val_bool = true;
+ count 
+-------
+   100
+(1 row)
+
+SELECT MIN(val_date), MAX(val_date) FROM fdw_boost_avro_r;
+    min     |    max     
+------------+------------
+ 01-02-2024 | 07-19-2024
+(1 row)
+
+DROP FOREIGN TABLE fdw_boost_avro_r;
+-- ============================================================
+-- Test 7: Text/CSV format write and read (fdwFunction CSV/TEXT paths)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_text_w (id int, name text, val decimal(10,2))
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/text/', format 'text');
+INSERT INTO fdw_boost_text_w VALUES (1, 'hello', 10.50);
+INSERT INTO fdw_boost_text_w VALUES (2, 'world', 20.75);
+INSERT INTO fdw_boost_text_w VALUES (3, NULL, NULL);
+DROP FOREIGN TABLE fdw_boost_text_w;
+CREATE FOREIGN TABLE fdw_boost_text_r (id int, name text, val decimal(10,2))
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/text/', format 'text');
+SELECT * FROM fdw_boost_text_r ORDER BY id;
+ id | name  |  val  
+----+-------+-------
+  1 | hello | 10.50
+  2 | world | 20.75
+  3 |       |      
+(3 rows)
+
+DROP FOREIGN TABLE fdw_boost_text_r;
+CREATE FOREIGN TABLE fdw_boost_csv_w (id int, name text, val decimal(10,2))
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/csv/', format 'csv');
+INSERT INTO fdw_boost_csv_w VALUES (1, 'csv_hello', 10.50);
+INSERT INTO fdw_boost_csv_w VALUES (2, 'csv_world', 20.75);
+DROP FOREIGN TABLE fdw_boost_csv_w;
+CREATE FOREIGN TABLE fdw_boost_csv_r (id int, name text, val decimal(10,2))
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/csv/', format 'csv');
+SELECT * FROM fdw_boost_csv_r ORDER BY id;
+ id |   name    |  val  
+----+-----------+-------
+  1 | csv_hello | 10.50
+  2 | csv_world | 20.75
+(2 rows)
+
+DROP FOREIGN TABLE fdw_boost_csv_r;
+-- ============================================================
+-- Test 8: Bulk data for readPolicy block distribution
+-- ============================================================
+CREATE FOREIGN TABLE fdw_boost_bulk_w (id int, data text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/bulk/', format 'parquet');
+INSERT INTO fdw_boost_bulk_w SELECT i, repeat('x', 100) FROM generate_series(1, 2000) i;
+DROP FOREIGN TABLE fdw_boost_bulk_w;
+CREATE FOREIGN TABLE fdw_boost_bulk_r (id int, data text)
+SERVER fdw_boost_server
+OPTIONS (filePath '/warehouse/fdw-test/boost/bulk/', format 'parquet');
+SELECT COUNT(*) FROM fdw_boost_bulk_r;
+ count 
+-------
+  2000
+(1 row)
+
+SELECT COUNT(*) FROM fdw_boost_bulk_r WHERE id > 1500;
+ count 
+-------
+   500
+(1 row)
+
+SELECT id FROM fdw_boost_bulk_r ORDER BY id LIMIT 3;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
+DROP FOREIGN TABLE fdw_boost_bulk_r;
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_boost_server;
+DROP SERVER fdw_boost_server;

@@ -1,0 +1,193 @@
+-- 02_hudi_features.sql
+-- Test Hudi advanced read features: partitions, filters, aggregates, projection
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Hudi Features');
+NOTICE:  [TEST] Feature Test: Hudi Features
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Hudi server (HDFS-based for Hudi tables)
+-- ============================================================
+DROP SERVER IF EXISTS hudi_ff_server CASCADE;
+NOTICE:  server "hudi_ff_server" does not exist, skipping
+CREATE SERVER hudi_ff_server FOREIGN DATA WRAPPER datalake_fdw
+OPTIONS (hdfs_namenodes 'lakehouse', hdfs_port '8020', protocol 'hdfs',
+         hdfs_auth_method 'simple', hadoop_rpc_protection 'authentication');
+CREATE USER MAPPING FOR gpadmin SERVER hudi_ff_server OPTIONS (user 'gpadmin');
+-- ============================================================
+-- Test 1: Partition table full read
+-- ============================================================
+SELECT test_log('Test 1: Partition table full read');
+NOTICE:  [TEST] Test 1: Partition table full read
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE hf_part (id bigint, name text, amount double precision, region text)
+SERVER hudi_ff_server
+OPTIONS (filePath 'default.hudi_partition_table', catalog_type 'hive', server_name 'hive_cluster',
+         hdfs_cluster_name 'paa_cluster', table_identifier 'default.hudi_partition_table', format 'hudi');
+SELECT * FROM hf_part ORDER BY id LIMIT 10;
+ id | name | amount | region 
+----+------+--------+--------
+(0 rows)
+
+SELECT COUNT(*) AS part_count FROM hf_part;
+ part_count 
+------------
+          0
+(1 row)
+
+-- ============================================================
+-- Test 2: Partition filter
+-- ============================================================
+SELECT test_log('Test 2: Partition filter (WHERE region)');
+NOTICE:  [TEST] Test 2: Partition filter (WHERE region)
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT * FROM hf_part WHERE region = 'east' ORDER BY id;
+ id | name | amount | region 
+----+------+--------+--------
+(0 rows)
+
+-- ============================================================
+-- Test 3: GROUP BY partition column + aggregation
+-- ============================================================
+SELECT test_log('Test 3: GROUP BY partition column');
+NOTICE:  [TEST] Test 3: GROUP BY partition column
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT region, COUNT(*) AS cnt, SUM(amount) AS total
+FROM hf_part
+GROUP BY region
+ORDER BY region;
+ region | cnt | total 
+--------+-----+-------
+(0 rows)
+
+-- ============================================================
+-- Test 4: COW table WHERE filter
+-- ============================================================
+SELECT test_log('Test 4: COW table WHERE filter');
+NOTICE:  [TEST] Test 4: COW table WHERE filter
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE hf_cow (id bigint, name text, price double precision, ts bigint)
+SERVER hudi_ff_server
+OPTIONS (filePath 'default.hudi_cow_table', catalog_type 'hive', server_name 'hive_cluster',
+         hdfs_cluster_name 'paa_cluster', table_identifier 'default.hudi_cow_table', format 'hudi');
+SELECT * FROM hf_cow WHERE id > 2 ORDER BY id;
+ id |  name   | price  |  ts  
+----+---------+--------+------
+  3 | Charlie |  50.75 | 1002
+  4 | David   |    300 | 1003
+  5 | Eve     | 150.25 | 1004
+(3 rows)
+
+-- ============================================================
+-- Test 5: SUM, COUNT aggregates
+-- ============================================================
+SELECT test_log('Test 5: SUM, COUNT aggregates');
+NOTICE:  [TEST] Test 5: SUM, COUNT aggregates
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS cnt, SUM(price) AS total FROM hf_cow;
+ cnt | total 
+-----+-------
+   5 | 801.5
+(1 row)
+
+-- ============================================================
+-- Test 6: Column projection
+-- ============================================================
+SELECT test_log('Test 6: Column projection');
+NOTICE:  [TEST] Test 6: Column projection
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id FROM hf_cow ORDER BY id;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+(5 rows)
+
+SELECT name, price FROM hf_cow ORDER BY name;
+  name   | price  
+---------+--------
+ Alice   |    100
+ Bob     |  200.5
+ Charlie |  50.75
+ David   |    300
+ Eve     | 150.25
+(5 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP FOREIGN TABLE hf_part;
+DROP FOREIGN TABLE hf_cow;
+DROP USER MAPPING FOR gpadmin SERVER hudi_ff_server;
+DROP SERVER hudi_ff_server;

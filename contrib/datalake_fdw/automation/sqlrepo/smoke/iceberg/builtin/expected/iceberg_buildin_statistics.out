@@ -1,0 +1,55 @@
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+-- catalog
+CREATE SERVER default_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER default_catalog_server;
+CREATE FOREIGN CATALOG default_catalog SERVER default_catalog_server;
+set iceberg_default_catalog='default_catalog';
+-- volume
+CREATE SERVER default_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME default_volume SERVER default_volume_server OPTIONS(base_path '/default_volume/');
+set iceberg_default_volume='default_volume';
+-- create iceberg table and insert data
+CREATE ICEBERG TABLE stats_test_table (
+    id bigint,
+    name text);
+INSERT INTO stats_test_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+-- get statistics via toolkit function
+-- extract total-records (deterministic) and verify total-files-size > 0
+-- (total-files-size varies between runs due to Parquet metadata differences)
+SELECT
+    result::json->'fragments'->>'total-records' AS total_records,
+    (result::json->'fragments'->>'total-files-size')::bigint > 0 AS has_file_size
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'get_statistics', 'public', 'stats_test_table',
+        'default_catalog_server', 'default_catalog',
+        'default_volume_server', 'default_volume', '') AS result
+) t;
+ total_records | has_file_size 
+---------------+---------------
+ 3             | t
+(1 row)
+
+-- cleanup
+DROP TABLE stats_test_table;
+DROP VOLUME default_volume;
+DROP USER MAPPING FOR current_user SERVER default_volume_server;
+DROP SERVER default_volume_server;
+DROP CATALOG default_catalog;
+DROP USER MAPPING FOR current_user SERVER default_catalog_server;
+DROP SERVER default_catalog_server;

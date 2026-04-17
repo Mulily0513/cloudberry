@@ -1,0 +1,232 @@
+-- FDW Avro All Types Test
+-- Purpose: Exercise all Avro type write/read branches
+-- Target: avroWriter.cpp (+66), avroRead.cpp (+108), avroBlockReader.cc (+27),
+--         LogicalSchema.h (+13), logicalType.cpp Avro branches
+
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_avrot_server CASCADE;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_avrot_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_avrot_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+
+-- ============================================================
+-- Test 1: Integer types
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_int_w (
+    col_small smallint,
+    col_int int,
+    col_bigint bigint
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/int/', format 'avro');
+
+INSERT INTO fdw_avrot_int_w VALUES (1, 100, 10000);
+INSERT INTO fdw_avrot_int_w VALUES (32767, 2147483647, 9223372036854775807);
+INSERT INTO fdw_avrot_int_w VALUES (-32768, -2147483648, -9223372036854775808);
+INSERT INTO fdw_avrot_int_w VALUES (0, 0, 0);
+INSERT INTO fdw_avrot_int_w VALUES (NULL, NULL, NULL);
+DROP FOREIGN TABLE fdw_avrot_int_w;
+
+CREATE FOREIGN TABLE fdw_avrot_int_r (
+    col_small smallint,
+    col_int int,
+    col_bigint bigint
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/int/', format 'avro');
+
+SELECT * FROM fdw_avrot_int_r ORDER BY col_small NULLS LAST;
+DROP FOREIGN TABLE fdw_avrot_int_r;
+
+-- ============================================================
+-- Test 2: Float types
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_float_w (
+    col_real real,
+    col_double double precision
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/float/', format 'avro');
+
+INSERT INTO fdw_avrot_float_w VALUES (3.14, 2.71828);
+INSERT INTO fdw_avrot_float_w VALUES (0.0, 0.0);
+INSERT INTO fdw_avrot_float_w VALUES (-1.5, -999.999);
+INSERT INTO fdw_avrot_float_w VALUES (NULL, NULL);
+DROP FOREIGN TABLE fdw_avrot_float_w;
+
+CREATE FOREIGN TABLE fdw_avrot_float_r (
+    col_real real,
+    col_double double precision
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/float/', format 'avro');
+
+SELECT * FROM fdw_avrot_float_r ORDER BY col_real NULLS LAST;
+DROP FOREIGN TABLE fdw_avrot_float_r;
+
+-- ============================================================
+-- Test 3: Boolean
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_bool_w (col_bool boolean, col_id int)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/bool/', format 'avro');
+
+INSERT INTO fdw_avrot_bool_w VALUES (true, 1), (false, 2), (NULL, 3);
+DROP FOREIGN TABLE fdw_avrot_bool_w;
+
+CREATE FOREIGN TABLE fdw_avrot_bool_r (col_bool boolean, col_id int)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/bool/', format 'avro');
+
+SELECT * FROM fdw_avrot_bool_r ORDER BY col_id;
+DROP FOREIGN TABLE fdw_avrot_bool_r;
+
+-- ============================================================
+-- Test 4: Text and string types
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_str_w (
+    col_text text,
+    col_varchar varchar(200)
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/string/', format 'avro');
+
+INSERT INTO fdw_avrot_str_w VALUES ('hello avro', 'world');
+INSERT INTO fdw_avrot_str_w VALUES ('', '');
+INSERT INTO fdw_avrot_str_w VALUES (repeat('a', 150), repeat('b', 150));
+INSERT INTO fdw_avrot_str_w VALUES (NULL, NULL);
+DROP FOREIGN TABLE fdw_avrot_str_w;
+
+CREATE FOREIGN TABLE fdw_avrot_str_r (
+    col_text text,
+    col_varchar varchar(200)
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/string/', format 'avro');
+
+SELECT * FROM fdw_avrot_str_r ORDER BY col_text NULLS LAST;
+DROP FOREIGN TABLE fdw_avrot_str_r;
+
+-- ============================================================
+-- Test 5: Date and timestamp
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_date_w (
+    col_date date,
+    col_ts timestamp
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/date/', format 'avro');
+
+INSERT INTO fdw_avrot_date_w VALUES ('2024-06-15', '2024-06-15 10:30:00');
+INSERT INTO fdw_avrot_date_w VALUES ('1970-01-01', '1970-01-01 00:00:00');
+INSERT INTO fdw_avrot_date_w VALUES ('2099-12-31', '2099-12-31 23:59:59');
+INSERT INTO fdw_avrot_date_w VALUES (NULL, NULL);
+DROP FOREIGN TABLE fdw_avrot_date_w;
+
+CREATE FOREIGN TABLE fdw_avrot_date_r (
+    col_date date,
+    col_ts timestamp
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/date/', format 'avro');
+
+SELECT * FROM fdw_avrot_date_r ORDER BY col_date NULLS LAST;
+DROP FOREIGN TABLE fdw_avrot_date_r;
+
+-- ============================================================
+-- Test 6: Decimal/numeric (Avro decimal handling)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_dec_w (
+    col_dec5 decimal(5,2),
+    col_dec15 decimal(15,4)
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/decimal/', format 'avro');
+
+INSERT INTO fdw_avrot_dec_w VALUES (123.45, 12345678.1234);
+INSERT INTO fdw_avrot_dec_w VALUES (0.00, 0.0000);
+INSERT INTO fdw_avrot_dec_w VALUES (-999.99, -99999.9999);
+INSERT INTO fdw_avrot_dec_w VALUES (NULL, NULL);
+DROP FOREIGN TABLE fdw_avrot_dec_w;
+
+CREATE FOREIGN TABLE fdw_avrot_dec_r (
+    col_dec5 decimal(5,2),
+    col_dec15 decimal(15,4)
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/decimal/', format 'avro');
+
+SELECT * FROM fdw_avrot_dec_r ORDER BY col_dec5 NULLS LAST;
+DROP FOREIGN TABLE fdw_avrot_dec_r;
+
+-- ============================================================
+-- Test 7: Bytea (binary type)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_bin_w (col_id int, col_bin bytea)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/binary/', format 'avro');
+
+INSERT INTO fdw_avrot_bin_w VALUES (1, '\x48454c4c4f');
+INSERT INTO fdw_avrot_bin_w VALUES (2, '\xDEADBEEF');
+INSERT INTO fdw_avrot_bin_w VALUES (3, '\x');
+INSERT INTO fdw_avrot_bin_w VALUES (4, NULL);
+DROP FOREIGN TABLE fdw_avrot_bin_w;
+
+CREATE FOREIGN TABLE fdw_avrot_bin_r (col_id int, col_bin bytea)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/binary/', format 'avro');
+
+SELECT col_id, length(col_bin) FROM fdw_avrot_bin_r ORDER BY col_id;
+DROP FOREIGN TABLE fdw_avrot_bin_r;
+
+-- ============================================================
+-- Test 8: Mixed types bulk (exercises buffering and schema building)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_avrot_mixed_w (
+    id int,
+    name text,
+    val decimal(10,2),
+    flag boolean,
+    ts timestamp,
+    col_big bigint
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/mixed/', format 'avro');
+
+INSERT INTO fdw_avrot_mixed_w
+SELECT
+    i,
+    'avro_' || i,
+    (i * 2.34)::decimal(10,2),
+    (i % 2 = 0),
+    '2024-01-01'::timestamp + (i || ' hours')::interval,
+    i::bigint * 100000
+FROM generate_series(1, 300) i;
+DROP FOREIGN TABLE fdw_avrot_mixed_w;
+
+CREATE FOREIGN TABLE fdw_avrot_mixed_r (
+    id int,
+    name text,
+    val decimal(10,2),
+    flag boolean,
+    ts timestamp,
+    col_big bigint
+)
+SERVER fdw_avrot_server
+OPTIONS (filePath '/warehouse/fdw-test/avro-types/mixed/', format 'avro');
+
+SELECT COUNT(*) FROM fdw_avrot_mixed_r;
+SELECT * FROM fdw_avrot_mixed_r WHERE id <= 5 ORDER BY id;
+DROP FOREIGN TABLE fdw_avrot_mixed_r;
+
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_avrot_server;
+DROP SERVER fdw_avrot_server;

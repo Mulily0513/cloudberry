@@ -1,0 +1,142 @@
+-- Iceberg Internal Functions Coverage Test
+-- Purpose: Call exposed C functions that aren't exercised by normal SQL
+-- Target: hdw_gopher_cache.c, pg_iceberg_deletion_queue.c,
+--         datalake_fdw.c (sample rows), pg_iceberg_metadata.c
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE SERVER if_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER if_catalog_server;
+CREATE FOREIGN CATALOG if_catalog SERVER if_catalog_server;
+SET iceberg_default_catalog = 'if_catalog';
+CREATE SERVER if_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER if_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME if_volume SERVER if_volume_server OPTIONS(base_path '/if_volume/');
+SET iceberg_default_volume = 'if_volume';
+-- ============================================================
+-- Test 1: Gopher cache functions (hdw_gopher_cache.c)
+-- ============================================================
+-- Call free all cache
+SELECT gp_toolkit.__gopher_free_all_cache();
+ __gopher_free_all_cache 
+-------------------------
+ t
+(1 row)
+
+-- Create a table and query it (populates cache)
+CREATE ICEBERG TABLE if_cache_tbl (id bigint, val text);
+INSERT INTO if_cache_tbl VALUES (1, 'a'), (2, 'b'), (3, 'c');
+SELECT COUNT(*) FROM if_cache_tbl;
+ count 
+-------
+     3
+(1 row)
+
+-- Free specific relation cache
+SELECT gp_toolkit.__gopher_cache_free_relation_name('public.if_cache_tbl');
+ __gopher_cache_free_relation_name 
+-----------------------------------
+ t
+(1 row)
+
+-- Query again (cache miss -> repopulate)
+SELECT COUNT(*) FROM if_cache_tbl;
+ count 
+-------
+     3
+(1 row)
+
+-- Free all cache again
+SELECT gp_toolkit.__gopher_free_all_cache();
+ __gopher_free_all_cache 
+-------------------------
+ t
+(1 row)
+
+-- Query again
+SELECT COUNT(*) FROM if_cache_tbl;
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 2: Deletion queue table (pg_iceberg_deletion_queue.c)
+-- ============================================================
+DO $$
+BEGIN
+    PERFORM iceberg.pg_iceberg_create_deletion_queue_table();
+    RAISE NOTICE 'deletion_queue: created';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'deletion_queue: already exists';
+END;
+$$;
+NOTICE:  deletion_queue: already exists
+-- ============================================================
+-- Test 3: Metadata table (pg_iceberg_metadata.c)
+-- ============================================================
+DO $$
+BEGIN
+    PERFORM iceberg.pg_iceberg_create_metadata_table();
+    RAISE NOTICE 'metadata_table: created';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'metadata_table: already exists';
+END;
+$$;
+NOTICE:  metadata_table: already exists
+-- ============================================================
+-- Test 4: ANALYZE uses sample_rows internally
+-- ============================================================
+ANALYZE if_cache_tbl;
+-- ============================================================
+-- Test 6: Multiple tables -> cache management
+-- ============================================================
+CREATE ICEBERG TABLE if_t1 (id bigint);
+INSERT INTO if_t1 VALUES (1);
+CREATE ICEBERG TABLE if_t2 (id bigint);
+INSERT INTO if_t2 VALUES (1);
+SELECT COUNT(*) FROM if_t1;
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM if_t2;
+ count 
+-------
+     1
+(1 row)
+
+-- Free caches
+SELECT gp_toolkit.__gopher_cache_free_relation_name('public.if_t1');
+ __gopher_cache_free_relation_name 
+-----------------------------------
+ t
+(1 row)
+
+SELECT gp_toolkit.__gopher_cache_free_relation_name('public.if_t2');
+ __gopher_cache_free_relation_name 
+-----------------------------------
+ t
+(1 row)
+
+SELECT gp_toolkit.__gopher_free_all_cache();
+ __gopher_free_all_cache 
+-------------------------
+ t
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE if_cache_tbl;
+DROP TABLE if_t1;
+DROP TABLE if_t2;
+DROP VOLUME if_volume;
+DROP USER MAPPING FOR current_user SERVER if_volume_server;
+DROP SERVER if_volume_server;
+DROP CATALOG if_catalog;
+DROP USER MAPPING FOR current_user SERVER if_catalog_server;
+DROP SERVER if_catalog_server;

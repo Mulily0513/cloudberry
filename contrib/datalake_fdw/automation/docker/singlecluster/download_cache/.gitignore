@@ -1,0 +1,7 @@
+*.tar.gz
+*.tgz
+*.jar
+minio
+mc
+!.gitignore
+!download.sh

@@ -1,0 +1,147 @@
+-- Iceberg Catalog Options Test
+-- Purpose: Exercise all option parsing paths in iceberg_catalog_option.c
+-- Target: parseIcebergBuiltinCatalogServerOptions, parseIcebergForeignCatalogOptions,
+--         checkIsBuiltinCatalog, getIcebergCatalogOptions
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- ============================================================
+-- Volume setup (shared for all catalog tests)
+-- ============================================================
+CREATE SERVER catopt_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER catopt_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME catopt_volume SERVER catopt_volume_server OPTIONS(base_path '/catopt_volume/');
+SET iceberg_default_volume = 'catopt_volume';
+
+-- ============================================================
+-- Test 1: Builtin catalog with NO type option (server_type == NULL path)
+-- ============================================================
+CREATE SERVER catopt_builtin_server_1
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER catopt_builtin_server_1;
+CREATE FOREIGN CATALOG catopt_builtin_cat_1 SERVER catopt_builtin_server_1;
+
+SET iceberg_default_catalog = 'catopt_builtin_cat_1';
+
+-- Verify catalog works
+CREATE ICEBERG TABLE catopt_test_1 (id bigint, name text);
+INSERT INTO catopt_test_1 VALUES (1, 'test1');
+SELECT * FROM catopt_test_1;
+DROP TABLE catopt_test_1;
+
+-- ============================================================
+-- Test 2: Foreign catalog with ALL options
+-- ============================================================
+CREATE SERVER catopt_builtin_server_2
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER catopt_builtin_server_2;
+CREATE FOREIGN CATALOG catopt_full_opts_cat SERVER catopt_builtin_server_2
+OPTIONS (
+    catalog_name 'test_catalog',
+    default_namespace 'test_ns',
+    enable_metadata_cache 'true',
+    metadata_cache_ttl '300',
+    auto_refresh_metadata 'true',
+    warehouse_location_prefix 's3://warehouse/test/',
+    split_size '256',
+    filter_string 'col1=value1'
+);
+
+SET iceberg_default_catalog = 'catopt_full_opts_cat';
+
+-- Verify catalog with all options works
+CREATE ICEBERG TABLE catopt_test_2 (id bigint, val text);
+INSERT INTO catopt_test_2 VALUES (1, 'full_opts');
+SELECT * FROM catopt_test_2;
+DROP TABLE catopt_test_2;
+
+-- ============================================================
+-- Test 3: Multiple catalogs and switching between them
+-- ============================================================
+CREATE SERVER catopt_builtin_server_3
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER catopt_builtin_server_3;
+CREATE FOREIGN CATALOG catopt_cat_a SERVER catopt_builtin_server_3;
+
+SET iceberg_default_catalog = 'catopt_cat_a';
+CREATE ICEBERG TABLE catopt_switch_a (id bigint);
+INSERT INTO catopt_switch_a VALUES (100);
+
+-- Switch to another catalog
+SET iceberg_default_catalog = 'catopt_builtin_cat_1';
+CREATE ICEBERG TABLE catopt_switch_b (id bigint);
+INSERT INTO catopt_switch_b VALUES (200);
+
+-- Switch back and verify
+SET iceberg_default_catalog = 'catopt_cat_a';
+SELECT * FROM catopt_switch_a;
+
+SET iceberg_default_catalog = 'catopt_builtin_cat_1';
+SELECT * FROM catopt_switch_b;
+
+DROP TABLE catopt_switch_a;
+DROP TABLE catopt_switch_b;
+
+-- ============================================================
+-- Test 4: Foreign catalog with partial options
+-- ============================================================
+CREATE SERVER catopt_builtin_server_4
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER catopt_builtin_server_4;
+
+-- Only catalog_name and default_namespace
+CREATE FOREIGN CATALOG catopt_partial_cat SERVER catopt_builtin_server_4
+OPTIONS (
+    catalog_name 'partial_cat',
+    default_namespace 'my_ns'
+);
+
+SET iceberg_default_catalog = 'catopt_partial_cat';
+CREATE ICEBERG TABLE catopt_test_4 (id bigint);
+INSERT INTO catopt_test_4 VALUES (1);
+SELECT COUNT(*) FROM catopt_test_4;
+DROP TABLE catopt_test_4;
+
+-- ============================================================
+-- Test 5: DROP CATALOG / DROP CATALOG IF EXISTS
+-- ============================================================
+-- Normal drop
+DROP CATALOG catopt_partial_cat;
+DROP USER MAPPING FOR current_user SERVER catopt_builtin_server_4;
+DROP SERVER catopt_builtin_server_4;
+
+-- IF EXISTS on non-existent catalog (should not error)
+DROP CATALOG IF EXISTS catopt_nonexistent_catalog;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+SET iceberg_default_catalog = 'catopt_builtin_cat_1';
+
+DROP CATALOG catopt_cat_a;
+DROP USER MAPPING FOR current_user SERVER catopt_builtin_server_3;
+DROP SERVER catopt_builtin_server_3;
+
+DROP CATALOG catopt_full_opts_cat;
+DROP USER MAPPING FOR current_user SERVER catopt_builtin_server_2;
+DROP SERVER catopt_builtin_server_2;
+
+DROP CATALOG catopt_builtin_cat_1;
+DROP USER MAPPING FOR current_user SERVER catopt_builtin_server_1;
+DROP SERVER catopt_builtin_server_1;
+
+DROP VOLUME catopt_volume;
+DROP USER MAPPING FOR current_user SERVER catopt_volume_server;
+DROP SERVER catopt_volume_server;

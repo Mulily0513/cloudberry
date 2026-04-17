@@ -1,0 +1,258 @@
+-- 01_sync_formats.sql
+-- Test Hive sync across different table formats
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+\i ../../../lib/sql/hive_server_setup.sql
+-- hive_server_setup.sql
+-- Hive server configuration for datalake_fdw tests
+-- Requires: common_setup.sql to be loaded first
+--
+-- This file creates the hive_server foreign server using the public.create_foreign_server() function
+-- Default configuration uses Docker service names from docker-compose.yml
+-- Create server and user mapping for hive
+-- Parameters: server_name, user, wrapper, cluster_name
+-- The public.create_foreign_server() function handles all necessary setup
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+-- Log server creation
+SELECT test_log('Hive server setup completed');
+NOTICE:  [TEST] Hive server setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+DROP SCHEMA IF EXISTS feature_test CASCADE;
+NOTICE:  schema "feature_test" does not exist, skipping
+CREATE SCHEMA feature_test;
+SELECT test_log('Feature Test: Hive Sync Formats');
+NOTICE:  [TEST] Feature Test: Hive Sync Formats
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Test 1: Sync Parquet table
+-- ============================================================
+SELECT test_log('Test 1: Sync test_parquet');
+NOTICE:  [TEST] Test 1: Sync test_parquet
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_parquet', 'paa_cluster', 'feature_test.sync_parquet', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM feature_test.sync_parquet ORDER BY 1 LIMIT 10;
+ id | name 
+----+------
+  1 | test
+(1 row)
+
+SELECT COUNT(*) AS parquet_count FROM feature_test.sync_parquet;
+ parquet_count 
+---------------
+             1
+(1 row)
+
+-- ============================================================
+-- Test 2: Sync ORC table
+-- ============================================================
+SELECT test_log('Test 2: Sync test_orc');
+NOTICE:  [TEST] Test 2: Sync test_orc
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_orc', 'paa_cluster', 'feature_test.sync_orc', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM feature_test.sync_orc ORDER BY 1 LIMIT 10;
+ id | name | m 
+----+------+---
+  1 | test | 1
+    | test | 2
+(2 rows)
+
+SELECT COUNT(*) AS orc_count FROM feature_test.sync_orc;
+ orc_count 
+-----------
+         2
+(1 row)
+
+-- ============================================================
+-- Test 3: Sync Text table
+-- ============================================================
+SELECT test_log('Test 3: Sync test_text');
+NOTICE:  [TEST] Test 3: Sync test_text
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_text', 'paa_cluster', 'feature_test.sync_text', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM feature_test.sync_text ORDER BY 1 LIMIT 10;
+ id | name  
+----+-------
+  1 | .
+  2 | hello
+(2 rows)
+
+SELECT COUNT(*) AS text_count FROM feature_test.sync_text;
+ text_count 
+------------
+          2
+(1 row)
+
+-- ============================================================
+-- Test 4: Sync empty table
+-- ============================================================
+SELECT test_log('Test 4: Sync test_empty');
+NOTICE:  [TEST] Test 4: Sync test_empty
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_empty', 'paa_cluster', 'feature_test.sync_empty', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) AS empty_count FROM feature_test.sync_empty;
+ empty_count 
+-------------
+           0
+(1 row)
+
+-- ============================================================
+-- Test 5: Table structure of synced table
+-- ============================================================
+SELECT test_log('Test 5: Table structure');
+NOTICE:  [TEST] Test 5: Table structure
+ test_log 
+----------
+ 
+(1 row)
+
+\d feature_test.sync_parquet
+            Foreign table "feature_test.sync_parquet"
+ Column |  Type   | Collation | Nullable | Default | FDW options 
+--------+---------+-----------+----------+---------+-------------
+ id     | integer |           |          |         | 
+ name   | text    |           |          |         | 
+Server: hive_server
+FDW options: (filepath '/warehouse/test_parquet', hdfs_cluster_name 'paa_cluster', enablecache 'true', transactional 'false', format 'parquet')
+
+-- ============================================================
+-- Test 6: Re-sync same table to new alias
+-- ============================================================
+SELECT test_log('Test 6: Re-sync test_parquet to new alias');
+NOTICE:  [TEST] Test 6: Re-sync test_parquet to new alias
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_parquet', 'paa_cluster', 'feature_test.sync_parquet_v2', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) AS resync_count FROM feature_test.sync_parquet_v2;
+ resync_count 
+--------------
+            1
+(1 row)
+
+-- Verify data matches original
+SELECT (SELECT COUNT(*) FROM feature_test.sync_parquet) = (SELECT COUNT(*) FROM feature_test.sync_parquet_v2) AS counts_match;
+ counts_match 
+--------------
+ t
+(1 row)
+
+-- ============================================================
+-- Test 7: Aggregates on synced table
+-- ============================================================
+SELECT test_log('Test 7: Aggregates on synced table');
+NOTICE:  [TEST] Test 7: Aggregates on synced table
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS cnt FROM feature_test.sync_parquet;
+ cnt 
+-----
+   1
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP SCHEMA feature_test CASCADE;
+NOTICE:  drop cascades to 5 other objects
+DETAIL:  drop cascades to foreign table feature_test.sync_parquet
+drop cascades to foreign table feature_test.sync_orc
+drop cascades to foreign table feature_test.sync_text
+drop cascades to foreign table feature_test.sync_empty
+drop cascades to foreign table feature_test.sync_parquet_v2

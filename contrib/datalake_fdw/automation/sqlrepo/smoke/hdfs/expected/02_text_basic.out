@@ -1,0 +1,57 @@
+-- Test 02: Text Format Basic
+-- Purpose: Test basic read/write with TEXT format
+-- Data: 10 rows (minimal)
+-- Expected time: ~20s
+-- Test 1: Simple read from single file
+DROP EXTERNAL TABLE IF EXISTS test_text_read;
+NOTICE:  foreign table "test_text_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_text_read(id int, col text, col2 decimal(10,2))
+LOCATION('gphdfs://test/basic/text/simple hdfs_cluster_name=paa_cluster')
+FORMAT 'text';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT * FROM test_text_read ORDER BY id LIMIT 5;
+ id |   col   | col2  
+----+---------+-------
+  1 | alice   | 10.50
+  2 | bob     | 20.75
+  3 | charlie | 30.00
+  4 | diana   | 40.25
+  5 | eve     | 50.50
+(5 rows)
+
+SELECT COUNT(*) FROM test_text_read;
+ count 
+-------
+    10
+(1 row)
+
+DROP EXTERNAL TABLE test_text_read;
+-- Test 2: Write and read back
+DROP EXTERNAL TABLE IF EXISTS test_text_write;
+NOTICE:  foreign table "test_text_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_text_write(id int, col text, col2 decimal(10,2))
+LOCATION('gphdfs://test/basic/text/write hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_text_write SELECT i, 'name_' || i, i * 1.5 FROM generate_series(1, 10) i;
+DROP EXTERNAL TABLE test_text_write;
+-- Read back
+DROP EXTERNAL TABLE IF EXISTS test_text_readback;
+NOTICE:  foreign table "test_text_readback" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_text_readback(id int, col text, col2 decimal(10,2))
+LOCATION('gphdfs://test/basic/text/write hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT COUNT(*) FROM test_text_readback;
+ count 
+-------
+    10
+(1 row)
+
+SELECT SUM(col2) FROM test_text_readback;
+  sum  
+-------
+ 82.50
+(1 row)
+
+DROP EXTERNAL TABLE test_text_readback;

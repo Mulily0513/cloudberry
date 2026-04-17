@@ -1,0 +1,235 @@
+-- 02_read_features.sql
+-- Test FDW read features: projection, NULLs, large data, aggregates, filters
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: FDW Read Features');
+NOTICE:  [TEST] Feature Test: FDW Read Features
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: FDW server and write test data
+-- ============================================================
+DROP SERVER IF EXISTS rf_server CASCADE;
+NOTICE:  server "rf_server" does not exist, skipping
+CREATE SERVER rf_server FOREIGN DATA WRAPPER datalake_fdw
+OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin SERVER rf_server
+OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- Write base data for projection and filter tests
+CREATE FOREIGN TABLE rf_base_w (id int, name text, amount decimal(10,2), category int, flag boolean)
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/base/', format 'parquet');
+INSERT INTO rf_base_w SELECT g, 'item_' || g, (g * 10.5)::decimal(10,2), g % 5, (g % 2 = 0)
+FROM generate_series(1, 100) g;
+DROP FOREIGN TABLE rf_base_w;
+CREATE FOREIGN TABLE rf_base_r (id int, name text, amount decimal(10,2), category int, flag boolean)
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/base/', format 'parquet');
+-- ============================================================
+-- Test 1: Column projection
+-- ============================================================
+SELECT test_log('Test 1: Column projection');
+NOTICE:  [TEST] Test 1: Column projection
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id FROM rf_base_r ORDER BY id LIMIT 5;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+(5 rows)
+
+-- ============================================================
+-- Test 2: NULL value reads
+-- ============================================================
+SELECT test_log('Test 2: NULL value reads');
+NOTICE:  [TEST] Test 2: NULL value reads
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE rf_null_w (id int, name text, val decimal(10,2))
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/nulls/', format 'parquet');
+INSERT INTO rf_null_w VALUES (1, NULL, NULL), (2, 'present', 99.99), (3, NULL, 50.00);
+DROP FOREIGN TABLE rf_null_w;
+CREATE FOREIGN TABLE rf_null_r (id int, name text, val decimal(10,2))
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/nulls/', format 'parquet');
+SELECT * FROM rf_null_r ORDER BY id;
+ id |  name   |  val  
+----+---------+-------
+  1 |         |      
+  2 | present | 99.99
+  3 |         | 50.00
+(3 rows)
+
+SELECT COUNT(*) AS total, COUNT(name) AS non_null_name, COUNT(val) AS non_null_val FROM rf_null_r;
+ total | non_null_name | non_null_val 
+-------+---------------+--------------
+     3 |             1 |            2
+(1 row)
+
+DROP FOREIGN TABLE rf_null_r;
+-- ============================================================
+-- Test 3: Large data reads
+-- ============================================================
+SELECT test_log('Test 3: Large data reads (5000 rows)');
+NOTICE:  [TEST] Test 3: Large data reads (5000 rows)
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE rf_large_w (id int, val int, label text)
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/large/', format 'parquet');
+INSERT INTO rf_large_w SELECT g, g * 7, 'label_' || g FROM generate_series(1, 5000) g;
+DROP FOREIGN TABLE rf_large_w;
+CREATE FOREIGN TABLE rf_large_r (id int, val int, label text)
+SERVER rf_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/readfeat/large/', format 'parquet');
+SELECT COUNT(*) AS large_count FROM rf_large_r;
+ large_count 
+-------------
+        5000
+(1 row)
+
+DROP FOREIGN TABLE rf_large_r;
+-- ============================================================
+-- Test 4: Aggregates
+-- ============================================================
+SELECT test_log('Test 4: Aggregates');
+NOTICE:  [TEST] Test 4: Aggregates
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS cnt,
+       SUM(amount) AS total,
+       AVG(amount) AS avg_amt,
+       MIN(amount) AS min_amt,
+       MAX(amount) AS max_amt
+FROM rf_base_r;
+ cnt |  total   |       avg_amt        | min_amt | max_amt 
+-----+----------+----------------------+---------+---------
+ 100 | 53025.00 | 530.2500000000000000 |   10.50 | 1050.00
+(1 row)
+
+-- ============================================================
+-- Test 5: WHERE filter on reads
+-- ============================================================
+SELECT test_log('Test 5: WHERE filter on reads');
+NOTICE:  [TEST] Test 5: WHERE filter on reads
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id, name, amount FROM rf_base_r WHERE id <= 5 ORDER BY id;
+ id |  name  | amount 
+----+--------+--------
+  1 | item_1 |  10.50
+  2 | item_2 |  21.00
+  3 | item_3 |  31.50
+  4 | item_4 |  42.00
+  5 | item_5 |  52.50
+(5 rows)
+
+SELECT COUNT(*) AS flagged FROM rf_base_r WHERE flag = true;
+ flagged 
+---------
+      50
+(1 row)
+
+SELECT COUNT(*) AS cat_zero FROM rf_base_r WHERE category = 0;
+ cat_zero 
+----------
+       20
+(1 row)
+
+-- ============================================================
+-- Test 6: ORDER BY + LIMIT
+-- ============================================================
+SELECT test_log('Test 6: ORDER BY + LIMIT');
+NOTICE:  [TEST] Test 6: ORDER BY + LIMIT
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id, amount FROM rf_base_r ORDER BY amount DESC LIMIT 5;
+ id  | amount  
+-----+---------
+ 100 | 1050.00
+  99 | 1039.50
+  98 | 1029.00
+  97 | 1018.50
+  96 | 1008.00
+(5 rows)
+
+SELECT id, amount FROM rf_base_r ORDER BY amount ASC LIMIT 3;
+ id | amount 
+----+--------
+  1 |  10.50
+  2 |  21.00
+  3 |  31.50
+(3 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP FOREIGN TABLE rf_base_r;
+DROP USER MAPPING FOR gpadmin SERVER rf_server;
+DROP SERVER rf_server;

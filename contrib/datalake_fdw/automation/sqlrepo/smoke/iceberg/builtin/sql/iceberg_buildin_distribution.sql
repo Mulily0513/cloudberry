@@ -1,0 +1,71 @@
+-- Test distribution policy enforcement for lake tables
+-- Lake tables must always use DISTRIBUTED RANDOMLY because data is stored
+-- on object storage (S3) where fragments are not hash-partitioned across segments.
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- catalog setup
+CREATE SERVER default_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER default_catalog_server;
+CREATE FOREIGN CATALOG default_catalog SERVER default_catalog_server;
+set iceberg_default_catalog='default_catalog';
+
+-- volume setup
+CREATE SERVER default_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER default_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME default_volume SERVER default_volume_server OPTIONS(base_path '/default_volume/');
+set iceberg_default_volume='default_volume';
+
+-- Test 1: default distribution should be RANDOM (no WARNING)
+CREATE ICEBERG TABLE iceberg_dist_default (id bigint, name text);
+SELECT policytype, distkey FROM gp_distribution_policy
+  WHERE localoid = 'iceberg_dist_default'::regclass;
+
+-- Test 2: DISTRIBUTED BY should emit WARNING and force RANDOM
+CREATE ICEBERG TABLE iceberg_dist_hash (id bigint, name text) DISTRIBUTED BY (id);
+SELECT policytype, distkey FROM gp_distribution_policy
+  WHERE localoid = 'iceberg_dist_hash'::regclass;
+
+-- Test 3: DISTRIBUTED REPLICATED should emit WARNING and force RANDOM
+CREATE ICEBERG TABLE iceberg_dist_rep (id bigint, name text) DISTRIBUTED REPLICATED;
+SELECT policytype, distkey FROM gp_distribution_policy
+  WHERE localoid = 'iceberg_dist_rep'::regclass;
+
+-- Test 4: explicit DISTRIBUTED RANDOMLY should succeed without WARNING
+CREATE ICEBERG TABLE iceberg_dist_random (id bigint, name text) DISTRIBUTED RANDOMLY;
+SELECT policytype, distkey FROM gp_distribution_policy
+  WHERE localoid = 'iceberg_dist_random'::regclass;
+
+-- Test 5: IF NOT EXISTS with DISTRIBUTED BY should emit WARNING
+CREATE ICEBERG TABLE IF NOT EXISTS iceberg_dist_ifne (id bigint, name text) DISTRIBUTED BY (id);
+SELECT policytype, distkey FROM gp_distribution_policy
+  WHERE localoid = 'iceberg_dist_ifne'::regclass;
+
+-- Test 6: ALTER TABLE SET DISTRIBUTED BY should ERROR
+ALTER TABLE iceberg_dist_default SET DISTRIBUTED BY (id);
+
+-- cleanup
+DROP TABLE IF EXISTS iceberg_dist_default;
+DROP TABLE IF EXISTS iceberg_dist_hash;
+DROP TABLE IF EXISTS iceberg_dist_rep;
+DROP TABLE IF EXISTS iceberg_dist_random;
+DROP TABLE IF EXISTS iceberg_dist_ifne;
+DROP VOLUME default_volume;
+DROP USER MAPPING FOR current_user SERVER default_volume_server;
+DROP SERVER default_volume_server;
+DROP CATALOG default_catalog;
+DROP USER MAPPING FOR current_user SERVER default_catalog_server;
+DROP SERVER default_catalog_server;

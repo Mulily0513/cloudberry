@@ -1,0 +1,195 @@
+-- 01_catalog_lifecycle.sql
+-- Test Iceberg catalog creation, deletion, and recreation
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg Catalog Lifecycle');
+NOTICE:  [TEST] Feature Test: Iceberg Catalog Lifecycle
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Test 1: Basic catalog + volume creation, verify usable
+-- ============================================================
+SELECT test_log('Test 1: Basic catalog and volume creation');
+NOTICE:  [TEST] Test 1: Basic catalog and volume creation
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE SERVER cl_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER cl_catalog_server;
+CREATE FOREIGN CATALOG cl_catalog SERVER cl_catalog_server;
+SET iceberg_default_catalog = 'cl_catalog';
+CREATE SERVER cl_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cl_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cl_volume SERVER cl_volume_server OPTIONS(base_path '/cl_volume/');
+SET iceberg_default_volume = 'cl_volume';
+-- Verify catalog is usable: create table, insert, select
+CREATE ICEBERG TABLE cl_verify (id bigint, name text);
+INSERT INTO cl_verify VALUES (1, 'catalog_test');
+SELECT * FROM cl_verify ORDER BY id;
+ id |     name     
+----+--------------
+  1 | catalog_test
+(1 row)
+
+DROP TABLE cl_verify;
+-- ============================================================
+-- Test 2: Drop catalog and recreate with same name
+-- ============================================================
+SELECT test_log('Test 2: Drop and recreate catalog');
+NOTICE:  [TEST] Test 2: Drop and recreate catalog
+ test_log 
+----------
+ 
+(1 row)
+
+DROP VOLUME cl_volume;
+DROP USER MAPPING FOR current_user SERVER cl_volume_server;
+DROP SERVER cl_volume_server;
+DROP CATALOG cl_catalog;
+DROP USER MAPPING FOR current_user SERVER cl_catalog_server;
+DROP SERVER cl_catalog_server;
+-- Recreate with same names
+CREATE SERVER cl_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER cl_catalog_server;
+CREATE FOREIGN CATALOG cl_catalog SERVER cl_catalog_server;
+SET iceberg_default_catalog = 'cl_catalog';
+CREATE SERVER cl_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cl_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cl_volume SERVER cl_volume_server OPTIONS(base_path '/cl_volume_2/');
+SET iceberg_default_volume = 'cl_volume';
+CREATE ICEBERG TABLE cl_recreated (id bigint, val int);
+INSERT INTO cl_recreated VALUES (1, 100), (2, 200);
+SELECT COUNT(*) AS row_count FROM cl_recreated;
+ row_count 
+-----------
+         2
+(1 row)
+
+DROP TABLE cl_recreated;
+-- ============================================================
+-- Test 3: DROP TABLE IF EXISTS on non-existent table
+-- ============================================================
+SELECT test_log('Test 3: DROP TABLE IF EXISTS on non-existent table');
+NOTICE:  [TEST] Test 3: DROP TABLE IF EXISTS on non-existent table
+ test_log 
+----------
+ 
+(1 row)
+
+DROP TABLE IF EXISTS cl_nonexistent_table_xyz;
+NOTICE:  table "cl_nonexistent_table_xyz" does not exist, skipping
+-- ============================================================
+-- Test 4: Multiple tables in same catalog
+-- ============================================================
+SELECT test_log('Test 4: Multiple tables in same catalog');
+NOTICE:  [TEST] Test 4: Multiple tables in same catalog
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE cl_table_a (id bigint, name text);
+CREATE ICEBERG TABLE cl_table_b (id bigint, val int);
+CREATE ICEBERG TABLE cl_table_c (id bigint);
+INSERT INTO cl_table_a VALUES (1, 'a'), (2, 'b');
+INSERT INTO cl_table_b VALUES (1, 10), (2, 20);
+INSERT INTO cl_table_c VALUES (1), (2), (3);
+SELECT COUNT(*) AS table_a_count FROM cl_table_a;
+ table_a_count 
+---------------
+             2
+(1 row)
+
+SELECT COUNT(*) AS table_b_count FROM cl_table_b;
+ table_b_count 
+---------------
+             2
+(1 row)
+
+SELECT COUNT(*) AS table_c_count FROM cl_table_c;
+ table_c_count 
+---------------
+             3
+(1 row)
+
+DROP TABLE cl_table_a;
+DROP TABLE cl_table_b;
+DROP TABLE cl_table_c;
+-- ============================================================
+-- Test 5: Table with namespace option
+-- ============================================================
+SELECT test_log('Test 5: Table with namespace option');
+NOTICE:  [TEST] Test 5: Table with namespace option
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE cl_ns_table (id bigint, data text)
+OPTIONS (namespace 'test_ns');
+INSERT INTO cl_ns_table VALUES (1, 'ns_test');
+SELECT * FROM cl_ns_table;
+ id |  data   
+----+---------
+  1 | ns_test
+(1 row)
+
+DROP TABLE cl_ns_table;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME cl_volume;
+DROP USER MAPPING FOR current_user SERVER cl_volume_server;
+DROP SERVER cl_volume_server;
+DROP CATALOG cl_catalog;
+DROP USER MAPPING FOR current_user SERVER cl_catalog_server;
+DROP SERVER cl_catalog_server;

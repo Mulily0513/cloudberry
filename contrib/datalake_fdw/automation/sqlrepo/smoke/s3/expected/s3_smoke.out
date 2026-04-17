@@ -1,0 +1,135 @@
+-- S3 Smoke Test: Hive writes -> Cloudberry reads (all formats)
+-- Tests reading Hive-written data from MinIO via datalake_fdw
+-- Prerequisite: beeline prepare script creates test data in MinIO
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+-- Create S3 server (MinIO)
+DROP SERVER IF EXISTS s3_server CASCADE;
+NOTICE:  server "s3_server" does not exist, skipping
+CREATE SERVER s3_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER s3_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: Hive Parquet -> CB read
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS s3_hive_parquet;
+NOTICE:  foreign table "s3_hive_parquet" does not exist, skipping
+CREATE FOREIGN TABLE s3_hive_parquet (id int, name text, amount decimal(10,2))
+SERVER s3_server
+OPTIONS (filePath '/warehouse/s3-smoke-hive-parquet/', format 'parquet');
+SELECT * FROM s3_hive_parquet ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | Alice   | 100.50
+  2 | Bob     | 200.75
+  3 | Charlie | 300.00
+(3 rows)
+
+SELECT COUNT(*) FROM s3_hive_parquet;
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 2: Hive Avro -> CB read
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS s3_hive_avro;
+NOTICE:  foreign table "s3_hive_avro" does not exist, skipping
+CREATE FOREIGN TABLE s3_hive_avro (id int, name text)
+SERVER s3_server
+OPTIONS (filePath '/warehouse/s3-smoke-hive-avro/', format 'avro');
+SELECT * FROM s3_hive_avro ORDER BY id;
+ id |  name   
+----+---------
+  1 | Alice
+  2 | Bob
+  3 | Charlie
+(3 rows)
+
+SELECT COUNT(*) FROM s3_hive_avro;
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 3: Hive ORC -> CB read
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS s3_hive_orc;
+NOTICE:  foreign table "s3_hive_orc" does not exist, skipping
+CREATE FOREIGN TABLE s3_hive_orc (id int, name text, amount decimal(10,2))
+SERVER s3_server
+OPTIONS (filePath '/warehouse/s3-smoke-hive-orc/', format 'orc');
+SELECT * FROM s3_hive_orc ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | Alice   | 100.50
+  2 | Bob     | 200.75
+  3 | Charlie | 300.00
+(3 rows)
+
+SELECT COUNT(*) FROM s3_hive_orc;
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 4: Hive Text (comma-delimited) -> CB read
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS s3_hive_text;
+NOTICE:  foreign table "s3_hive_text" does not exist, skipping
+CREATE FOREIGN TABLE s3_hive_text (id int, name text, amount decimal(10,2))
+SERVER s3_server
+OPTIONS (filePath '/warehouse/s3-smoke-hive-text/', format 'csv', delimiter ',');
+SELECT * FROM s3_hive_text ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | Alice   | 100.50
+  2 | Bob     | 200.75
+  3 | Charlie | 300.00
+(3 rows)
+
+SELECT COUNT(*) FROM s3_hive_text;
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 5: Hive CSV (OpenCSVSerde) -> CB read
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS s3_hive_csv;
+NOTICE:  foreign table "s3_hive_csv" does not exist, skipping
+CREATE FOREIGN TABLE s3_hive_csv (id int, name text, amount decimal(10,2))
+SERVER s3_server
+OPTIONS (filePath '/warehouse/s3-smoke-hive-csv/', format 'csv', delimiter ',', quote '"');
+SELECT * FROM s3_hive_csv ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | Alice   | 100.50
+  2 | Bob     | 200.75
+  3 | Charlie | 300.00
+(3 rows)
+
+SELECT COUNT(*) FROM s3_hive_csv;
+ count 
+-------
+     3
+(1 row)
+
+-- Cleanup
+DROP FOREIGN TABLE IF EXISTS s3_hive_parquet;
+DROP FOREIGN TABLE IF EXISTS s3_hive_avro;
+DROP FOREIGN TABLE IF EXISTS s3_hive_orc;
+DROP FOREIGN TABLE IF EXISTS s3_hive_text;
+DROP FOREIGN TABLE IF EXISTS s3_hive_csv;
+DROP USER MAPPING FOR gpadmin SERVER s3_server;
+DROP SERVER s3_server;

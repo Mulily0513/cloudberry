@@ -1,0 +1,434 @@
+-- Hive Edge Case Coverage Test
+-- Purpose: Cover remaining small-gap files
+-- Target: textFileSimpleRead.cpp (+22), lineRecordReader.cpp (+145),
+--         textFileReadPolicy.cpp (+27), textFileRead.cpp (+37),
+--         textFileArchiveRead.cpp (+13), archiveRead.cpp (+8),
+--         readPolicy.cpp (+30), providerWrapper.cpp (+53),
+--         provider.cpp (+24), common.cpp (+27)
+SET client_min_messages = ERROR;
+DROP SCHEMA IF EXISTS edge_cov CASCADE;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+RESET client_min_messages;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+CREATE SCHEMA edge_cov;
+SET datestyle = ISO, MDY;
+-- ============================================================
+-- Test 1: textFileSimpleRead via new text path + uncompressed text
+-- ============================================================
+SET datalake.external_table_new_text = on;
+SELECT public.sync_hive_table('hive_cluster','default','test_text','paa_cluster', 'edge_cov.test_text', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_text;
+ count 
+-------
+     2
+(1 row)
+
+SELECT * FROM edge_cov.test_text ORDER BY id;
+ id | name  
+----+-------
+  1 | .
+  2 | hello
+(2 rows)
+
+-- Large uncompressed text (exercises buffer handling in textFileSimpleRead)
+SELECT public.sync_hive_table('hive_cluster','default','test_text_large','paa_cluster', 'edge_cov.test_large', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_large;
+ count 
+-------
+   500
+(1 row)
+
+SELECT id, length(data) FROM edge_cov.test_large WHERE id <= 5 ORDER BY id;
+ id | length 
+----+--------
+  1 |    202
+  2 |    202
+  3 |    202
+  4 |    202
+  5 |    202
+(5 rows)
+
+SELECT COUNT(*) FROM edge_cov.test_large WHERE id > 400;
+ count 
+-------
+   100
+(1 row)
+
+-- Pipe delimiter (exercises lineRecordReader delimiter logic)
+SELECT public.sync_hive_table('hive_cluster','default','test_text_pipe','paa_cluster', 'edge_cov.test_pipe', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_pipe;
+ count 
+-------
+    30
+(1 row)
+
+SELECT * FROM edge_cov.test_pipe WHERE id <= 5 ORDER BY id;
+ id |    name    | val 
+----+------------+-----
+  1 | pipe_row_1 | 0.5
+  2 | pipe_row_2 |   1
+  3 | pipe_row_3 | 1.5
+  4 | pipe_row_4 |   2
+  5 | pipe_row_5 | 2.5
+(5 rows)
+
+-- Space/whitespace (exercises lineRecordReader edge case)
+SELECT public.sync_hive_table('hive_cluster','default','test_space','paa_cluster', 'edge_cov.test_space', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_space ORDER BY id;
+ id | leading_val | trailing_val 
+----+-------------+--------------
+  1 |   space     | space  
+(1 row)
+
+-- Re-read compressed with new_text ON (snappy/deflate already tested, verify path selection)
+SELECT public.sync_hive_table('hive_cluster','default','test_text_snappy','paa_cluster', 'edge_cov.test_snappy2', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_snappy2;
+ count 
+-------
+    50
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_text_deflate','paa_cluster', 'edge_cov.test_deflate2', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_deflate2;
+ count 
+-------
+    50
+(1 row)
+
+-- ============================================================
+-- Test 2: old text path (archiveRead) with various text tables
+-- ============================================================
+SET datalake.external_table_new_text = off;
+SELECT public.sync_hive_table('hive_cluster','default','test_text','paa_cluster', 'edge_cov.test_text_old', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_text_old;
+ count 
+-------
+     2
+(1 row)
+
+SELECT * FROM edge_cov.test_text_old ORDER BY id;
+ id | name  
+----+-------
+  1 | .
+  2 | hello
+(2 rows)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_text_large','paa_cluster', 'edge_cov.test_large_old', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_large_old;
+ count 
+-------
+   500
+(1 row)
+
+SELECT id, length(data) FROM edge_cov.test_large_old WHERE id <= 3 ORDER BY id;
+ id | length 
+----+--------
+  1 |    202
+  2 |    202
+  3 |    202
+(3 rows)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_text_pipe','paa_cluster', 'edge_cov.test_pipe_old', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_pipe_old;
+ count 
+-------
+    30
+(1 row)
+
+RESET datalake.external_table_new_text;
+-- ============================================================
+-- Test 3: ORC with various read patterns (orcFileReader, orcReadInterface)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_orc','paa_cluster', 'edge_cov.test_orc', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_orc;
+ count 
+-------
+     2
+(1 row)
+
+SELECT * FROM edge_cov.test_orc ORDER BY id NULLS LAST, m;
+ id | name | m 
+----+------+---
+  1 | test | 1
+    | test | 2
+(2 rows)
+
+-- Column projection
+SELECT id FROM edge_cov.test_orc WHERE m = 1;
+ id 
+----
+  1
+(1 row)
+
+SELECT name FROM edge_cov.test_orc;
+ name 
+------
+ test
+ test
+(2 rows)
+
+-- ORC with extreme values
+SELECT public.sync_hive_table('hive_cluster','default','test_extreme','paa_cluster', 'edge_cov.test_extreme', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_extreme;
+ tiny_min | tiny_max |   int_min   |  int_max   
+----------+----------+-------------+------------
+     -128 |      127 | -2147483648 | 2147483647
+(1 row)
+
+-- ORC with decimal
+SELECT public.sync_hive_table('hive_cluster','default','test_decimal','paa_cluster', 'edge_cov.test_decimal', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_decimal ORDER BY id;
+ id |  dec1  |    dec2     
+----+--------+-------------
+  1 | 123.45 | 12345.67890
+  2 |   0.01 |     0.00001
+(2 rows)
+
+-- ORC with datetime
+SELECT public.sync_hive_table('hive_cluster','default','test_datetime','paa_cluster', 'edge_cov.test_datetime', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_datetime;
+ id |  old_date  |         ts          
+----+------------+---------------------
+  1 | 1970-01-01 | 1970-01-01 00:00:00
+(1 row)
+
+-- ORC with zero
+SELECT public.sync_hive_table('hive_cluster','default','test_zero','paa_cluster', 'edge_cov.test_zero', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_zero ORDER BY id;
+ id | zero_int | zero_float 
+----+----------+------------
+  1 |        0 |          0
+  2 |        0 |          0
+(2 rows)
+
+-- ============================================================
+-- Test 4: Parquet with various patterns
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_parquet','paa_cluster', 'edge_cov.test_parquet', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_parquet;
+ count 
+-------
+     1
+(1 row)
+
+SELECT * FROM edge_cov.test_parquet;
+ id | name 
+----+------
+  1 | test
+(1 row)
+
+-- Parquet with empty string
+SELECT public.sync_hive_table('hive_cluster','default','test_empty_str','paa_cluster', 'edge_cov.test_empty_str', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT id, empty_val IS NULL AS e_null, null_val IS NULL AS n_null FROM edge_cov.test_empty_str ORDER BY id;
+ id | e_null | n_null 
+----+--------+--------
+  1 | f      | t
+  2 | t      | t
+(2 rows)
+
+-- Parquet with unicode
+SELECT public.sync_hive_table('hive_cluster','default','test_unicode','paa_cluster', 'edge_cov.test_unicode', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_unicode ORDER BY id;
+ id |   val    
+----+----------
+  1 | ascii_ok
+  2 | abc123
+(2 rows)
+
+-- Parquet with scientific
+SELECT public.sync_hive_table('hive_cluster','default','test_scientific','paa_cluster', 'edge_cov.test_scientific', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM edge_cov.test_scientific;
+ id | small_val | large_val 
+----+-----------+-----------
+  1 |  1.23e-10 | 1.23e+100
+(1 row)
+
+-- ============================================================
+-- Test 5: Multi-partition scanning (readPolicy, partition_selector)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_multi_partition','paa_cluster', 'edge_cov.test_multi', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_multi;
+ count 
+-------
+     3
+(1 row)
+
+SELECT * FROM edge_cov.test_multi ORDER BY year, month, day;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+  2 | data2 | 2024 |     1 |   2
+  3 | data3 | 2024 |    12 |  31
+(3 rows)
+
+SELECT * FROM edge_cov.test_multi WHERE year = 2024 AND month = 1 ORDER BY day;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+  2 | data2 | 2024 |     1 |   2
+(2 rows)
+
+SELECT * FROM edge_cov.test_multi WHERE day > 1 ORDER BY year, month, day;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  2 | data2 | 2024 |     1 |   2
+  3 | data3 | 2024 |    12 |  31
+(2 rows)
+
+SELECT COUNT(*) FROM edge_cov.test_multi WHERE month = 12;
+ count 
+-------
+     1
+(1 row)
+
+-- ============================================================
+-- Test 6: Empty table (edge case in provider/readPolicy)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_empty','paa_cluster', 'edge_cov.test_empty', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM edge_cov.test_empty;
+ count 
+-------
+     0
+(1 row)
+
+SELECT * FROM edge_cov.test_empty;
+ id 
+----
+(0 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP SCHEMA edge_cov CASCADE;
+NOTICE:  drop cascades to 20 other objects
+DETAIL:  drop cascades to foreign table edge_cov.test_text
+drop cascades to foreign table edge_cov.test_large
+drop cascades to foreign table edge_cov.test_pipe
+drop cascades to foreign table edge_cov.test_space
+drop cascades to foreign table edge_cov.test_snappy2
+drop cascades to foreign table edge_cov.test_deflate2
+drop cascades to foreign table edge_cov.test_text_old
+drop cascades to foreign table edge_cov.test_large_old
+drop cascades to foreign table edge_cov.test_pipe_old
+drop cascades to foreign table edge_cov.test_orc
+drop cascades to foreign table edge_cov.test_extreme
+drop cascades to foreign table edge_cov.test_decimal
+drop cascades to foreign table edge_cov.test_datetime
+drop cascades to foreign table edge_cov.test_zero
+drop cascades to foreign table edge_cov.test_parquet
+drop cascades to foreign table edge_cov.test_empty_str
+drop cascades to foreign table edge_cov.test_unicode
+drop cascades to foreign table edge_cov.test_scientific
+drop cascades to foreign table edge_cov.test_multi
+drop cascades to foreign table edge_cov.test_empty

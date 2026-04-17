@@ -1,0 +1,53 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_count s2_count s1_sum s2_filter
+step s1_count: SELECT count(*) FROM conc_read_tbl;
+count
+-----
+  100
+(1 row)
+
+step s2_count: SELECT count(*) FROM conc_read_tbl;
+count
+-----
+  100
+(1 row)
+
+step s1_sum: SELECT sum(id) FROM conc_read_tbl;
+ sum
+----
+5050
+(1 row)
+
+step s2_filter: SELECT count(*) FROM conc_read_tbl WHERE id > 50;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s2_count s1_count s2_filter s1_sum
+step s2_count: SELECT count(*) FROM conc_read_tbl;
+count
+-----
+  100
+(1 row)
+
+step s1_count: SELECT count(*) FROM conc_read_tbl;
+count
+-----
+  100
+(1 row)
+
+step s2_filter: SELECT count(*) FROM conc_read_tbl WHERE id > 50;
+count
+-----
+   50
+(1 row)
+
+step s1_sum: SELECT sum(id) FROM conc_read_tbl;
+ sum
+----
+5050
+(1 row)
+

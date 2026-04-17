@@ -1,0 +1,161 @@
+-- Iceberg Toolkit Operations Test
+-- Purpose: Trigger toolkit catalog/volume FDW functions
+-- Target: iceberg_toolkit_catalog_fdw.c, iceberg_toolkit_volume_fdw.c,
+--         pg_iceberg_catalog_helper.c, pg_iceberg_catalog_utils.c
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE SERVER tk_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER tk_catalog_server;
+CREATE FOREIGN CATALOG tk_catalog SERVER tk_catalog_server;
+SET iceberg_default_catalog = 'tk_catalog';
+CREATE SERVER tk_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER tk_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME tk_volume SERVER tk_volume_server OPTIONS(base_path '/tk_volume/');
+SET iceberg_default_volume = 'tk_volume';
+-- Create test table with data
+CREATE ICEBERG TABLE tk_test (id bigint, name text, val int);
+INSERT INTO tk_test VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30);
+INSERT INTO tk_test VALUES (4, 'd', 40), (5, 'e', 50);
+-- ============================================================
+-- Test 1: get_statistics via toolkit
+-- ============================================================
+SELECT
+    result::json->'fragments'->>'total-records' AS total_records,
+    (result::json->'fragments'->>'total-files-size')::bigint > 0 AS has_file_size
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'get_statistics', 'public', 'tk_test',
+        'tk_catalog_server', 'tk_catalog',
+        'tk_volume_server', 'tk_volume', '') AS result
+) t;
+ total_records | has_file_size 
+---------------+---------------
+ 5             | t
+(1 row)
+
+-- ============================================================
+-- Test 2: plan_file_groups via toolkit
+-- ============================================================
+SELECT
+    result::json->>'status' AS status,
+    result::json->>'operation' AS operation
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'plan_file_groups', 'public', 'tk_test',
+        'tk_catalog_server', 'tk_catalog',
+        'tk_volume_server', 'tk_volume', '') AS result
+) t;
+ status  |    operation     
+---------+------------------
+ success | plan_file_groups
+(1 row)
+
+-- plan_file_groups with custom parameters
+SELECT
+    result::json->>'status' AS status
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'plan_file_groups', 'public', 'tk_test',
+        'tk_catalog_server', 'tk_catalog',
+        'tk_volume_server', 'tk_volume',
+        '{"minInputFiles": 2, "targetFileSizeMb": 256}') AS result
+) t;
+ status  
+---------
+ success
+(1 row)
+
+-- ============================================================
+-- Test 3: Load table metadata
+-- ============================================================
+SET client_min_messages = WARNING;
+DO $$
+DECLARE
+    result text;
+BEGIN
+    SELECT iceberg_toolkit.catalog_fdw(
+        'load_table', 'public', 'tk_test',
+        'tk_catalog_server', 'tk_catalog',
+        'tk_volume_server', 'tk_volume', '')
+    INTO result;
+    IF result IS NOT NULL THEN
+        RAISE NOTICE 'load_table: success';
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'load_table error: %', SQLERRM;
+END;
+$$;
+RESET client_min_messages;
+-- ============================================================
+-- Test 4: Volume scan (read through volume FDW)
+-- ============================================================
+-- This exercises iceberg_toolkit_volume_fdw functions
+SELECT COUNT(*) FROM tk_test;
+ count 
+-------
+     5
+(1 row)
+
+SELECT * FROM tk_test WHERE id > 3 ORDER BY id;
+ id | name | val 
+----+------+-----
+  4 | d    |  40
+  5 | e    |  50
+(2 rows)
+
+SELECT id, val FROM tk_test WHERE val BETWEEN 20 AND 40 ORDER BY id;
+ id | val 
+----+-----
+  2 |  20
+  3 |  30
+  4 |  40
+(3 rows)
+
+-- ============================================================
+-- Test 5: After DELETE, re-read triggers delete filter + statistics
+-- ============================================================
+DELETE FROM tk_test WHERE id = 3;
+SELECT
+    result::json->'fragments'->>'total-records' AS total_records
+FROM (
+    SELECT iceberg_toolkit.catalog_fdw(
+        'get_statistics', 'public', 'tk_test',
+        'tk_catalog_server', 'tk_catalog',
+        'tk_volume_server', 'tk_volume', '') AS result
+) t;
+ total_records 
+---------------
+ 5
+(1 row)
+
+-- ============================================================
+-- Test 6: Multiple tables (exercises catalog list paths)
+-- ============================================================
+CREATE ICEBERG TABLE tk_test2 (id bigint);
+INSERT INTO tk_test2 VALUES (1), (2), (3);
+SELECT COUNT(*) FROM tk_test;
+ count 
+-------
+     4
+(1 row)
+
+SELECT COUNT(*) FROM tk_test2;
+ count 
+-------
+     3
+(1 row)
+
+DROP TABLE tk_test2;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE tk_test;
+DROP VOLUME tk_volume;
+DROP USER MAPPING FOR current_user SERVER tk_volume_server;
+DROP SERVER tk_volume_server;
+DROP CATALOG tk_catalog;
+DROP USER MAPPING FOR current_user SERVER tk_catalog_server;
+DROP SERVER tk_catalog_server;

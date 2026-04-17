@@ -1,0 +1,261 @@
+-- Hive Compressed Text Coverage Test
+-- Purpose: Exercise textFile compression read paths
+-- Target: textFileSnappyRead.cpp (+126), textFileDeflateRead.cpp (+94),
+--         lineRecordReader.cpp (+145), textFileRead.cpp (+47),
+--         textFileReadPolicy.cpp (+31), textFileSimpleRead.cpp,
+--         archiveRead.cpp, readPolicy.cpp
+SET client_min_messages = ERROR;
+DROP SCHEMA IF EXISTS text_cov CASCADE;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+RESET client_min_messages;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+DROP SCHEMA IF EXISTS text_cov CASCADE;
+NOTICE:  schema "text_cov" does not exist, skipping
+CREATE SCHEMA text_cov;
+SET datestyle = ISO, MDY;
+-- Enable new text reader that supports snappy/deflate decompression
+SET datalake.external_table_new_text = on;
+-- ============================================================
+-- Test 1: Snappy compressed text (textFileSnappyRead.cpp)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_text_snappy','paa_cluster', 'text_cov.test_text_snappy', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_snappy;
+ count 
+-------
+    50
+(1 row)
+
+SELECT * FROM text_cov.test_text_snappy WHERE id <= 5 ORDER BY id;
+ id |     name     | val 
+----+--------------+-----
+  1 | snappy_row_1 | 1.5
+  2 | snappy_row_2 |   3
+  3 | snappy_row_3 | 4.5
+  4 | snappy_row_4 |   6
+  5 | snappy_row_5 | 7.5
+(5 rows)
+
+SELECT * FROM text_cov.test_text_snappy WHERE id > 45 ORDER BY id;
+ id |     name      | val  
+----+---------------+------
+ 46 | snappy_row_46 |   69
+ 47 | snappy_row_47 | 70.5
+ 48 | snappy_row_48 |   72
+ 49 | snappy_row_49 | 73.5
+ 50 | snappy_row_50 |   75
+(5 rows)
+
+SELECT COUNT(*) FROM text_cov.test_text_snappy WHERE val > 50.0;
+ count 
+-------
+    17
+(1 row)
+
+-- ============================================================
+-- Test 2: Deflate compressed text (textFileDeflateRead.cpp)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_text_deflate','paa_cluster', 'text_cov.test_text_deflate', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_deflate;
+ count 
+-------
+    50
+(1 row)
+
+SELECT * FROM text_cov.test_text_deflate WHERE id <= 5 ORDER BY id;
+ id |     name      | val  
+----+---------------+------
+  1 | deflate_row_1 |  2.5
+  2 | deflate_row_2 |    5
+  3 | deflate_row_3 |  7.5
+  4 | deflate_row_4 |   10
+  5 | deflate_row_5 | 12.5
+(5 rows)
+
+SELECT * FROM text_cov.test_text_deflate WHERE id > 45 ORDER BY id;
+ id |      name      |  val  
+----+----------------+-------
+ 46 | deflate_row_46 |   115
+ 47 | deflate_row_47 | 117.5
+ 48 | deflate_row_48 |   120
+ 49 | deflate_row_49 | 122.5
+ 50 | deflate_row_50 |   125
+(5 rows)
+
+SELECT COUNT(*) FROM text_cov.test_text_deflate WHERE val > 80.0;
+ count 
+-------
+    18
+(1 row)
+
+-- ============================================================
+-- Test 3: GZip compressed text (also deflate path internally)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_text_gzip','paa_cluster', 'text_cov.test_text_gzip', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_gzip;
+ count 
+-------
+    50
+(1 row)
+
+SELECT * FROM text_cov.test_text_gzip WHERE id <= 5 ORDER BY id;
+ id |    name    | val  
+----+------------+------
+  1 | gzip_row_1 |  3.5
+  2 | gzip_row_2 |    7
+  3 | gzip_row_3 | 10.5
+  4 | gzip_row_4 |   14
+  5 | gzip_row_5 | 17.5
+(5 rows)
+
+SELECT COUNT(*) FROM text_cov.test_text_gzip WHERE val > 100.0;
+ count 
+-------
+    22
+(1 row)
+
+-- ============================================================
+-- Test 4: Pipe-delimited text (lineRecordReader custom delimiter)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_text_pipe','paa_cluster', 'text_cov.test_text_pipe', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_pipe;
+ count 
+-------
+    30
+(1 row)
+
+SELECT * FROM text_cov.test_text_pipe WHERE id <= 5 ORDER BY id;
+ id |    name    | val 
+----+------------+-----
+  1 | pipe_row_1 | 0.5
+  2 | pipe_row_2 |   1
+  3 | pipe_row_3 | 1.5
+  4 | pipe_row_4 |   2
+  5 | pipe_row_5 | 2.5
+(5 rows)
+
+SELECT * FROM text_cov.test_text_pipe WHERE name = 'pipe_row_10';
+ id |    name     | val 
+----+-------------+-----
+ 10 | pipe_row_10 |   5
+(1 row)
+
+-- ============================================================
+-- Test 5: Large text table (lineRecordReader buffer handling)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_text_large','paa_cluster', 'text_cov.test_text_large', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_large;
+ count 
+-------
+   500
+(1 row)
+
+SELECT id, length(data) FROM text_cov.test_text_large WHERE id <= 3 ORDER BY id;
+ id | length 
+----+--------
+  1 |    202
+  2 |    202
+  3 |    202
+(3 rows)
+
+SELECT COUNT(*) FROM text_cov.test_text_large WHERE id > 400;
+ count 
+-------
+   100
+(1 row)
+
+-- ============================================================
+-- Test 6: Multiple sequential reads (readPolicy distribution)
+-- ============================================================
+SELECT COUNT(*) FROM text_cov.test_text_snappy;
+ count 
+-------
+    50
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_deflate;
+ count 
+-------
+    50
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_gzip;
+ count 
+-------
+    50
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_pipe;
+ count 
+-------
+    30
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_large;
+ count 
+-------
+   500
+(1 row)
+
+-- ============================================================
+-- Test 7: Also test with old text reader (archiveRead path)
+-- ============================================================
+SET datalake.external_table_new_text = off;
+SELECT COUNT(*) FROM text_cov.test_text_pipe;
+ count 
+-------
+    30
+(1 row)
+
+SELECT COUNT(*) FROM text_cov.test_text_large;
+ count 
+-------
+   500
+(1 row)
+
+RESET datalake.external_table_new_text;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP SCHEMA text_cov CASCADE;
+NOTICE:  drop cascades to 5 other objects
+DETAIL:  drop cascades to foreign table text_cov.test_text_snappy
+drop cascades to foreign table text_cov.test_text_deflate
+drop cascades to foreign table text_cov.test_text_gzip
+drop cascades to foreign table text_cov.test_text_pipe
+drop cascades to foreign table text_cov.test_text_large

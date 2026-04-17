@@ -1,0 +1,335 @@
+-- FDW Filter Pushdown Test
+-- Purpose: Exercise filter serialization paths in dlproxy/filters.c
+-- Target: filters.c (+384), headers.c (+77), protocol.c (+214),
+--         libchurl.c (read paths), datalake_option.c, datalake_fdw.c
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_fp_server CASCADE;
+NOTICE:  server "fdw_fp_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_fp_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_fp_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Create test data with diverse types for filter testing
+-- ============================================================
+CREATE FOREIGN TABLE fdw_fp_data_w (
+    id int,
+    name text,
+    amount decimal(10,2),
+    flag boolean,
+    category int,
+    ts timestamp,
+    col_date date,
+    col_bigint bigint,
+    col_real real
+)
+SERVER fdw_fp_server
+OPTIONS (filePath '/warehouse/fdw-test/filter-pushdown/', format 'parquet');
+INSERT INTO fdw_fp_data_w
+SELECT
+    i,
+    'item_' || i,
+    (i * 5.5)::decimal(10,2),
+    (i % 2 = 0),
+    i % 10,
+    '2024-01-01'::timestamp + (i || ' hours')::interval,
+    '2024-01-01'::date + (i % 365),
+    i::bigint * 1000,
+    (i * 0.1)::real
+FROM generate_series(1, 1000) i;
+DROP FOREIGN TABLE fdw_fp_data_w;
+CREATE FOREIGN TABLE fdw_fp_data (
+    id int,
+    name text,
+    amount decimal(10,2),
+    flag boolean,
+    category int,
+    ts timestamp,
+    col_date date,
+    col_bigint bigint,
+    col_real real
+)
+SERVER fdw_fp_server
+OPTIONS (filePath '/warehouse/fdw-test/filter-pushdown/', format 'parquet');
+-- ============================================================
+-- Test 1: Equality operator (=)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE id = 500;
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE name = 'item_100';
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE flag = true;
+ count 
+-------
+   500
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE category = 5;
+ count 
+-------
+   100
+(1 row)
+
+-- ============================================================
+-- Test 2: Inequality operators (!=, <>, >, <, >=, <=)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE id != 500;
+ count 
+-------
+   999
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE id > 990;
+ count 
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE id < 10;
+ count 
+-------
+     9
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE id >= 995;
+ count 
+-------
+     6
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE id <= 5;
+ count 
+-------
+     5
+(1 row)
+
+-- ============================================================
+-- Test 3: NULL checks (IS NULL, IS NOT NULL)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE name IS NULL;
+ count 
+-------
+     0
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE name IS NOT NULL;
+ count 
+-------
+  1000
+(1 row)
+
+-- ============================================================
+-- Test 4: IN operator (ScalarArrayOpExpr)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE id IN (1, 5, 10, 50, 100, 500, 1000);
+ count 
+-------
+     7
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE category IN (1, 3, 5, 7, 9);
+ count 
+-------
+   500
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE name IN ('item_1', 'item_2', 'item_3');
+ count 
+-------
+     3
+(1 row)
+
+-- ============================================================
+-- Test 5: BETWEEN (translates to >= AND <=)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE id BETWEEN 100 AND 200;
+ count 
+-------
+   101
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE amount BETWEEN 50.00 AND 100.00;
+ count 
+-------
+     9
+(1 row)
+
+-- ============================================================
+-- Test 6: Compound filters (AND, OR)
+-- ============================================================
+SELECT COUNT(*) FROM fdw_fp_data WHERE id > 500 AND flag = true;
+ count 
+-------
+   250
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE category = 1 AND id < 100;
+ count 
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE id < 10 OR id > 990;
+ count 
+-------
+    19
+(1 row)
+
+-- ============================================================
+-- Test 7: Type-specific filters
+-- ============================================================
+-- Decimal filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE amount > 5000.00;
+ count 
+-------
+    91
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE amount = 55.00;
+ count 
+-------
+     1
+(1 row)
+
+-- Bigint filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE col_bigint > 500000;
+ count 
+-------
+   500
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE col_bigint = 100000;
+ count 
+-------
+     1
+(1 row)
+
+-- Real/float filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE col_real > 50.0;
+ count 
+-------
+   500
+(1 row)
+
+-- Timestamp filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE ts > '2024-02-01'::timestamp;
+ count 
+-------
+   256
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE ts < '2024-01-02'::timestamp;
+ count 
+-------
+    23
+(1 row)
+
+-- Date filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE col_date > '2024-06-01'::date;
+ count 
+-------
+   542
+(1 row)
+
+SELECT COUNT(*) FROM fdw_fp_data WHERE col_date = '2024-03-15'::date;
+ count 
+-------
+     3
+(1 row)
+
+-- Boolean filter
+SELECT COUNT(*) FROM fdw_fp_data WHERE flag = false;
+ count 
+-------
+   500
+(1 row)
+
+-- ============================================================
+-- Test 8: Column projection (only select subset of columns)
+-- ============================================================
+SELECT id FROM fdw_fp_data WHERE id <= 5 ORDER BY id;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+(5 rows)
+
+SELECT name, amount FROM fdw_fp_data WHERE id <= 3 ORDER BY name;
+  name  | amount 
+--------+--------
+ item_1 |   5.50
+ item_2 |  11.00
+ item_3 |  16.50
+(3 rows)
+
+SELECT flag, category FROM fdw_fp_data WHERE id = 1;
+ flag | category 
+------+----------
+ f    |        1
+(1 row)
+
+-- ============================================================
+-- Test 9: Aggregates with filters
+-- ============================================================
+SELECT COUNT(*), SUM(amount), AVG(amount) FROM fdw_fp_data WHERE category = 0;
+ count |    sum    |          avg          
+-------+-----------+-----------------------
+   100 | 277750.00 | 2777.5000000000000000
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM fdw_fp_data WHERE flag = true;
+ min | max  
+-----+------
+   2 | 1000
+(1 row)
+
+SELECT category, COUNT(*) FROM fdw_fp_data GROUP BY category ORDER BY category;
+ category | count 
+----------+-------
+        0 |   100
+        1 |   100
+        2 |   100
+        3 |   100
+        4 |   100
+        5 |   100
+        6 |   100
+        7 |   100
+        8 |   100
+        9 |   100
+(10 rows)
+
+-- ============================================================
+-- Test 10: LIMIT with filters
+-- ============================================================
+SELECT * FROM fdw_fp_data WHERE category = 1 ORDER BY id LIMIT 5;
+ id |  name   | amount | flag | category |            ts            |  col_date  | col_bigint | col_real 
+----+---------+--------+------+----------+--------------------------+------------+------------+----------
+  1 | item_1  |   5.50 | f    |        1 | Mon Jan 01 01:00:00 2024 | 01-02-2024 |       1000 |      0.1
+ 11 | item_11 |  60.50 | f    |        1 | Mon Jan 01 11:00:00 2024 | 01-12-2024 |      11000 |      1.1
+ 21 | item_21 | 115.50 | f    |        1 | Mon Jan 01 21:00:00 2024 | 01-22-2024 |      21000 |      2.1
+ 31 | item_31 | 170.50 | f    |        1 | Tue Jan 02 07:00:00 2024 | 02-01-2024 |      31000 |      3.1
+ 41 | item_41 | 225.50 | f    |        1 | Tue Jan 02 17:00:00 2024 | 02-11-2024 |      41000 |      4.1
+(5 rows)
+
+-- Cleanup
+DROP FOREIGN TABLE fdw_fp_data;
+DROP USER MAPPING FOR gpadmin SERVER fdw_fp_server;
+DROP SERVER fdw_fp_server;

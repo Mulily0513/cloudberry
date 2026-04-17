@@ -1,0 +1,189 @@
+-- 01_vacuum_basic.sql
+-- Test Iceberg VACUUM basic operations
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg VACUUM Basic');
+NOTICE:  [TEST] Feature Test: Iceberg VACUUM Basic
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Catalog and volume
+-- ============================================================
+CREATE SERVER vb_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER vb_catalog_server;
+CREATE FOREIGN CATALOG vb_catalog SERVER vb_catalog_server;
+SET iceberg_default_catalog = 'vb_catalog';
+CREATE SERVER vb_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER vb_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME vb_volume SERVER vb_volume_server OPTIONS(base_path '/vb_volume/');
+SET iceberg_default_volume = 'vb_volume';
+-- ============================================================
+-- Test 1: Create table with multiple separate INSERTs
+-- ============================================================
+SELECT test_log('Test 1: Multiple separate INSERTs to create multiple files');
+NOTICE:  [TEST] Test 1: Multiple separate INSERTs to create multiple files
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE vb_compact (id bigint, val int);
+INSERT INTO vb_compact VALUES (1, 100);
+INSERT INTO vb_compact VALUES (2, 200);
+INSERT INTO vb_compact VALUES (3, 300);
+INSERT INTO vb_compact VALUES (4, 400);
+INSERT INTO vb_compact VALUES (5, 500);
+-- ============================================================
+-- Test 2: Verify data before VACUUM
+-- ============================================================
+SELECT test_log('Test 2: Verify data before VACUUM');
+NOTICE:  [TEST] Test 2: Verify data before VACUUM
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS row_count FROM vb_compact;
+ row_count 
+-----------
+         5
+(1 row)
+
+SELECT SUM(val) AS total_val FROM vb_compact;
+ total_val 
+-----------
+      1500
+(1 row)
+
+-- ============================================================
+-- Test 3: VACUUM the table
+-- ============================================================
+SELECT test_log('Test 3: VACUUM table');
+NOTICE:  [TEST] Test 3: VACUUM table
+ test_log 
+----------
+ 
+(1 row)
+
+SET datalake.iceberg_vacuum_compact_min_input_files = 2;
+VACUUM vb_compact;
+-- ============================================================
+-- Test 4: Verify data integrity after VACUUM
+-- ============================================================
+SELECT test_log('Test 4: Verify data integrity after VACUUM');
+NOTICE:  [TEST] Test 4: Verify data integrity after VACUUM
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS row_count FROM vb_compact;
+ row_count 
+-----------
+         5
+(1 row)
+
+SELECT SUM(val) AS total_val FROM vb_compact;
+ total_val 
+-----------
+      1500
+(1 row)
+
+SELECT * FROM vb_compact ORDER BY id;
+ id | val 
+----+-----
+  1 | 100
+  2 | 200
+  3 | 300
+  4 | 400
+  5 | 500
+(5 rows)
+
+-- ============================================================
+-- Test 5: ANALYZE table
+-- ============================================================
+SELECT test_log('Test 5: ANALYZE table');
+NOTICE:  [TEST] Test 5: ANALYZE table
+ test_log 
+----------
+ 
+(1 row)
+
+ANALYZE vb_compact;
+-- ============================================================
+-- Test 6: Continue INSERT + SELECT after VACUUM
+-- ============================================================
+SELECT test_log('Test 6: INSERT + SELECT after VACUUM');
+NOTICE:  [TEST] Test 6: INSERT + SELECT after VACUUM
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO vb_compact VALUES (6, 600), (7, 700);
+SELECT COUNT(*) AS final_count FROM vb_compact;
+ final_count 
+-------------
+           7
+(1 row)
+
+SELECT SUM(val) AS final_sum FROM vb_compact;
+ final_sum 
+-----------
+      2800
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE vb_compact;
+DROP VOLUME vb_volume;
+DROP USER MAPPING FOR current_user SERVER vb_volume_server;
+DROP SERVER vb_volume_server;
+DROP CATALOG vb_catalog;
+DROP USER MAPPING FOR current_user SERVER vb_catalog_server;
+DROP SERVER vb_catalog_server;

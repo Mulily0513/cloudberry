@@ -1,0 +1,272 @@
+-- 02_temporal_decimal.sql
+-- Test Iceberg temporal and decimal type support
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg Temporal and Decimal Types');
+NOTICE:  [TEST] Feature Test: Iceberg Temporal and Decimal Types
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Catalog and volume
+-- ============================================================
+CREATE SERVER td_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER td_catalog_server;
+CREATE FOREIGN CATALOG td_catalog SERVER td_catalog_server;
+SET iceberg_default_catalog = 'td_catalog';
+CREATE SERVER td_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER td_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME td_volume SERVER td_volume_server OPTIONS(base_path '/td_volume/');
+SET iceberg_default_volume = 'td_volume';
+-- ============================================================
+-- Test 1: date
+-- ============================================================
+SELECT test_log('Test 1: date type');
+NOTICE:  [TEST] Test 1: date type
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_date (id bigint, val date);
+INSERT INTO td_date VALUES (1, '1970-01-01'), (2, '2024-06-15'), (3, '2099-12-31');
+SELECT * FROM td_date ORDER BY id;
+ id |    val     
+----+------------
+  1 | 1970-01-01
+  2 | 2024-06-15
+  3 | 2099-12-31
+(3 rows)
+
+DROP TABLE td_date;
+-- ============================================================
+-- Test 2: timestamp precision
+-- ============================================================
+SELECT test_log('Test 2: timestamp precision');
+NOTICE:  [TEST] Test 2: timestamp precision
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_ts (id bigint, val timestamp);
+INSERT INTO td_ts VALUES
+    (1, '2024-01-01 00:00:00'),
+    (2, '2024-06-15 12:30:45'),
+    (3, '2024-12-31 23:59:59');
+SELECT * FROM td_ts ORDER BY id;
+ id |         val         
+----+---------------------
+  1 | 2024-01-01 00:00:00
+  2 | 2024-06-15 12:30:45
+  3 | 2024-12-31 23:59:59
+(3 rows)
+
+DROP TABLE td_ts;
+-- ============================================================
+-- Test 3: timestamptz timezone handling
+-- ============================================================
+SELECT test_log('Test 3: timestamptz timezone handling');
+NOTICE:  [TEST] Test 3: timestamptz timezone handling
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_tstz (id bigint, val timestamptz);
+INSERT INTO td_tstz VALUES
+    (1, '2024-01-01 00:00:00+00'),
+    (2, '2024-06-15 12:30:45+05:30'),
+    (3, '2024-12-31 23:59:59-08');
+ERROR:  Type Mismatch: data in val is as define OSS protocol not supported data type. in datalake foreign table, but in parquet not define 
+           Type Mapping Supported
+ External Data Type  |  Parquet Data Type 
+ --------------------------------------------------------------------
+ bool                |  boolean
+ int,int2,int4,int8  |  int32, int64
+ date                |  int32
+ float4,float8       |  float,   double
+ interval            |  byteArray
+ time                |  byteArray
+ timestamp           |  int96, int64, int32
+ numeric             |  int96
+ char(n),varchar(n)  |  byteArray,  fixlenbyteArray
+ bytea,text          |  byteArray,  fixlenbyteArray (parquetFileWriter.cpp:745)  (seg0 172.20.0.2:7002 pid=243664) (parquetFileWriter.cpp:745)
+SELECT * FROM td_tstz ORDER BY id;
+ id | val 
+----+-----
+(0 rows)
+
+DROP TABLE td_tstz;
+-- ============================================================
+-- Test 4: decimal various precisions
+-- ============================================================
+SELECT test_log('Test 4: decimal various precisions');
+NOTICE:  [TEST] Test 4: decimal various precisions
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_dec_10_2 (id bigint, val decimal(10,2));
+INSERT INTO td_dec_10_2 VALUES (1, 12345678.99), (2, -12345678.99), (3, 0.01);
+SELECT * FROM td_dec_10_2 ORDER BY id;
+ id |     val      
+----+--------------
+  1 |  12345678.99
+  2 | -12345678.99
+  3 |         0.01
+(3 rows)
+
+DROP TABLE td_dec_10_2;
+CREATE ICEBERG TABLE td_dec_15_4 (id bigint, val decimal(15,4));
+INSERT INTO td_dec_15_4 VALUES (1, 12345678901.1234), (2, -0.0001);
+SELECT * FROM td_dec_15_4 ORDER BY id;
+ id |       val        
+----+------------------
+  1 | 12345678901.1234
+  2 |          -0.0001
+(2 rows)
+
+DROP TABLE td_dec_15_4;
+CREATE ICEBERG TABLE td_dec_38_18 (id bigint, val decimal(38,18));
+INSERT INTO td_dec_38_18 VALUES (1, 12345678901234567890.123456789012345678);
+SELECT * FROM td_dec_38_18 ORDER BY id;
+ id |                   val                   
+----+-----------------------------------------
+  1 | 12345678901234567890.123456789012345678
+(1 row)
+
+DROP TABLE td_dec_38_18;
+-- ============================================================
+-- Test 5: ORDER BY correctness for each type
+-- ============================================================
+SELECT test_log('Test 5: ORDER BY correctness');
+NOTICE:  [TEST] Test 5: ORDER BY correctness
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_order (
+    id bigint, d date, ts timestamp, dec_val decimal(10,2)
+);
+INSERT INTO td_order VALUES
+    (1, '2024-03-15', '2024-03-15 10:00:00', 300.00),
+    (2, '2024-01-01', '2024-01-01 08:00:00', 100.00),
+    (3, '2024-06-30', '2024-06-30 23:59:59', 200.00);
+SELECT id, d FROM td_order ORDER BY d;
+ id |     d      
+----+------------
+  2 | 2024-01-01
+  1 | 2024-03-15
+  3 | 2024-06-30
+(3 rows)
+
+SELECT id, ts FROM td_order ORDER BY ts DESC;
+ id |         ts          
+----+---------------------
+  3 | 2024-06-30 23:59:59
+  1 | 2024-03-15 10:00:00
+  2 | 2024-01-01 08:00:00
+(3 rows)
+
+SELECT id, dec_val FROM td_order ORDER BY dec_val;
+ id | dec_val 
+----+---------
+  2 |  100.00
+  3 |  200.00
+  1 |  300.00
+(3 rows)
+
+DROP TABLE td_order;
+-- ============================================================
+-- Test 6: Aggregates on numeric types
+-- ============================================================
+SELECT test_log('Test 6: Aggregates on numeric types');
+NOTICE:  [TEST] Test 6: Aggregates on numeric types
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE td_agg (id bigint, val_int int, val_big bigint, val_dec decimal(10,2));
+INSERT INTO td_agg VALUES
+    (1, 10, 1000, 10.50),
+    (2, 20, 2000, 20.75),
+    (3, 30, 3000, 30.00),
+    (4, 40, 4000, 40.25),
+    (5, 50, 5000, 50.99);
+SELECT MIN(val_int) AS min_i, MAX(val_int) AS max_i, SUM(val_int) AS sum_i FROM td_agg;
+ min_i | max_i | sum_i 
+-------+-------+-------
+    10 |    50 |   150
+(1 row)
+
+SELECT MIN(val_big) AS min_b, MAX(val_big) AS max_b, SUM(val_big) AS sum_b FROM td_agg;
+ min_b | max_b | sum_b 
+-------+-------+-------
+  1000 |  5000 | 15000
+(1 row)
+
+SELECT MIN(val_dec) AS min_d, MAX(val_dec) AS max_d, SUM(val_dec) AS sum_d FROM td_agg;
+ min_d | max_d | sum_d  
+-------+-------+--------
+ 10.50 | 50.99 | 152.49
+(1 row)
+
+DROP TABLE td_agg;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME td_volume;
+DROP USER MAPPING FOR current_user SERVER td_volume_server;
+DROP SERVER td_volume_server;
+DROP CATALOG td_catalog;
+DROP USER MAPPING FOR current_user SERVER td_catalog_server;
+DROP SERVER td_catalog_server;

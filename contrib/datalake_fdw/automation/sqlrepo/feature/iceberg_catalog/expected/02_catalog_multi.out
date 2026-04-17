@@ -1,0 +1,178 @@
+-- 02_catalog_multi.sql
+-- Test multiple Iceberg catalogs coexisting
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Multiple Iceberg Catalogs');
+NOTICE:  [TEST] Feature Test: Multiple Iceberg Catalogs
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Create two independent catalogs with separate volumes
+-- ============================================================
+SELECT test_log('Setup: Create two catalogs');
+NOTICE:  [TEST] Setup: Create two catalogs
+ test_log 
+----------
+ 
+(1 row)
+
+-- Catalog A
+CREATE SERVER cm_cat_a_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER cm_cat_a_server;
+CREATE FOREIGN CATALOG cm_catalog_a SERVER cm_cat_a_server;
+CREATE SERVER cm_vol_a_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cm_vol_a_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cm_volume_a SERVER cm_vol_a_server OPTIONS(base_path '/cm_vol_a/');
+-- Catalog B
+CREATE SERVER cm_cat_b_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER cm_cat_b_server;
+CREATE FOREIGN CATALOG cm_catalog_b SERVER cm_cat_b_server;
+CREATE SERVER cm_vol_b_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER cm_vol_b_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME cm_volume_b SERVER cm_vol_b_server OPTIONS(base_path '/cm_vol_b/');
+-- ============================================================
+-- Test 1: Create tables in each catalog
+-- ============================================================
+SELECT test_log('Test 1: Create tables in separate catalogs');
+NOTICE:  [TEST] Test 1: Create tables in separate catalogs
+ test_log 
+----------
+ 
+(1 row)
+
+SET iceberg_default_catalog = 'cm_catalog_a';
+SET iceberg_default_volume = 'cm_volume_a';
+CREATE ICEBERG TABLE cm_data_a (id bigint, source text);
+INSERT INTO cm_data_a VALUES (1, 'catalog_a'), (2, 'catalog_a');
+SET iceberg_default_catalog = 'cm_catalog_b';
+SET iceberg_default_volume = 'cm_volume_b';
+CREATE ICEBERG TABLE cm_data_b (id bigint, source text);
+INSERT INTO cm_data_b VALUES (10, 'catalog_b'), (20, 'catalog_b'), (30, 'catalog_b');
+-- ============================================================
+-- Test 2: Verify data isolation between catalogs
+-- ============================================================
+SELECT test_log('Test 2: Verify data isolation');
+NOTICE:  [TEST] Test 2: Verify data isolation
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS catalog_a_rows FROM cm_data_a;
+ catalog_a_rows 
+----------------
+              2
+(1 row)
+
+SELECT COUNT(*) AS catalog_b_rows FROM cm_data_b;
+ catalog_b_rows 
+----------------
+              3
+(1 row)
+
+SELECT * FROM cm_data_a ORDER BY id;
+ id |  source   
+----+-----------
+  1 | catalog_a
+  2 | catalog_a
+(2 rows)
+
+SELECT * FROM cm_data_b ORDER BY id;
+ id |  source   
+----+-----------
+ 10 | catalog_b
+ 20 | catalog_b
+ 30 | catalog_b
+(3 rows)
+
+-- ============================================================
+-- Test 3: Drop one catalog, verify other is unaffected
+-- ============================================================
+SELECT test_log('Test 3: Drop catalog A, verify B unaffected');
+NOTICE:  [TEST] Test 3: Drop catalog A, verify B unaffected
+ test_log 
+----------
+ 
+(1 row)
+
+DROP TABLE cm_data_a;
+DROP VOLUME cm_volume_a;
+DROP USER MAPPING FOR current_user SERVER cm_vol_a_server;
+DROP SERVER cm_vol_a_server;
+DROP CATALOG cm_catalog_a;
+DROP USER MAPPING FOR current_user SERVER cm_cat_a_server;
+DROP SERVER cm_cat_a_server;
+-- Catalog B should still work
+SELECT COUNT(*) AS catalog_b_still_works FROM cm_data_b;
+ catalog_b_still_works 
+-----------------------
+                     3
+(1 row)
+
+SELECT * FROM cm_data_b ORDER BY id;
+ id |  source   
+----+-----------
+ 10 | catalog_b
+ 20 | catalog_b
+ 30 | catalog_b
+(3 rows)
+
+-- ============================================================
+-- Cleanup: Drop catalog B
+-- ============================================================
+DROP TABLE cm_data_b;
+DROP VOLUME cm_volume_b;
+DROP USER MAPPING FOR current_user SERVER cm_vol_b_server;
+DROP SERVER cm_vol_b_server;
+DROP CATALOG cm_catalog_b;
+DROP USER MAPPING FOR current_user SERVER cm_cat_b_server;
+DROP SERVER cm_cat_b_server;

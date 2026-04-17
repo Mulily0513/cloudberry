@@ -1,0 +1,265 @@
+-- 01_create_table.sql
+-- Test Iceberg CREATE TABLE variations
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg CREATE TABLE');
+NOTICE:  [TEST] Feature Test: Iceberg CREATE TABLE
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Catalog and volume
+-- ============================================================
+CREATE SERVER dt_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER dt_catalog_server;
+CREATE FOREIGN CATALOG dt_catalog SERVER dt_catalog_server;
+SET iceberg_default_catalog = 'dt_catalog';
+CREATE SERVER dt_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER dt_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME dt_volume SERVER dt_volume_server OPTIONS(base_path '/dt_volume/');
+SET iceberg_default_volume = 'dt_volume';
+-- ============================================================
+-- Test 1: Basic multi-column table
+-- ============================================================
+SELECT test_log('Test 1: Basic multi-column table');
+NOTICE:  [TEST] Test 1: Basic multi-column table
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_basic (id bigint, name text, val int);
+INSERT INTO dt_basic VALUES (1, 'hello', 10), (2, 'world', 20);
+SELECT * FROM dt_basic ORDER BY id;
+ id | name  | val 
+----+-------+-----
+  1 | hello |  10
+  2 | world |  20
+(2 rows)
+
+DROP TABLE dt_basic;
+-- ============================================================
+-- Test 2: Single-column table
+-- ============================================================
+SELECT test_log('Test 2: Single-column table');
+NOTICE:  [TEST] Test 2: Single-column table
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_single (id bigint);
+INSERT INTO dt_single VALUES (1), (2), (3);
+SELECT COUNT(*) AS cnt FROM dt_single;
+ cnt 
+-----
+   3
+(1 row)
+
+DROP TABLE dt_single;
+-- ============================================================
+-- Test 3: Wide table (22 columns)
+-- ============================================================
+SELECT test_log('Test 3: Wide table with 22 columns');
+NOTICE:  [TEST] Test 3: Wide table with 22 columns
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_wide (
+    c01 bigint, c02 bigint, c03 bigint, c04 bigint, c05 bigint,
+    c06 text, c07 text, c08 text, c09 text, c10 text,
+    c11 int, c12 int, c13 int, c14 int, c15 int,
+    c16 boolean, c17 boolean, c18 boolean,
+    c19 decimal(10,2), c20 decimal(10,2),
+    c21 date, c22 timestamp
+);
+INSERT INTO dt_wide VALUES (
+    1, 2, 3, 4, 5,
+    'a', 'b', 'c', 'd', 'e',
+    10, 20, 30, 40, 50,
+    true, false, true,
+    99.99, 123.45,
+    '2024-01-15', '2024-01-15 10:30:00'
+);
+SELECT c01, c06, c11, c16, c19, c21 FROM dt_wide;
+ c01 | c06 | c11 | c16 |  c19  |    c21     
+-----+-----+-----+-----+-------+------------
+   1 | a   |  10 | t   | 99.99 | 2024-01-15
+(1 row)
+
+DROP TABLE dt_wide;
+-- ============================================================
+-- Test 4: All supported types in one table
+-- ============================================================
+SELECT test_log('Test 4: All supported types');
+NOTICE:  [TEST] Test 4: All supported types
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_alltypes (
+    col_bool boolean,
+    col_small smallint,
+    col_int int,
+    col_big bigint,
+    col_real real,
+    col_double double precision,
+    col_decimal decimal(15,2),
+    col_text text,
+    col_varchar varchar(100),
+    col_date date,
+    col_ts timestamp,
+    col_tstz timestamptz
+);
+INSERT INTO dt_alltypes VALUES (
+    true, 32767, 2147483647, 9223372036854775807,
+    3.14, 2.718281828,
+    12345.67,
+    'hello world', 'varchar value',
+    '2024-06-15', '2024-06-15 12:30:00', '2024-06-15 12:30:00+00'
+);
+ERROR:  Type Mismatch: data in col_tstz is as define OSS protocol not supported data type. in datalake foreign table, but in parquet not define 
+           Type Mapping Supported
+ External Data Type  |  Parquet Data Type 
+ --------------------------------------------------------------------
+ bool                |  boolean
+ int,int2,int4,int8  |  int32, int64
+ date                |  int32
+ float4,float8       |  float,   double
+ interval            |  byteArray
+ time                |  byteArray
+ timestamp           |  int96, int64, int32
+ numeric             |  int96
+ char(n),varchar(n)  |  byteArray,  fixlenbyteArray
+ bytea,text          |  byteArray,  fixlenbyteArray (parquetFileWriter.cpp:745)  (seg2 172.20.0.2:7004 pid=255454) (parquetFileWriter.cpp:745)
+SELECT col_bool, col_small, col_int, col_big FROM dt_alltypes;
+ col_bool | col_small | col_int | col_big 
+----------+-----------+---------+---------
+(0 rows)
+
+SELECT col_real, col_double, col_decimal FROM dt_alltypes;
+ col_real | col_double | col_decimal 
+----------+------------+-------------
+(0 rows)
+
+SELECT col_text, col_varchar FROM dt_alltypes;
+ col_text | col_varchar 
+----------+-------------
+(0 rows)
+
+SELECT col_date, col_ts, col_tstz FROM dt_alltypes;
+ col_date | col_ts | col_tstz 
+----------+--------+----------
+(0 rows)
+
+DROP TABLE dt_alltypes;
+-- ============================================================
+-- Test 5: Drop and recreate same name
+-- ============================================================
+SELECT test_log('Test 5: Drop table, recreate same name');
+NOTICE:  [TEST] Test 5: Drop table, recreate same name
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_reuse (id bigint, val int);
+INSERT INTO dt_reuse VALUES (1, 100);
+DROP TABLE dt_reuse;
+CREATE ICEBERG TABLE dt_reuse (id bigint, val int);
+INSERT INTO dt_reuse VALUES (2, 200), (3, 300);
+SELECT * FROM dt_reuse ORDER BY id;
+ id | val 
+----+-----
+  2 | 200
+  3 | 300
+(2 rows)
+
+DROP TABLE dt_reuse;
+-- ============================================================
+-- Test 6: Multiple tables exist simultaneously
+-- ============================================================
+SELECT test_log('Test 6: Multiple tables simultaneously');
+NOTICE:  [TEST] Test 6: Multiple tables simultaneously
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE dt_multi_1 (id bigint, data text);
+CREATE ICEBERG TABLE dt_multi_2 (id bigint, amount int);
+CREATE ICEBERG TABLE dt_multi_3 (id bigint);
+INSERT INTO dt_multi_1 VALUES (1, 'first');
+INSERT INTO dt_multi_2 VALUES (2, 999);
+INSERT INTO dt_multi_3 VALUES (3);
+SELECT 'dt_multi_1' AS tbl, COUNT(*) FROM dt_multi_1
+UNION ALL
+SELECT 'dt_multi_2', COUNT(*) FROM dt_multi_2
+UNION ALL
+SELECT 'dt_multi_3', COUNT(*) FROM dt_multi_3
+ORDER BY tbl;
+    tbl     | count 
+------------+-------
+ dt_multi_1 |     1
+ dt_multi_2 |     1
+ dt_multi_3 |     1
+(3 rows)
+
+DROP TABLE dt_multi_1;
+DROP TABLE dt_multi_2;
+DROP TABLE dt_multi_3;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME dt_volume;
+DROP USER MAPPING FOR current_user SERVER dt_volume_server;
+DROP SERVER dt_volume_server;
+DROP CATALOG dt_catalog;
+DROP USER MAPPING FOR current_user SERVER dt_catalog_server;
+DROP SERVER dt_catalog_server;

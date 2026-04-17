@@ -1,0 +1,119 @@
+-- Iceberg Delete Filters Test
+-- Purpose: Trigger equality and position delete filter code paths
+-- Target: iceberg_equality_filter.c (0%), iceberg_position_filter.c (24.8%),
+--         pg_iceberg_deletion_queue.c
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+CREATE SERVER df_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER df_catalog_server;
+CREATE FOREIGN CATALOG df_catalog SERVER df_catalog_server;
+SET iceberg_default_catalog = 'df_catalog';
+
+CREATE SERVER df_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER df_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME df_volume SERVER df_volume_server OPTIONS(base_path '/df_volume/');
+SET iceberg_default_volume = 'df_volume';
+
+-- ============================================================
+-- Test 1: Position deletes (DELETE by row position)
+-- ============================================================
+CREATE ICEBERG TABLE df_pos_del (id bigint, name text, val int);
+
+-- Insert enough data across multiple files
+INSERT INTO df_pos_del SELECT i, 'row_' || i, i * 10 FROM generate_series(1, 50) i;
+INSERT INTO df_pos_del SELECT i, 'row_' || i, i * 10 FROM generate_series(51, 100) i;
+
+-- Delete specific rows (creates position delete files)
+DELETE FROM df_pos_del WHERE id = 25;
+DELETE FROM df_pos_del WHERE id = 50;
+DELETE FROM df_pos_del WHERE id = 75;
+
+-- SELECT after delete triggers position filter
+SELECT COUNT(*) FROM df_pos_del;
+SELECT * FROM df_pos_del WHERE id IN (24, 25, 26, 49, 50, 51, 74, 75, 76) ORDER BY id;
+
+-- Delete a range
+DELETE FROM df_pos_del WHERE id BETWEEN 10 AND 20;
+
+-- Read again (more position deletes to filter)
+SELECT COUNT(*) FROM df_pos_del;
+
+-- ============================================================
+-- Test 2: Multiple deletes then read (accumulate delete files)
+-- ============================================================
+CREATE ICEBERG TABLE df_multi_del (id bigint, val text);
+
+INSERT INTO df_multi_del SELECT i, 'v_' || i FROM generate_series(1, 30) i;
+
+-- Multiple delete operations create multiple delete files
+DELETE FROM df_multi_del WHERE id = 1;
+DELETE FROM df_multi_del WHERE id = 5;
+DELETE FROM df_multi_del WHERE id = 10;
+DELETE FROM df_multi_del WHERE id = 15;
+DELETE FROM df_multi_del WHERE id = 20;
+DELETE FROM df_multi_del WHERE id = 25;
+DELETE FROM df_multi_del WHERE id = 30;
+
+SELECT COUNT(*) FROM df_multi_del;
+SELECT * FROM df_multi_del ORDER BY id;
+
+-- ============================================================
+-- Test 3: UPDATE creates delete + insert (position delete for old row)
+-- ============================================================
+CREATE ICEBERG TABLE df_update_del (id bigint, name text);
+
+INSERT INTO df_update_del VALUES (1, 'orig_a'), (2, 'orig_b'), (3, 'orig_c'),
+    (4, 'orig_d'), (5, 'orig_e');
+
+-- UPDATE = position delete of old row + insert of new row
+UPDATE df_update_del SET name = 'updated_a' WHERE id = 1;
+UPDATE df_update_del SET name = 'updated_c' WHERE id = 3;
+UPDATE df_update_del SET name = 'updated_e' WHERE id = 5;
+
+-- Read after updates (filters applied)
+SELECT * FROM df_update_del ORDER BY id;
+
+-- ============================================================
+-- Test 4: DELETE all then verify empty
+-- ============================================================
+CREATE ICEBERG TABLE df_del_all (id bigint);
+INSERT INTO df_del_all SELECT i FROM generate_series(1, 10) i;
+DELETE FROM df_del_all;
+SELECT COUNT(*) FROM df_del_all;
+
+-- ============================================================
+-- Test 5: Interleaved INSERT/DELETE/SELECT
+-- ============================================================
+CREATE ICEBERG TABLE df_interleave (id bigint, val int);
+
+INSERT INTO df_interleave VALUES (1, 100), (2, 200), (3, 300);
+SELECT COUNT(*) FROM df_interleave;
+
+DELETE FROM df_interleave WHERE id = 2;
+SELECT COUNT(*) FROM df_interleave;
+
+INSERT INTO df_interleave VALUES (4, 400), (5, 500);
+SELECT COUNT(*) FROM df_interleave;
+
+DELETE FROM df_interleave WHERE val > 300;
+SELECT * FROM df_interleave ORDER BY id;
+
+-- ============================================================
+-- Cleanup (DROP TABLE triggers deletion_queue)
+-- ============================================================
+DROP TABLE df_pos_del;
+DROP TABLE df_multi_del;
+DROP TABLE df_update_del;
+DROP TABLE df_del_all;
+DROP TABLE df_interleave;
+
+DROP VOLUME df_volume;
+DROP USER MAPPING FOR current_user SERVER df_volume_server;
+DROP SERVER df_volume_server;
+DROP CATALOG df_catalog;
+DROP USER MAPPING FOR current_user SERVER df_catalog_server;
+DROP SERVER df_catalog_server;

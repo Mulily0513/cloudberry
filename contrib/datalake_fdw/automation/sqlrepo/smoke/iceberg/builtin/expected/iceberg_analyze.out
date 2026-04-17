@@ -1,0 +1,50 @@
+-- Iceberg ANALYZE Test
+-- Purpose: Trigger pg_iceberg_am.c analyze/sample_rows paths
+-- Target: pg_iceberg_acquire_sample_rows, pg_iceberg_begin_analyze_scan,
+--         pg_iceberg_analyze_row_processor, pg_iceberg_estimate_rel_size
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE SERVER an_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER an_catalog_server;
+CREATE FOREIGN CATALOG an_catalog SERVER an_catalog_server;
+SET iceberg_default_catalog = 'an_catalog';
+CREATE SERVER an_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER an_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME an_volume SERVER an_volume_server OPTIONS(base_path '/an_volume/');
+SET iceberg_default_volume = 'an_volume';
+-- Create table with enough data for meaningful ANALYZE
+CREATE ICEBERG TABLE an_test (id bigint, name text, val int, category text);
+INSERT INTO an_test SELECT i, 'name_' || i, i * 10, 'cat_' || (i % 5)
+FROM generate_series(1, 200) i;
+-- ANALYZE triggers sample_rows and estimate_rel_size
+ANALYZE an_test;
+-- Verify stats collected
+SELECT reltuples > 0 AS has_stats FROM pg_class WHERE relname = 'an_test';
+ has_stats 
+-----------
+ t
+(1 row)
+
+-- ANALYZE after more inserts
+INSERT INTO an_test SELECT i, 'extra_' || i, i, 'cat_x' FROM generate_series(201, 300) i;
+ANALYZE an_test;
+-- Second ANALYZE after more data
+ANALYZE an_test;
+-- pg_relation_size triggers pg_iceberg_relation_size
+SELECT pg_relation_size('an_test') >= 0 AS size_ok;
+ size_ok 
+---------
+ t
+(1 row)
+
+-- Cleanup
+DROP TABLE an_test;
+DROP VOLUME an_volume;
+DROP USER MAPPING FOR current_user SERVER an_volume_server;
+DROP SERVER an_volume_server;
+DROP CATALOG an_catalog;
+DROP USER MAPPING FOR current_user SERVER an_catalog_server;
+DROP SERVER an_catalog_server;

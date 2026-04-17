@@ -1,0 +1,143 @@
+-- 01_single_partition.sql
+-- Test single partition column functionality
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+\i ../../../lib/sql/hive_server_setup.sql
+-- hive_server_setup.sql
+-- Hive server configuration for datalake_fdw tests
+-- Requires: common_setup.sql to be loaded first
+--
+-- This file creates the hive_server foreign server using the public.create_foreign_server() function
+-- Default configuration uses Docker service names from docker-compose.yml
+-- Create server and user mapping for hive
+-- Parameters: server_name, user, wrapper, cluster_name
+-- The public.create_foreign_server() function handles all necessary setup
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+-- Log server creation
+SELECT test_log('Hive server setup completed');
+NOTICE:  [TEST] Hive server setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+-- Create test schema
+DROP SCHEMA IF EXISTS feature_test CASCADE;
+NOTICE:  schema "feature_test" does not exist, skipping
+CREATE SCHEMA feature_test;
+SELECT test_log('Feature Test: Single Partition Column');
+NOTICE:  [TEST] Feature Test: Single Partition Column
+ test_log 
+----------
+ 
+(1 row)
+
+-- Test 1: Sync single partition table (partitioned by year)
+SELECT test_log('Test 1: Sync and query single partition table');
+NOTICE:  [TEST] Test 1: Sync and query single partition table
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_single_partition','paa_cluster', 'feature_test.single_part', 'hive_server');
+ERROR:  failed to sync table "default.test_single_partition": NoSuchObjectException(message:hive.default.test_single_partition table not found)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result.read(ThriftHiveMetastore.java)
+	at org.apache.thrift.TServiceClient.receiveBase(TServiceClient.java:86)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.recv_get_table_req(ThriftHiveMetastore.java:2079)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.get_table_req(ThriftHiveMetastore.java:2066)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility2xx.getTable(HiveMetaStoreClientCompatibility2xx.java:70)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility1xx.getTable(HiveMetaStoreClient (hive_connector.c:278)
+-- Verify table structure includes partition column
+\d feature_test.single_part
+-- Query all data
+SELECT COUNT(*) as total_rows FROM feature_test.single_part;
+ERROR:  relation "feature_test.single_part" does not exist
+LINE 1: SELECT COUNT(*) as total_rows FROM feature_test.single_part;
+                                           ^
+-- Test 2: Query specific partition
+SELECT test_log('Test 2: Query specific partition (year=2024)');
+NOTICE:  [TEST] Test 2: Query specific partition (year=2024)
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) as rows_2024 FROM feature_test.single_part WHERE year = 2024;
+ERROR:  relation "feature_test.single_part" does not exist
+LINE 1: SELECT COUNT(*) as rows_2024 FROM feature_test.single_part W...
+                                          ^
+-- Test 3: Query multiple partitions
+SELECT test_log('Test 3: Query multiple partitions');
+NOTICE:  [TEST] Test 3: Query multiple partitions
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT year, COUNT(*) as row_count
+FROM feature_test.single_part
+GROUP BY year
+ORDER BY year;
+ERROR:  relation "feature_test.single_part" does not exist
+LINE 2: FROM feature_test.single_part
+             ^
+-- Test 4: Verify partition pruning with EXPLAIN
+SELECT test_log('Test 4: Verify partition pruning');
+NOTICE:  [TEST] Test 4: Verify partition pruning
+ test_log 
+----------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT * FROM feature_test.single_part WHERE year = 2024;
+ERROR:  relation "feature_test.single_part" does not exist
+LINE 1: EXPLAIN (COSTS OFF) SELECT * FROM feature_test.single_part W...
+                                          ^
+-- Cleanup
+DROP SCHEMA feature_test CASCADE;

@@ -1,0 +1,14 @@
+# Test output artifacts (regenerated each run)
+**/results/
+**/output_iso/
+**/regression.diffs
+**/regression.out
+**/tmp_check/
+**/*.tmp
+
+# Reports (timestamped per-run output)
+reports/
+
+# Tools downloaded by install_tools.sh
+tools/bin/
+tools/lib/

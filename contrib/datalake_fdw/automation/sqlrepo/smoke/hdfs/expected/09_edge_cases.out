@@ -1,0 +1,439 @@
+-- Test 09: Edge Cases
+-- Purpose: Test boundary conditions, NULLs, extreme values, and cross-format consistency
+-- Expected time: ~50s
+-- ============================================================
+-- Test 1: Read pre-loaded edge case data (prepared by beeline, ORC)
+-- Covers: empty string vs NULL, zero, extreme ints, decimal precision,
+--         date boundaries, whitespace
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_preload_edge;
+NOTICE:  foreign table "test_preload_edge" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_preload_edge(
+    id int,
+    empty_val text,
+    null_val text,
+    zero_int int,
+    zero_float float8,
+    dec_precise decimal(18,6),
+    date_boundary date,
+    ts_boundary timestamp
+)
+LOCATION('gphdfs://test/basic/edge/preload_orc hdfs_cluster_name=paa_cluster')
+FORMAT 'orc';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT * FROM test_preload_edge ORDER BY id;
+ id | empty_val | null_val | zero_int | zero_float | dec_precise | date_boundary | ts_boundary 
+----+-----------+----------+----------+------------+-------------+---------------+-------------
+(0 rows)
+
+SELECT id,
+       empty_val IS NULL AS empty_is_null,
+       null_val IS NULL AS null_is_null
+FROM test_preload_edge ORDER BY id;
+ id | empty_is_null | null_is_null 
+----+---------------+--------------
+(0 rows)
+
+SELECT COUNT(*) FROM test_preload_edge;
+ count 
+-------
+     0
+(1 row)
+
+DROP EXTERNAL TABLE test_preload_edge;
+-- ============================================================
+-- Test 2: NULL values in all types (parquet write + read)
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_null_write;
+NOTICE:  foreign table "test_null_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_null_write(
+    id int,
+    int_val int,
+    big_val bigint,
+    float_val float8,
+    dec_val decimal(10,2),
+    text_val text,
+    date_val date,
+    ts_val timestamp,
+    bool_val boolean
+)
+LOCATION('gphdfs://test/basic/edge/nulls hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_null_write VALUES (1, 100, 999999, 1.5, 99.99, 'not_null', '2024-01-01', '2024-01-01 12:00:00', true);
+INSERT INTO test_null_write VALUES (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO test_null_write VALUES (3, 0, 0, 0.0, 0.00, '', '1970-01-01', '1970-01-01 00:00:00', false);
+DROP EXTERNAL TABLE test_null_write;
+DROP EXTERNAL TABLE IF EXISTS test_null_read;
+NOTICE:  foreign table "test_null_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_null_read(
+    id int,
+    int_val int,
+    big_val bigint,
+    float_val float8,
+    dec_val decimal(10,2),
+    text_val text,
+    date_val date,
+    ts_val timestamp,
+    bool_val boolean
+)
+LOCATION('gphdfs://test/basic/edge/nulls hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT * FROM test_null_read ORDER BY id;
+ id | int_val | big_val | float_val | dec_val | text_val |  date_val  |          ts_val          | bool_val 
+----+---------+---------+-----------+---------+----------+------------+--------------------------+----------
+  1 |     100 |  999999 |       1.5 |   99.99 | not_null | 01-01-2024 | Mon Jan 01 12:00:00 2024 | t
+  2 |         |         |           |         |          |            |                          | 
+  3 |       0 |       0 |         0 |    0.00 |          | 01-01-1970 | Thu Jan 01 00:00:00 1970 | f
+(3 rows)
+
+SELECT COUNT(*) AS total,
+       COUNT(int_val) AS non_null_int,
+       COUNT(big_val) AS non_null_big,
+       COUNT(float_val) AS non_null_float,
+       COUNT(dec_val) AS non_null_dec,
+       COUNT(text_val) AS non_null_text,
+       COUNT(date_val) AS non_null_date,
+       COUNT(ts_val) AS non_null_ts,
+       COUNT(bool_val) AS non_null_bool
+FROM test_null_read;
+ total | non_null_int | non_null_big | non_null_float | non_null_dec | non_null_text | non_null_date | non_null_ts | non_null_bool 
+-------+--------------+--------------+----------------+--------------+---------------+---------------+-------------+---------------
+     3 |            2 |            2 |              2 |            2 |             2 |             2 |           2 |             2
+(1 row)
+
+DROP EXTERNAL TABLE test_null_read;
+-- ============================================================
+-- Test 3: Extreme integer values (parquet)
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_extreme_write;
+NOTICE:  foreign table "test_extreme_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_extreme_write(
+    id int,
+    small_val smallint,
+    int_val int,
+    big_val bigint
+)
+LOCATION('gphdfs://test/basic/edge/extreme hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_extreme_write VALUES (1, 32767, 2147483647, 9223372036854775807);
+INSERT INTO test_extreme_write VALUES (2, -32768, -2147483648, -9223372036854775808);
+INSERT INTO test_extreme_write VALUES (3, 0, 0, 0);
+INSERT INTO test_extreme_write VALUES (4, 1, 1, 1);
+INSERT INTO test_extreme_write VALUES (5, -1, -1, -1);
+DROP EXTERNAL TABLE test_extreme_write;
+DROP EXTERNAL TABLE IF EXISTS test_extreme_read;
+NOTICE:  foreign table "test_extreme_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_extreme_read(
+    id int,
+    small_val smallint,
+    int_val int,
+    big_val bigint
+)
+LOCATION('gphdfs://test/basic/edge/extreme hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT * FROM test_extreme_read ORDER BY id;
+ id | small_val |   int_val   |       big_val        
+----+-----------+-------------+----------------------
+  1 |     32767 |  2147483647 |  9223372036854775807
+  2 |    -32768 | -2147483648 | -9223372036854775808
+  3 |         0 |           0 |                    0
+  4 |         1 |           1 |                    1
+  5 |        -1 |          -1 |                   -1
+(5 rows)
+
+SELECT MIN(small_val), MAX(small_val) FROM test_extreme_read;
+  min   |  max  
+--------+-------
+ -32768 | 32767
+(1 row)
+
+SELECT MIN(int_val), MAX(int_val) FROM test_extreme_read;
+     min     |    max     
+-------------+------------
+ -2147483648 | 2147483647
+(1 row)
+
+SELECT MIN(big_val), MAX(big_val) FROM test_extreme_read;
+         min          |         max         
+----------------------+---------------------
+ -9223372036854775808 | 9223372036854775807
+(1 row)
+
+DROP EXTERNAL TABLE test_extreme_read;
+-- ============================================================
+-- Test 4: Decimal precision (parquet)
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_decimal_write;
+NOTICE:  foreign table "test_decimal_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_decimal_write(
+    id int,
+    dec5_2 decimal(5,2),
+    dec10_5 decimal(10,5),
+    dec18_6 decimal(18,6)
+)
+LOCATION('gphdfs://test/basic/edge/decimal hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_decimal_write VALUES (1, 123.45, 12345.67890, 123456789012.123456);
+INSERT INTO test_decimal_write VALUES (2, 0.01, 0.00001, 0.000001);
+INSERT INTO test_decimal_write VALUES (3, -999.99, -99999.99999, -999999999999.999999);
+INSERT INTO test_decimal_write VALUES (4, 0.00, 0.00000, 0.000000);
+DROP EXTERNAL TABLE test_decimal_write;
+DROP EXTERNAL TABLE IF EXISTS test_decimal_read;
+NOTICE:  foreign table "test_decimal_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_decimal_read(
+    id int,
+    dec5_2 decimal(5,2),
+    dec10_5 decimal(10,5),
+    dec18_6 decimal(18,6)
+)
+LOCATION('gphdfs://test/basic/edge/decimal hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT * FROM test_decimal_read ORDER BY id;
+ id | dec5_2  |   dec10_5    |       dec18_6        
+----+---------+--------------+----------------------
+  1 |  123.45 |  12345.67890 |  123456789012.123456
+  2 |    0.01 |      0.00001 |             0.000001
+  3 | -999.99 | -99999.99999 | -999999999999.999999
+  4 |    0.00 |      0.00000 |             0.000000
+(4 rows)
+
+SELECT SUM(dec5_2), SUM(dec10_5), SUM(dec18_6) FROM test_decimal_read;
+   sum   |     sum      |         sum          
+---------+--------------+----------------------
+ -876.53 | -87654.32108 | -876543210987.876542
+(1 row)
+
+DROP EXTERNAL TABLE test_decimal_read;
+-- ============================================================
+-- Test 5: Large batch insert (parquet, 1000 rows)
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_large_write;
+NOTICE:  foreign table "test_large_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_large_write(
+    id int,
+    name text,
+    val decimal(10,2)
+)
+LOCATION('gphdfs://test/basic/edge/large hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_large_write
+SELECT i, 'name_' || i, (i * 1.23)::decimal(10,2)
+FROM generate_series(1, 1000) i;
+DROP EXTERNAL TABLE test_large_write;
+DROP EXTERNAL TABLE IF EXISTS test_large_read;
+NOTICE:  foreign table "test_large_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_large_read(
+    id int,
+    name text,
+    val decimal(10,2)
+)
+LOCATION('gphdfs://test/basic/edge/large hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT COUNT(*) FROM test_large_read;
+ count 
+-------
+  1000
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM test_large_read;
+ min | max  
+-----+------
+   1 | 1000
+(1 row)
+
+SELECT COUNT(DISTINCT name) FROM test_large_read;
+ count 
+-------
+  1000
+(1 row)
+
+SELECT SUM(val) FROM test_large_read;
+    sum    
+-----------
+ 615615.00
+(1 row)
+
+DROP EXTERNAL TABLE test_large_read;
+-- ============================================================
+-- Test 6: Cross-format comparison
+-- Write same data in parquet, ORC, text; verify all return same count
+-- ============================================================
+-- Parquet
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_pq_w;
+NOTICE:  foreign table "test_xfmt_pq_w" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_xfmt_pq_w(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/parquet hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_xfmt_pq_w SELECT i, 'test_' || i, i * 1.5 FROM generate_series(1, 20) i;
+DROP EXTERNAL TABLE test_xfmt_pq_w;
+-- ORC
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_orc_w;
+NOTICE:  foreign table "test_xfmt_orc_w" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_xfmt_orc_w(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/orc hdfs_cluster_name=paa_cluster')
+FORMAT 'orc';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_xfmt_orc_w SELECT i, 'test_' || i, i * 1.5 FROM generate_series(1, 20) i;
+DROP EXTERNAL TABLE test_xfmt_orc_w;
+-- Text
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_text_w;
+NOTICE:  foreign table "test_xfmt_text_w" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_xfmt_text_w(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/text hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_xfmt_text_w SELECT i, 'test_' || i, i * 1.5 FROM generate_series(1, 20) i;
+DROP EXTERNAL TABLE test_xfmt_text_w;
+-- Avro
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_avro_w;
+NOTICE:  foreign table "test_xfmt_avro_w" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_xfmt_avro_w(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/avro hdfs_cluster_name=paa_cluster')
+FORMAT 'avro';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_xfmt_avro_w SELECT i, 'test_' || i, i * 1.5 FROM generate_series(1, 20) i;
+DROP EXTERNAL TABLE test_xfmt_avro_w;
+-- Read all and compare counts
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_pq_r;
+NOTICE:  foreign table "test_xfmt_pq_r" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_xfmt_pq_r(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/parquet hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_orc_r;
+NOTICE:  foreign table "test_xfmt_orc_r" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_xfmt_orc_r(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/orc hdfs_cluster_name=paa_cluster')
+FORMAT 'orc';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_text_r;
+NOTICE:  foreign table "test_xfmt_text_r" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_xfmt_text_r(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/text hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+DROP EXTERNAL TABLE IF EXISTS test_xfmt_avro_r;
+NOTICE:  foreign table "test_xfmt_avro_r" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_xfmt_avro_r(id int, name text, val decimal(10,2))
+LOCATION('gphdfs://test/basic/edge/xfmt/avro hdfs_cluster_name=paa_cluster')
+FORMAT 'avro';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT 'parquet' AS format, COUNT(*) FROM test_xfmt_pq_r
+UNION ALL
+SELECT 'orc' AS format, COUNT(*) FROM test_xfmt_orc_r
+UNION ALL
+SELECT 'text' AS format, COUNT(*) FROM test_xfmt_text_r
+UNION ALL
+SELECT 'avro' AS format, COUNT(*) FROM test_xfmt_avro_r
+ORDER BY format;
+ format  | count 
+---------+-------
+ avro    |    20
+ orc     |    20
+ parquet |    20
+ text    |    20
+(4 rows)
+
+-- Verify aggregation consistency across formats
+SELECT 'parquet' AS format, SUM(val) FROM test_xfmt_pq_r
+UNION ALL
+SELECT 'orc' AS format, SUM(val) FROM test_xfmt_orc_r
+UNION ALL
+SELECT 'text' AS format, SUM(val) FROM test_xfmt_text_r
+UNION ALL
+SELECT 'avro' AS format, SUM(val) FROM test_xfmt_avro_r
+ORDER BY format;
+ format  |  sum   
+---------+--------
+ avro    | 315.00
+ orc     | 315.00
+ parquet | 315.00
+ text    | 315.00
+(4 rows)
+
+DROP EXTERNAL TABLE test_xfmt_pq_r;
+DROP EXTERNAL TABLE test_xfmt_orc_r;
+DROP EXTERNAL TABLE test_xfmt_text_r;
+DROP EXTERNAL TABLE test_xfmt_avro_r;
+-- ============================================================
+-- Test 7: WHERE clause and aggregation on HDFS data
+-- ============================================================
+DROP EXTERNAL TABLE IF EXISTS test_filter_write;
+NOTICE:  foreign table "test_filter_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_filter_write(
+    id int,
+    category text,
+    amount decimal(10,2)
+)
+LOCATION('gphdfs://test/basic/edge/filter hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_filter_write
+SELECT i,
+       CASE WHEN i % 3 = 0 THEN 'A' WHEN i % 3 = 1 THEN 'B' ELSE 'C' END,
+       (i * 10.5)::decimal(10,2)
+FROM generate_series(1, 30) i;
+DROP EXTERNAL TABLE test_filter_write;
+DROP EXTERNAL TABLE IF EXISTS test_filter_read;
+NOTICE:  foreign table "test_filter_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_filter_read(
+    id int,
+    category text,
+    amount decimal(10,2)
+)
+LOCATION('gphdfs://test/basic/edge/filter hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+-- Filter tests
+SELECT COUNT(*) FROM test_filter_read WHERE category = 'A';
+ count 
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM test_filter_read WHERE category = 'B';
+ count 
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM test_filter_read WHERE category = 'C';
+ count 
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM test_filter_read WHERE id BETWEEN 10 AND 20;
+ count 
+-------
+    11
+(1 row)
+
+SELECT COUNT(*) FROM test_filter_read WHERE amount > 200.00;
+ count 
+-------
+    11
+(1 row)
+
+-- Aggregation tests
+SELECT category, COUNT(*), SUM(amount), MIN(amount), MAX(amount)
+FROM test_filter_read
+GROUP BY category
+ORDER BY category;
+ category | count |   sum   |  min  |  max   
+----------+-------+---------+-------+--------
+ A        |    10 | 1732.50 | 31.50 | 315.00
+ B        |    10 | 1522.50 | 10.50 | 294.00
+ C        |    10 | 1627.50 | 21.00 | 304.50
+(3 rows)
+
+DROP EXTERNAL TABLE test_filter_read;

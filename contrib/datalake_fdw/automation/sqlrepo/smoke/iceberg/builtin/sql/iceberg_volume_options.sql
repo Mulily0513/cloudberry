@@ -1,0 +1,217 @@
+-- Iceberg Volume Options Test
+-- Purpose: Exercise all option parsing paths in iceberg_volume_option.c
+-- Target: parseIcebergVolumeServerOptions (S3/ABFSS branches),
+--         parseIcebergVolumeUserMappingOptions, parseIcebergForeignVolumeOptions,
+--         buildVolumeBasePath (boundary conditions)
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+
+-- Shared catalog for all tests
+CREATE SERVER volopt_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER volopt_catalog_server;
+CREATE FOREIGN CATALOG volopt_catalog SERVER volopt_catalog_server;
+SET iceberg_default_catalog = 'volopt_catalog';
+
+-- ============================================================
+-- Test 1: s3 volume with basic options (existing pattern)
+-- ============================================================
+CREATE SERVER volopt_s3_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER volopt_s3_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME volopt_s3_vol SERVER volopt_s3_server
+OPTIONS (base_path '/volopt_s3/');
+
+SET iceberg_default_volume = 'volopt_s3_vol';
+CREATE ICEBERG TABLE volopt_test_1 (id bigint, name text);
+INSERT INTO volopt_test_1 VALUES (1, 's3_test');
+SELECT * FROM volopt_test_1;
+DROP TABLE volopt_test_1;
+
+-- ============================================================
+-- Test 2: S3 volume with ALL AWS options (exercises S3-specific branch)
+-- ============================================================
+CREATE SERVER volopt_s3_full_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-2',
+    bucket_name 'warehouse',
+    path_style_access 'true',
+    role_arn 'arn:aws:iam::123456789001:role/test-role',
+    external_id 'test-external-id',
+    user_arn 'arn:aws:iam::123456789001:user/test-user',
+    current_kms_key 'arn:aws:kms:us-east-2:123456789001:key/test-key',
+    allowed_kms_keys 'key1,key2,key3',
+    sts_endpoint 'https://sts.example.com:1234',
+    sts_unavailable 'false',
+    endpoint_internal 'https://s3.internal.example.com:1234'
+);
+CREATE USER MAPPING FOR current_user
+SERVER volopt_s3_full_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME volopt_s3_full_vol SERVER volopt_s3_full_server
+OPTIONS (
+    base_path '/volopt_s3_full/',
+    enable_caching 'true',
+    allow_writes 'true'
+);
+
+SET iceberg_default_volume = 'volopt_s3_full_vol';
+CREATE ICEBERG TABLE volopt_test_2 (id bigint, val text);
+INSERT INTO volopt_test_2 VALUES (1, 's3_full_opts');
+SELECT * FROM volopt_test_2;
+DROP TABLE volopt_test_2;
+
+-- ============================================================
+-- Test 3: Volume with path_style_access=false (virtual-host path)
+-- ============================================================
+CREATE SERVER volopt_vhost_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'false'
+);
+CREATE USER MAPPING FOR current_user
+SERVER volopt_vhost_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME volopt_vhost_vol SERVER volopt_vhost_server
+OPTIONS (base_path '/volopt_vhost/');
+
+-- We just test that creation succeeds; actual I/O may fail with virtual-host
+-- depending on MinIO config, so we just verify the DDL path
+SELECT 'volopt_vhost_vol created' AS status;
+
+-- ============================================================
+-- Test 4: Volume with various base_path edge cases (buildVolumeBasePath)
+-- ============================================================
+
+-- base_path with multiple leading slashes
+CREATE SERVER volopt_bp_server_1
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER volopt_bp_server_1
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME volopt_bp_multi_slash SERVER volopt_bp_server_1
+OPTIONS (base_path '///multi/slash/path/');
+
+SET iceberg_default_volume = 'volopt_bp_multi_slash';
+CREATE ICEBERG TABLE volopt_test_bp1 (id bigint);
+INSERT INTO volopt_test_bp1 VALUES (1);
+SELECT COUNT(*) FROM volopt_test_bp1;
+DROP TABLE volopt_test_bp1;
+
+-- base_path without trailing slash
+CREATE FOREIGN VOLUME volopt_bp_no_trail SERVER volopt_bp_server_1
+OPTIONS (base_path '/no_trailing');
+
+SET iceberg_default_volume = 'volopt_bp_no_trail';
+CREATE ICEBERG TABLE volopt_test_bp2 (id bigint);
+INSERT INTO volopt_test_bp2 VALUES (1);
+SELECT COUNT(*) FROM volopt_test_bp2;
+DROP TABLE volopt_test_bp2;
+
+-- ============================================================
+-- Test 5: Volume with username in user mapping (HDFS-style)
+-- ============================================================
+CREATE SERVER volopt_username_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER volopt_username_server
+OPTIONS (
+    username 'gpadmin',
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME volopt_username_vol SERVER volopt_username_server
+OPTIONS (base_path '/volopt_username/');
+
+SELECT 'volume with username created' AS status;
+
+-- ============================================================
+-- Test 6: Multiple volumes and switching (iceberg_default_volume GUC)
+-- ============================================================
+SET iceberg_default_volume = 'volopt_s3_vol';
+CREATE ICEBERG TABLE volopt_switch_a (id bigint);
+INSERT INTO volopt_switch_a VALUES (10);
+
+SET iceberg_default_volume = 'volopt_s3_full_vol';
+CREATE ICEBERG TABLE volopt_switch_b (id bigint);
+INSERT INTO volopt_switch_b VALUES (20);
+
+-- Switch back and verify
+SET iceberg_default_volume = 'volopt_s3_vol';
+SELECT * FROM volopt_switch_a;
+
+SET iceberg_default_volume = 'volopt_s3_full_vol';
+SELECT * FROM volopt_switch_b;
+
+DROP TABLE volopt_switch_a;
+DROP TABLE volopt_switch_b;
+
+-- ============================================================
+-- Test 7: DROP VOLUME / DROP VOLUME IF EXISTS
+-- ============================================================
+DROP VOLUME IF EXISTS volopt_nonexistent_volume;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME volopt_username_vol;
+DROP USER MAPPING FOR current_user SERVER volopt_username_server;
+DROP SERVER volopt_username_server;
+
+DROP VOLUME volopt_bp_no_trail;
+DROP VOLUME volopt_bp_multi_slash;
+DROP USER MAPPING FOR current_user SERVER volopt_bp_server_1;
+DROP SERVER volopt_bp_server_1;
+
+DROP VOLUME volopt_vhost_vol;
+DROP USER MAPPING FOR current_user SERVER volopt_vhost_server;
+DROP SERVER volopt_vhost_server;
+
+DROP VOLUME volopt_s3_full_vol;
+DROP USER MAPPING FOR current_user SERVER volopt_s3_full_server;
+DROP SERVER volopt_s3_full_server;
+
+DROP VOLUME volopt_s3_vol;
+DROP USER MAPPING FOR current_user SERVER volopt_s3_server;
+DROP SERVER volopt_s3_server;
+
+DROP CATALOG volopt_catalog;
+DROP USER MAPPING FOR current_user SERVER volopt_catalog_server;
+DROP SERVER volopt_catalog_server;

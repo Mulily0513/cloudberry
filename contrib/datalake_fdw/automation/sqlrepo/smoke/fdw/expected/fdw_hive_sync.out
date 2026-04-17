@@ -1,0 +1,331 @@
+-- FDW Hive Sync Test
+-- Purpose: Exercise sync_hive_table path (dlproxy, grammar_convert, partition_selector)
+-- Target: datalake_fdw.c (FDW planner/scan), dlproxy/protocol.c, dlproxy/hive.c,
+--         dlproxy/filters.c, grammar_convert.c, partition_selector.c, datalake_option.c,
+--         datalake_fragment.c
+-- Setup
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+-- ============================================================
+-- Test 1: Sync Parquet table from Hive
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_parquet;
+NOTICE:  foreign table "fdw_hive_parquet" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_parquet', 'paa_cluster', 'fdw_hive_parquet', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_parquet ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_parquet;
+ count 
+-------
+     3
+(1 row)
+
+-- Filter pushdown tests on Hive foreign table
+SELECT * FROM fdw_hive_parquet WHERE id = 2;
+ id | name | val  
+----+------+------
+  2 | bob  | 20.5
+(1 row)
+
+SELECT * FROM fdw_hive_parquet WHERE id > 1 ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(2 rows)
+
+SELECT * FROM fdw_hive_parquet WHERE name = 'alice';
+ id | name  | val  
+----+-------+------
+  1 | alice | 10.5
+(1 row)
+
+-- EXPLAIN to verify FDW scan
+EXPLAIN (COSTS OFF) SELECT * FROM fdw_hive_parquet WHERE id = 1;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Foreign Scan on fdw_hive_parquet
+         Filter: (id = 1)
+ Optimizer: GPORCA
+(4 rows)
+
+-- ANALYZE on foreign table
+ANALYZE fdw_hive_parquet;
+DROP FOREIGN TABLE fdw_hive_parquet;
+-- ============================================================
+-- Test 2: Sync ORC table from Hive
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_orc;
+NOTICE:  foreign table "fdw_hive_orc" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_orc', 'paa_cluster', 'fdw_hive_orc', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_orc ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_orc;
+ count 
+-------
+     3
+(1 row)
+
+SELECT * FROM fdw_hive_orc WHERE id >= 2 ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(2 rows)
+
+DROP FOREIGN TABLE fdw_hive_orc;
+-- ============================================================
+-- Test 3: Sync Text table from Hive
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_text;
+NOTICE:  foreign table "fdw_hive_text" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_text', 'paa_cluster', 'fdw_hive_text', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_text ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_text;
+ count 
+-------
+     3
+(1 row)
+
+DROP FOREIGN TABLE fdw_hive_text;
+-- ============================================================
+-- Test 4: Sync Text table with new text path enabled
+-- ============================================================
+SET datalake.external_table_new_text = on;
+DROP FOREIGN TABLE IF EXISTS fdw_hive_text_new;
+NOTICE:  foreign table "fdw_hive_text_new" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_text', 'paa_cluster', 'fdw_hive_text_new', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_text_new ORDER BY id;
+ id |  name   | val  
+----+---------+------
+  1 | alice   | 10.5
+  2 | bob     | 20.5
+  3 | charlie | 30.5
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_text_new;
+ count 
+-------
+     3
+(1 row)
+
+DROP FOREIGN TABLE fdw_hive_text_new;
+SET datalake.external_table_new_text = off;
+-- ============================================================
+-- Test 5: Sync Partitioned table (exercises partition_selector)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_part;
+NOTICE:  foreign table "fdw_hive_part" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_partitioned', 'paa_cluster', 'fdw_hive_part', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- Full scan
+SELECT * FROM fdw_hive_part ORDER BY id;
+ id | name | category 
+----+------+----------
+  1 | a1   | A
+  2 | a2   | A
+  3 | b1   | B
+  4 | b2   | B
+  5 | c1   | C
+(5 rows)
+
+SELECT COUNT(*) FROM fdw_hive_part;
+ count 
+-------
+     5
+(1 row)
+
+-- Partition filter
+SELECT * FROM fdw_hive_part WHERE category = 'A' ORDER BY id;
+ id | name | category 
+----+------+----------
+  1 | a1   | A
+  2 | a2   | A
+(2 rows)
+
+SELECT * FROM fdw_hive_part WHERE category = 'B' ORDER BY id;
+ id | name | category 
+----+------+----------
+  3 | b1   | B
+  4 | b2   | B
+(2 rows)
+
+SELECT COUNT(*) FROM fdw_hive_part WHERE category = 'A';
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM fdw_hive_part WHERE category IN ('A', 'C');
+ count 
+-------
+     3
+(1 row)
+
+-- Non-partition filter
+SELECT * FROM fdw_hive_part WHERE id > 3 ORDER BY id;
+ id | name | category 
+----+------+----------
+  4 | b2   | B
+  5 | c1   | C
+(2 rows)
+
+-- Combined partition + non-partition filter
+SELECT * FROM fdw_hive_part WHERE category = 'A' AND id = 1;
+ id | name | category 
+----+------+----------
+  1 | a1   | A
+(1 row)
+
+DROP FOREIGN TABLE fdw_hive_part;
+-- ============================================================
+-- Test 6: Sync Avro table
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_avro;
+NOTICE:  foreign table "fdw_hive_avro" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_avro', 'paa_cluster', 'fdw_hive_avro', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM fdw_hive_avro ORDER BY id;
+ id | name  
+----+-------
+  1 | avro1
+  2 | avro2
+  3 | avro3
+(3 rows)
+
+SELECT COUNT(*) FROM fdw_hive_avro;
+ count 
+-------
+     3
+(1 row)
+
+DROP FOREIGN TABLE fdw_hive_avro;
+-- ============================================================
+-- Test 7: GUC tests on FDW tables
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS fdw_hive_guc;
+NOTICE:  foreign table "fdw_hive_guc" does not exist, skipping
+SELECT public.sync_hive_table('hive_cluster', 'fdw_coverage_test', 'test_parquet', 'paa_cluster', 'fdw_hive_guc', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- Debug mode
+SET datalake.external_table_debug = on;
+SELECT COUNT(*) FROM fdw_hive_guc;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_debug = off;
+-- Disable cache
+SET datalake.disable_cache_file = on;
+SELECT COUNT(*) FROM fdw_hive_guc;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.disable_cache_file = off;
+-- Disable filter pushdown
+SET datalake.disable_filter_pushdown = on;
+SELECT * FROM fdw_hive_guc WHERE id = 1;
+ id | name  | val  
+----+-------+------
+  1 | alice | 10.5
+(1 row)
+
+SET datalake.disable_filter_pushdown = off;
+-- Limit segments
+SET datalake.external_table_limit_segment_num = 1;
+SELECT COUNT(*) FROM fdw_hive_guc;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_limit_segment_num = 0;
+-- Enable list in master
+SET datalake.enable_list_in_master = on;
+SELECT COUNT(*) FROM fdw_hive_guc;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.enable_list_in_master = off;
+-- Ignore hidden files
+SET datalake.external_table_ignore_hidden_file = on;
+SELECT COUNT(*) FROM fdw_hive_guc;
+ count 
+-------
+     3
+(1 row)
+
+SET datalake.external_table_ignore_hidden_file = off;
+DROP FOREIGN TABLE fdw_hive_guc;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP USER MAPPING IF EXISTS FOR gpadmin SERVER hive_server;
+DROP SERVER IF EXISTS hive_server;

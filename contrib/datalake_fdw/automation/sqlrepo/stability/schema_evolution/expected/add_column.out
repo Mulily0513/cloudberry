@@ -1,0 +1,96 @@
+-- add_column.sql
+-- ALTER TABLE ADD COLUMN on a populated Iceberg table. Verify:
+--   1. Existing rows expose NULL (or the DEFAULT) for the new column.
+--   2. New rows can populate the new column normally.
+--   3. Snapshot ids advance but table stays queryable throughout.
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+DROP SERVER IF EXISTS ev_cat_srv CASCADE;
+NOTICE:  server "ev_cat_srv" does not exist, skipping
+CREATE SERVER ev_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER ev_cat_srv;
+CREATE FOREIGN CATALOG ev_cat SERVER ev_cat_srv;
+SET iceberg_default_catalog = 'ev_cat';
+DROP SERVER IF EXISTS ev_vol_srv CASCADE;
+NOTICE:  server "ev_vol_srv" does not exist, skipping
+CREATE SERVER ev_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER ev_vol_srv
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME ev_vol SERVER ev_vol_srv OPTIONS (base_path '/ev_add/');
+SET iceberg_default_volume = 'ev_vol';
+CREATE ICEBERG TABLE evo_add (id int, val numeric(10,2));
+INSERT INTO evo_add SELECT g, g * 1.5 FROM generate_series(1, 20) AS g;
+-- ADD COLUMN (nullable, no default)
+ALTER TABLE evo_add ADD COLUMN note text;
+-- Existing rows should see NULL for the new column
+SELECT count(*) AS rows_with_null_note FROM evo_add WHERE note IS NULL;
+ rows_with_null_note 
+---------------------
+                  20
+(1 row)
+
+-- New inserts can populate all three columns
+INSERT INTO evo_add VALUES (21, 21.5, 'new row 21'), (22, 22.5, 'new row 22');
+SELECT count(*) AS total, count(note) AS non_null_notes FROM evo_add;
+ total | non_null_notes 
+-------+----------------
+    22 |              2
+(1 row)
+
+-- Query subset with the new column
+SELECT id, note FROM evo_add WHERE id >= 20 ORDER BY id;
+ id |    note    
+----+------------
+ 20 | 
+ 21 | new row 21
+ 22 | new row 22
+(3 rows)
+
+-- Cleanup
+DROP TABLE evo_add;
+DROP VOLUME ev_vol;
+DROP USER MAPPING FOR current_user SERVER ev_vol_srv;
+DROP SERVER ev_vol_srv;
+DROP CATALOG ev_cat;
+DROP USER MAPPING FOR current_user SERVER ev_cat_srv;
+DROP SERVER ev_cat_srv;

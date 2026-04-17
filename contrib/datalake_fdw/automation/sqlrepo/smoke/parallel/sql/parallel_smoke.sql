@@ -1,0 +1,177 @@
+-- Parallel / Multi-Segment Smoke Test
+-- Purpose: Verify data consistency when using segment limits and parallel reads
+-- Tests: datalake.external_table_limit_segment_num GUC, data integrity checks
+
+-- Clean up previous run leftovers
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+
+-- Common setup (inline to avoid \i path issues with pg_regress)
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SET datestyle = ISO, MDY;
+
+-- ============================================================
+-- Setup: Iceberg builtin catalog + S3 volume
+-- ============================================================
+CREATE SERVER par_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER par_catalog_server;
+CREATE FOREIGN CATALOG par_catalog SERVER par_catalog_server;
+SET iceberg_default_catalog = 'par_catalog';
+
+CREATE SERVER par_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER par_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME par_volume SERVER par_volume_server OPTIONS(base_path '/parallel_volume/');
+SET iceberg_default_volume = 'par_volume';
+
+-- ============================================================
+-- Create test data with enough rows to distribute across segments
+-- ============================================================
+CREATE ICEBERG TABLE par_test (
+    id bigint,
+    name text,
+    val int);
+
+-- Insert 100 rows
+INSERT INTO par_test
+SELECT i, 'row_' || i, i * 10
+FROM generate_series(1, 100) i;
+
+-- Baseline: count and sum with default settings
+SELECT COUNT(*) AS baseline_count FROM par_test;
+SELECT SUM(val) AS baseline_sum FROM par_test;
+
+-- ============================================================
+-- Test 1: Limit to 1 segment
+-- ============================================================
+SET datalake.external_table_limit_segment_num = 1;
+
+SELECT COUNT(*) AS seg1_count FROM par_test;
+SELECT SUM(val) AS seg1_sum FROM par_test;
+
+-- ============================================================
+-- Test 2: Limit to 2 segments
+-- ============================================================
+SET datalake.external_table_limit_segment_num = 2;
+
+SELECT COUNT(*) AS seg2_count FROM par_test;
+SELECT SUM(val) AS seg2_sum FROM par_test;
+
+-- ============================================================
+-- Test 3: Reset to no limit (all segments)
+-- ============================================================
+SET datalake.external_table_limit_segment_num = 0;
+
+SELECT COUNT(*) AS all_seg_count FROM par_test;
+SELECT SUM(val) AS all_seg_sum FROM par_test;
+
+-- ============================================================
+-- Test 4: Segment limit with filters
+-- ============================================================
+SET datalake.external_table_limit_segment_num = 1;
+
+SELECT COUNT(*) FROM par_test WHERE id <= 50;
+SELECT COUNT(*) FROM par_test WHERE id > 50;
+
+-- Sum should match: first half + second half = total
+SELECT SUM(val) AS first_half FROM par_test WHERE id <= 50;
+SELECT SUM(val) AS second_half FROM par_test WHERE id > 50;
+
+SET datalake.external_table_limit_segment_num = 0;
+
+-- ============================================================
+-- Test 5: Segment limit with aggregation and GROUP BY
+-- ============================================================
+SET datalake.external_table_limit_segment_num = 1;
+
+SELECT
+    CASE WHEN id <= 25 THEN 'Q1'
+         WHEN id <= 50 THEN 'Q2'
+         WHEN id <= 75 THEN 'Q3'
+         ELSE 'Q4'
+    END AS quarter,
+    COUNT(*) AS cnt,
+    SUM(val) AS total
+FROM par_test
+GROUP BY quarter
+ORDER BY quarter;
+
+SET datalake.external_table_limit_segment_num = 0;
+
+-- ============================================================
+-- Test 6: HDFS external table with segment limit
+-- ============================================================
+-- HDFS server needed for gphdfs:// paa_cluster resolution
+CREATE SERVER par_hdfs_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (
+        protocol 'hdfs',
+        hdfs_namenodes 'lakehouse',
+        hdfs_port '8020',
+        hdfs_auth_method 'simple',
+        hadoop_rpc_protection 'authentication'
+    );
+CREATE USER MAPPING FOR gpadmin
+    SERVER par_hdfs_server
+    OPTIONS (user 'gpadmin');
+
+DROP EXTERNAL TABLE IF EXISTS par_hdfs_write;
+CREATE WRITABLE EXTERNAL TABLE par_hdfs_write(id int, val int)
+LOCATION('gphdfs://test/parallel/data hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+
+INSERT INTO par_hdfs_write SELECT i, i * 5 FROM generate_series(1, 50) i;
+DROP EXTERNAL TABLE IF EXISTS par_hdfs_write;
+
+DROP EXTERNAL TABLE IF EXISTS par_hdfs_read;
+CREATE READABLE EXTERNAL TABLE par_hdfs_read(id int, val int)
+LOCATION('gphdfs://test/parallel/data hdfs_cluster_name=paa_cluster')
+FORMAT 'parquet';
+
+-- Default: all segments
+SELECT COUNT(*) AS hdfs_default FROM par_hdfs_read;
+
+-- Limited segments
+SET datalake.external_table_limit_segment_num = 1;
+SELECT COUNT(*) AS hdfs_1seg FROM par_hdfs_read;
+
+SET datalake.external_table_limit_segment_num = 0;
+DROP EXTERNAL TABLE IF EXISTS par_hdfs_read;
+
+-- ============================================================
+-- Test 7: enable_list_in_master effect
+-- ============================================================
+SET datalake.enable_list_in_master = on;
+SELECT COUNT(*) AS master_list_count FROM par_test;
+
+SET datalake.enable_list_in_master = off;
+SELECT COUNT(*) AS all_list_count FROM par_test;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE IF EXISTS par_test;
+DROP VOLUME IF EXISTS par_volume;
+DROP USER MAPPING IF EXISTS FOR current_user SERVER par_volume_server;
+DROP SERVER IF EXISTS par_volume_server;
+DROP CATALOG IF EXISTS par_catalog;
+DROP USER MAPPING IF EXISTS FOR current_user SERVER par_catalog_server;
+DROP SERVER IF EXISTS par_catalog_server;
+DROP USER MAPPING IF EXISTS FOR gpadmin SERVER par_hdfs_server;
+DROP SERVER IF EXISTS par_hdfs_server;

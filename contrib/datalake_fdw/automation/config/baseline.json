@@ -1,0 +1,9 @@
+{
+  "version": "2.0",
+  "description": "Performance baselines for datalake_fdw. Keys are <test_name>.<operation> pairs as emitted by perf_run_iterations into perf_results_summary. compare_baseline.sh reads this and flags any current p50_ms exceeding (baseline.p50_ms * (1 + tolerance_pct/100)).",
+  "last_updated": "2026-04-15",
+  "tolerance_default_pct": 20,
+  "baselines": {
+    "_comment": "Empty baselines = first-run mode. compare_baseline.sh will write baseline_suggested.json into the report dir. Move suggested values here after manually reviewing them."
+  }
+}

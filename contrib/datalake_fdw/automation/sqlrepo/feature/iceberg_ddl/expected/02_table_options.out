@@ -1,0 +1,177 @@
+-- 02_table_options.sql
+-- Test Iceberg CREATE TABLE with various OPTIONS
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg Table Options');
+NOTICE:  [TEST] Feature Test: Iceberg Table Options
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Catalog and volume
+-- ============================================================
+CREATE SERVER do_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER do_catalog_server;
+CREATE FOREIGN CATALOG do_catalog SERVER do_catalog_server;
+SET iceberg_default_catalog = 'do_catalog';
+CREATE SERVER do_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER do_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME do_volume SERVER do_volume_server OPTIONS(base_path '/do_volume/');
+SET iceberg_default_volume = 'do_volume';
+-- ============================================================
+-- Test 1: namespace and table_name options
+-- ============================================================
+SELECT test_log('Test 1: OPTIONS namespace and table_name');
+NOTICE:  [TEST] Test 1: OPTIONS namespace and table_name
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE do_named (id bigint, val text)
+OPTIONS (namespace 'test_ddl_ns', table_name 'ext_name');
+INSERT INTO do_named VALUES (1, 'named_test');
+SELECT * FROM do_named;
+ id |    val     
+----+------------
+  1 | named_test
+(1 row)
+
+DROP TABLE do_named;
+-- ============================================================
+-- Test 2: base_location option
+-- ============================================================
+SELECT test_log('Test 2: OPTIONS base_location');
+NOTICE:  [TEST] Test 2: OPTIONS base_location
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE do_located (id bigint, val int)
+OPTIONS (base_location '/custom/loc/');
+INSERT INTO do_located VALUES (1, 100);
+SELECT * FROM do_located;
+ id | val 
+----+-----
+  1 | 100
+(1 row)
+
+DROP TABLE do_located;
+-- ============================================================
+-- Test 3: CREATE ICEBERG TABLE IF NOT EXISTS
+-- ============================================================
+SELECT test_log('Test 3: CREATE TABLE IF NOT EXISTS');
+NOTICE:  [TEST] Test 3: CREATE TABLE IF NOT EXISTS
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE do_ifne (id bigint, name text);
+INSERT INTO do_ifne VALUES (1, 'original');
+-- Try to create again with different schema -- should keep original
+CREATE ICEBERG TABLE IF NOT EXISTS do_ifne (id bigint, name text, extra int);
+NOTICE:  relation "do_ifne" already exists, skipping
+SELECT * FROM do_ifne ORDER BY id;
+ id |   name   
+----+----------
+  1 | original
+(1 row)
+
+DROP TABLE do_ifne;
+-- ============================================================
+-- Test 4: DROP TABLE IF EXISTS on non-existent table
+-- ============================================================
+SELECT test_log('Test 4: DROP TABLE IF EXISTS on non-existent');
+NOTICE:  [TEST] Test 4: DROP TABLE IF EXISTS on non-existent
+ test_log 
+----------
+ 
+(1 row)
+
+DROP TABLE IF EXISTS do_never_created;
+NOTICE:  table "do_never_created" does not exist, skipping
+-- ============================================================
+-- Test 5: Drop and immediately recreate
+-- ============================================================
+SELECT test_log('Test 5: Drop and immediately recreate');
+NOTICE:  [TEST] Test 5: Drop and immediately recreate
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE do_quick (id bigint, val int);
+INSERT INTO do_quick VALUES (1, 10);
+SELECT COUNT(*) AS before_drop FROM do_quick;
+ before_drop 
+-------------
+           1
+(1 row)
+
+DROP TABLE do_quick;
+CREATE ICEBERG TABLE do_quick (id bigint, val int);
+INSERT INTO do_quick VALUES (2, 20), (3, 30);
+SELECT * FROM do_quick ORDER BY id;
+ id | val 
+----+-----
+  2 |  20
+  3 |  30
+(2 rows)
+
+DROP TABLE do_quick;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME do_volume;
+DROP USER MAPPING FOR current_user SERVER do_volume_server;
+DROP SERVER do_volume_server;
+DROP CATALOG do_catalog;
+DROP USER MAPPING FOR current_user SERVER do_catalog_server;
+DROP SERVER do_catalog_server;

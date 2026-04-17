@@ -1,0 +1,276 @@
+-- 01_insert_select.sql
+-- Test Iceberg INSERT and SELECT operations
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg INSERT and SELECT');
+NOTICE:  [TEST] Feature Test: Iceberg INSERT and SELECT
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Catalog and volume
+-- ============================================================
+CREATE SERVER is_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER is_catalog_server;
+CREATE FOREIGN CATALOG is_catalog SERVER is_catalog_server;
+SET iceberg_default_catalog = 'is_catalog';
+CREATE SERVER is_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER is_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME is_volume SERVER is_volume_server OPTIONS(base_path '/is_volume/');
+SET iceberg_default_volume = 'is_volume';
+CREATE ICEBERG TABLE is_data (id bigint, name text, amount decimal(10,2), flag boolean);
+-- ============================================================
+-- Test 1: Single-row INSERT + SELECT
+-- ============================================================
+SELECT test_log('Test 1: Single-row INSERT + SELECT');
+NOTICE:  [TEST] Test 1: Single-row INSERT + SELECT
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO is_data VALUES (1, 'alice', 100.50, true);
+SELECT * FROM is_data ORDER BY id;
+ id | name  | amount | flag 
+----+-------+--------+------
+  1 | alice | 100.50 | t
+(1 row)
+
+-- ============================================================
+-- Test 2: Multi-row INSERT (VALUES list)
+-- ============================================================
+SELECT test_log('Test 2: Multi-row INSERT');
+NOTICE:  [TEST] Test 2: Multi-row INSERT
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO is_data VALUES
+    (2, 'bob', 200.75, false),
+    (3, 'carol', 300.00, true),
+    (4, 'dave', 150.25, false),
+    (5, 'eve', 500.99, true),
+    (6, 'frank', 75.00, true);
+SELECT COUNT(*) AS total_rows FROM is_data;
+ total_rows 
+------------
+          6
+(1 row)
+
+-- ============================================================
+-- Test 3: Bulk INSERT with generate_series
+-- ============================================================
+SELECT test_log('Test 3: Bulk INSERT (1000 rows)');
+NOTICE:  [TEST] Test 3: Bulk INSERT (1000 rows)
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE is_bulk (id bigint, val int);
+INSERT INTO is_bulk SELECT g, g * 10 FROM generate_series(1, 1000) g;
+SELECT COUNT(*) AS bulk_count FROM is_bulk;
+ bulk_count 
+------------
+       1000
+(1 row)
+
+-- ============================================================
+-- Test 4: INSERT with NULL values
+-- ============================================================
+SELECT test_log('Test 4: INSERT with NULL values');
+NOTICE:  [TEST] Test 4: INSERT with NULL values
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO is_data VALUES (7, NULL, NULL, NULL);
+INSERT INTO is_data VALUES (8, 'grace', NULL, true);
+SELECT id, name, amount, flag FROM is_data WHERE id >= 7 ORDER BY id;
+ id | name  | amount | flag 
+----+-------+--------+------
+  7 |       |        | 
+  8 | grace |        | t
+(2 rows)
+
+-- ============================================================
+-- Test 5: SELECT WHERE conditions
+-- ============================================================
+SELECT test_log('Test 5: SELECT WHERE conditions');
+NOTICE:  [TEST] Test 5: SELECT WHERE conditions
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id, name, amount FROM is_data WHERE flag = true ORDER BY id;
+ id | name  | amount 
+----+-------+--------
+  1 | alice | 100.50
+  3 | carol | 300.00
+  5 | eve   | 500.99
+  6 | frank |  75.00
+  8 | grace |       
+(5 rows)
+
+SELECT id, name FROM is_data WHERE amount > 200.00 ORDER BY id;
+ id | name  
+----+-------
+  2 | bob
+  3 | carol
+  5 | eve
+(3 rows)
+
+SELECT id, name FROM is_data WHERE name IS NOT NULL AND amount IS NOT NULL ORDER BY id;
+ id | name  
+----+-------
+  1 | alice
+  2 | bob
+  3 | carol
+  4 | dave
+  5 | eve
+  6 | frank
+(6 rows)
+
+-- ============================================================
+-- Test 6: SELECT ORDER BY + LIMIT
+-- ============================================================
+SELECT test_log('Test 6: SELECT ORDER BY + LIMIT');
+NOTICE:  [TEST] Test 6: SELECT ORDER BY + LIMIT
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT id, name, amount FROM is_data ORDER BY amount DESC NULLS LAST LIMIT 3;
+ id | name  | amount 
+----+-------+--------
+  5 | eve   | 500.99
+  3 | carol | 300.00
+  2 | bob   | 200.75
+(3 rows)
+
+SELECT id, val FROM is_bulk ORDER BY id LIMIT 5;
+ id | val 
+----+-----
+  1 |  10
+  2 |  20
+  3 |  30
+  4 |  40
+  5 |  50
+(5 rows)
+
+SELECT id, val FROM is_bulk ORDER BY id DESC LIMIT 5;
+  id  |  val  
+------+-------
+ 1000 | 10000
+  999 |  9990
+  998 |  9980
+  997 |  9970
+  996 |  9960
+(5 rows)
+
+-- ============================================================
+-- Test 7: Aggregates
+-- ============================================================
+SELECT test_log('Test 7: Aggregate functions');
+NOTICE:  [TEST] Test 7: Aggregate functions
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS cnt,
+       SUM(amount) AS total,
+       AVG(amount) AS avg_amt,
+       MIN(amount) AS min_amt,
+       MAX(amount) AS max_amt
+FROM is_data WHERE amount IS NOT NULL;
+ cnt |  total  |       avg_amt        | min_amt | max_amt 
+-----+---------+----------------------+---------+---------
+   6 | 1327.49 | 221.2483333333333333 |   75.00 |  500.99
+(1 row)
+
+SELECT SUM(val) AS bulk_sum, MIN(val) AS bulk_min, MAX(val) AS bulk_max FROM is_bulk;
+ bulk_sum | bulk_min | bulk_max 
+----------+----------+----------
+  5005000 |       10 |    10000
+(1 row)
+
+-- ============================================================
+-- Test 8: GROUP BY
+-- ============================================================
+SELECT test_log('Test 8: GROUP BY query');
+NOTICE:  [TEST] Test 8: GROUP BY query
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT flag, COUNT(*) AS cnt, SUM(amount) AS total
+FROM is_data
+WHERE flag IS NOT NULL
+GROUP BY flag
+ORDER BY flag;
+ flag | cnt | total  
+------+-----+--------
+ f    |   2 | 351.00
+ t    |   5 | 976.49
+(2 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE is_data;
+DROP TABLE is_bulk;
+DROP VOLUME is_volume;
+DROP USER MAPPING FOR current_user SERVER is_volume_server;
+DROP SERVER is_volume_server;
+DROP CATALOG is_catalog;
+DROP USER MAPPING FOR current_user SERVER is_catalog_server;
+DROP SERVER is_catalog_server;

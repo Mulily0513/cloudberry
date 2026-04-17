@@ -1,0 +1,155 @@
+-- Negative Error Path Coverage Test
+-- Purpose: Trigger ereport(ERROR) branches in option validation,
+--          server/table creation, and type checking
+-- Target: datalake_option.c (+91), iceberg_catalog_fdw.c (+81),
+--         iceberg_volume_fdw.c (+66), grammar_convert.c (+74),
+--         datalake_fdw.c (+22), am_iceberg_am_handler.c (+21)
+
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+
+-- ============================================================
+-- Test 1: Invalid protocol (datalake_option.c check_server_option)
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER err_srv1 FOREIGN DATA WRAPPER datalake_fdw OPTIONS (protocol ''invalid_proto'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid protocol: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 2: Invalid HDFS option (datalake_option.c HDFS validation)
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER err_srv2 FOREIGN DATA WRAPPER datalake_fdw OPTIONS (protocol ''hdfs'', bogus_hdfs_opt ''xyz'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid hdfs opt: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 3: Invalid FTP option
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER err_srv3 FOREIGN DATA WRAPPER datalake_fdw OPTIONS (protocol ''ftp'', bogus_ftp_opt ''xyz'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid ftp opt: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 4: Invalid OSS option
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE SERVER err_srv4 FOREIGN DATA WRAPPER datalake_fdw OPTIONS (protocol ''s3'', bogus_oss_opt ''xyz'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid oss opt: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 5: Invalid foreign table format (check_foreign_option)
+-- ============================================================
+CREATE SERVER err_s3_server FOREIGN DATA WRAPPER datalake_fdw
+OPTIONS (host 'localhost:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR current_user SERVER err_s3_server
+OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft1 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''invalid_fmt'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid format: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 6: Invalid foreign table option name
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft2 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''parquet'', bogus_foreign_opt ''xyz'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid foreign opt: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 7: Invalid compression for text format
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft3 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''text'', compresstype ''snappy'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid text compress: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 8: Invalid compression for parquet format
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft4 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''parquet'', compresstype ''brotli'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid parquet compress: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 9: Invalid compression for avro format
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft5 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''avro'', compresstype ''gzip'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid avro compress: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 10: Invalid rejectlimit value
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft6 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''text'', rejectlimit ''-1'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid rejectlimit: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 11: Invalid rejectlimittype
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE FOREIGN TABLE err_ft7 (id int) SERVER err_s3_server OPTIONS (filePath ''/bucket/path/'', format ''text'', rejectlimittype ''invalid'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid rejectlimittype: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Test 12: Invalid user mapping option
+-- ============================================================
+DO $$
+BEGIN
+    EXECUTE 'CREATE USER MAPPING FOR current_user SERVER err_s3_server OPTIONS (bogus_um_opt ''xyz'')';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'invalid user mapping opt: %', regexp_replace(SQLERRM, '\(seg\d.*', '');
+END;
+$$;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP USER MAPPING IF EXISTS FOR current_user SERVER err_s3_server;
+DROP SERVER IF EXISTS err_s3_server;

@@ -1,0 +1,180 @@
+-- Iceberg Delete Coverage Test
+-- Purpose: Exercise position/equality delete filter paths with large datasets
+-- Target: iceberg_position_filter.c (+69), iceberg_equality_filter.c (+70),
+--         iceberg_delete_index.c, sorted_merge paths,
+--         pg_iceberg_deletion_queue.c (+38)
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE SERVER dc_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER dc_catalog_server;
+CREATE FOREIGN CATALOG dc_catalog SERVER dc_catalog_server;
+SET iceberg_default_catalog = 'dc_catalog';
+CREATE SERVER dc_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER dc_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME dc_volume SERVER dc_volume_server OPTIONS(base_path '/dc_volume/');
+SET iceberg_default_volume = 'dc_volume';
+-- ============================================================
+-- Test 1: Large position delete (streaming filter path)
+-- The streaming path is triggered when delete count exceeds threshold
+-- ============================================================
+CREATE ICEBERG TABLE dc_large_del (id bigint, name text, val int);
+-- Insert 2000 rows in two batches (creates 2 data files)
+INSERT INTO dc_large_del SELECT i, 'name_' || i, i * 10 FROM generate_series(1, 1000) i;
+INSERT INTO dc_large_del SELECT i, 'name_' || i, i * 10 FROM generate_series(1001, 2000) i;
+SELECT COUNT(*) FROM dc_large_del;
+ count 
+-------
+  2000
+(1 row)
+
+-- Delete many rows to create large position delete file
+DELETE FROM dc_large_del WHERE id % 3 = 0;
+-- Read triggers streaming position filter path
+SELECT COUNT(*) FROM dc_large_del;
+ count 
+-------
+  1334
+(1 row)
+
+-- Delete more rows
+DELETE FROM dc_large_del WHERE id % 5 = 0;
+SELECT COUNT(*) FROM dc_large_del;
+ count 
+-------
+  1067
+(1 row)
+
+-- Verify specific rows survived
+SELECT COUNT(*) FROM dc_large_del WHERE id BETWEEN 1 AND 100;
+ count 
+-------
+    53
+(1 row)
+
+SELECT * FROM dc_large_del WHERE id <= 10 ORDER BY id;
+ id |  name  | val 
+----+--------+-----
+  1 | name_1 |  10
+  2 | name_2 |  20
+  4 | name_4 |  40
+  7 | name_7 |  70
+  8 | name_8 |  80
+(5 rows)
+
+DROP TABLE dc_large_del;
+-- ============================================================
+-- Test 2: Multiple delete files (multiple delete operations)
+-- ============================================================
+CREATE ICEBERG TABLE dc_multi_del_files (id bigint, category text);
+INSERT INTO dc_multi_del_files SELECT i, 'cat_' || (i % 5) FROM generate_series(1, 500) i;
+INSERT INTO dc_multi_del_files SELECT i, 'cat_' || (i % 5) FROM generate_series(501, 1000) i;
+-- Create multiple delete files
+DELETE FROM dc_multi_del_files WHERE id = 1;
+DELETE FROM dc_multi_del_files WHERE id = 100;
+DELETE FROM dc_multi_del_files WHERE id = 200;
+DELETE FROM dc_multi_del_files WHERE id = 300;
+DELETE FROM dc_multi_del_files WHERE id = 400;
+DELETE FROM dc_multi_del_files WHERE id = 500;
+DELETE FROM dc_multi_del_files WHERE id = 600;
+DELETE FROM dc_multi_del_files WHERE id = 700;
+DELETE FROM dc_multi_del_files WHERE id = 800;
+DELETE FROM dc_multi_del_files WHERE id = 900;
+DELETE FROM dc_multi_del_files WHERE id = 1000;
+-- Read with many delete files applied
+SELECT COUNT(*) FROM dc_multi_del_files;
+ count 
+-------
+   989
+(1 row)
+
+-- Update also creates deletes
+UPDATE dc_multi_del_files SET category = 'updated' WHERE id BETWEEN 50 AND 60;
+SELECT COUNT(*) FROM dc_multi_del_files WHERE category = 'updated';
+ count 
+-------
+    11
+(1 row)
+
+SELECT COUNT(*) FROM dc_multi_del_files;
+ count 
+-------
+   989
+(1 row)
+
+DROP TABLE dc_multi_del_files;
+-- ============================================================
+-- Test 3: Delete then VACUUM (exercises deletion_queue + compaction)
+-- ============================================================
+CREATE ICEBERG TABLE dc_del_vacuum (id bigint, data text);
+INSERT INTO dc_del_vacuum SELECT i, repeat('x', 100) FROM generate_series(1, 200) i;
+INSERT INTO dc_del_vacuum SELECT i, repeat('y', 100) FROM generate_series(201, 400) i;
+DELETE FROM dc_del_vacuum WHERE id % 2 = 0;
+SELECT COUNT(*) FROM dc_del_vacuum;
+ count 
+-------
+   200
+(1 row)
+
+-- VACUUM should compact the remaining data
+SET datalake.iceberg_vacuum_compact_min_input_files = 2;
+VACUUM dc_del_vacuum;
+RESET datalake.iceberg_vacuum_compact_min_input_files;
+SELECT COUNT(*) FROM dc_del_vacuum;
+ count 
+-------
+   200
+(1 row)
+
+-- Verify data integrity after vacuum
+SELECT MIN(id), MAX(id) FROM dc_del_vacuum;
+ min | max 
+-----+-----
+   1 | 399
+(1 row)
+
+DROP TABLE dc_del_vacuum;
+-- ============================================================
+-- Test 4: ANALYZE after deletes (exercises statistics paths)
+-- ============================================================
+CREATE ICEBERG TABLE dc_analyze (id bigint, val int);
+INSERT INTO dc_analyze SELECT i, i * 10 FROM generate_series(1, 100) i;
+ANALYZE dc_analyze;
+DELETE FROM dc_analyze WHERE id > 50;
+ANALYZE dc_analyze;
+SELECT COUNT(*) FROM dc_analyze;
+ count 
+-------
+    50
+(1 row)
+
+DROP TABLE dc_analyze;
+-- ============================================================
+-- Test 5: Rapid DROP TABLE (exercises deletion queue)
+-- ============================================================
+CREATE ICEBERG TABLE dc_drop1 (id bigint);
+INSERT INTO dc_drop1 VALUES (1);
+DROP TABLE dc_drop1;
+CREATE ICEBERG TABLE dc_drop2 (id bigint);
+INSERT INTO dc_drop2 VALUES (1);
+DROP TABLE dc_drop2;
+CREATE ICEBERG TABLE dc_drop3 (id bigint);
+INSERT INTO dc_drop3 VALUES (1);
+DROP TABLE dc_drop3;
+CREATE ICEBERG TABLE dc_drop4 (id bigint);
+INSERT INTO dc_drop4 VALUES (1);
+DROP TABLE dc_drop4;
+CREATE ICEBERG TABLE dc_drop5 (id bigint);
+INSERT INTO dc_drop5 VALUES (1);
+DROP TABLE dc_drop5;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME dc_volume;
+DROP USER MAPPING FOR current_user SERVER dc_volume_server;
+DROP SERVER dc_volume_server;
+DROP CATALOG dc_catalog;
+DROP USER MAPPING FOR current_user SERVER dc_catalog_server;
+DROP SERVER dc_catalog_server;

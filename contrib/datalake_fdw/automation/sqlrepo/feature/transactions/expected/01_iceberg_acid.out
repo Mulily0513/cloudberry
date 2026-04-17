@@ -1,0 +1,178 @@
+-- 01_iceberg_acid.sql
+-- Test Iceberg ACID operations (INSERT/UPDATE/DELETE)
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+-- Create builtin catalog and volume
+CREATE SERVER txn_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER txn_catalog_server;
+CREATE FOREIGN CATALOG txn_catalog SERVER txn_catalog_server;
+SET iceberg_default_catalog='txn_catalog';
+CREATE SERVER txn_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER txn_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME txn_volume SERVER txn_volume_server OPTIONS(base_path '/txn_volume/');
+SET iceberg_default_volume='txn_volume';
+SELECT test_log('Feature Test: Iceberg ACID Operations');
+NOTICE:  [TEST] Feature Test: Iceberg ACID Operations
+ test_log 
+----------
+ 
+(1 row)
+
+-- Test 1: Create table and initial INSERT
+SELECT test_log('Test 1: Initial INSERT');
+NOTICE:  [TEST] Test 1: Initial INSERT
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE acid_test (
+    id bigint,
+    name text,
+    value numeric,
+    status text
+);
+INSERT INTO acid_test VALUES
+    (1, 'Alice', 100, 'active'),
+    (2, 'Bob', 200, 'active'),
+    (3, 'Charlie', 300, 'active');
+ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg0 172.20.0.2:7002 pid=234704)
+SELECT * FROM acid_test ORDER BY id;
+ id | name | value | status 
+----+------+-------+--------
+(0 rows)
+
+-- Test 2: UPDATE operation
+SELECT test_log('Test 2: UPDATE operation');
+NOTICE:  [TEST] Test 2: UPDATE operation
+ test_log 
+----------
+ 
+(1 row)
+
+UPDATE acid_test SET value = value * 1.1 WHERE id = 1;
+ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg0 172.20.0.2:7002 pid=234704)
+UPDATE acid_test SET status = 'inactive' WHERE id = 2;
+ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
+SELECT * FROM acid_test ORDER BY id;
+ id | name | value | status 
+----+------+-------+--------
+(0 rows)
+
+-- Test 3: DELETE operation
+SELECT test_log('Test 3: DELETE operation');
+NOTICE:  [TEST] Test 3: DELETE operation
+ test_log 
+----------
+ 
+(1 row)
+
+DELETE FROM acid_test WHERE id = 3;
+SELECT * FROM acid_test ORDER BY id;
+ id | name | value | status 
+----+------+-------+--------
+(0 rows)
+
+-- Test 4: INSERT after DELETE (reuse deleted ID)
+SELECT test_log('Test 4: INSERT after DELETE');
+NOTICE:  [TEST] Test 4: INSERT after DELETE
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO acid_test VALUES (3, 'David', 400, 'active');
+ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
+SELECT * FROM acid_test ORDER BY id;
+ id | name | value | status 
+----+------+-------+--------
+(0 rows)
+
+-- Test 5: Complex UPDATE with subquery
+SELECT test_log('Test 5: Complex UPDATE');
+NOTICE:  [TEST] Test 5: Complex UPDATE
+ test_log 
+----------
+ 
+(1 row)
+
+UPDATE acid_test SET value = value + 50 WHERE status = 'active';
+ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
+SELECT * FROM acid_test ORDER BY id;
+ id | name | value | status 
+----+------+-------+--------
+(0 rows)
+
+-- Test 6: Verify final state
+SELECT test_log('Test 6: Verify final state');
+NOTICE:  [TEST] Test 6: Verify final state
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) as total_rows, SUM(value) as total_value FROM acid_test;
+ total_rows | total_value 
+------------+-------------
+          0 |            
+(1 row)
+
+-- Cleanup
+DROP TABLE acid_test;
+DROP VOLUME txn_volume;
+DROP USER MAPPING FOR current_user SERVER txn_volume_server;
+DROP SERVER txn_volume_server;
+DROP CATALOG txn_catalog;
+DROP USER MAPPING FOR current_user SERVER txn_catalog_server;
+DROP SERVER txn_catalog_server;

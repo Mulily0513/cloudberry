@@ -1,0 +1,427 @@
+-- Hive DLProxy Coverage Test
+-- Purpose: Exercise dlproxy code paths via Hive foreign tables
+-- Target: dlproxy/filters.c (+384), dlproxy/protocol.c (+149),
+--         dlproxy/libchurl.c (+136), dlproxy/headers.c (+77),
+--         dlproxy/iceberg.c (+60), dlproxy/icebergConfig.c (+112),
+--         dlproxy/iceberg_fragment_cache.c (+42)
+SET client_min_messages = ERROR;
+DROP SCHEMA IF EXISTS dlproxy_cov CASCADE;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+RESET client_min_messages;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ create_foreign_server 
+-----------------------
+ t
+(1 row)
+
+DROP SCHEMA IF EXISTS dlproxy_cov CASCADE;
+NOTICE:  schema "dlproxy_cov" does not exist, skipping
+CREATE SCHEMA dlproxy_cov;
+SET datestyle = ISO, MDY;
+-- ============================================================
+-- Sync Hive tables (creates foreign tables that use dlproxy path)
+-- ============================================================
+SELECT public.sync_hive_table('hive_cluster','default','test_orc','paa_cluster', 'dlproxy_cov.test_orc', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_parquet','paa_cluster', 'dlproxy_cov.test_parquet', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_text','paa_cluster', 'dlproxy_cov.test_text', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_multi_partition','paa_cluster', 'dlproxy_cov.test_multi_partition', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_extreme','paa_cluster', 'dlproxy_cov.test_extreme', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_decimal','paa_cluster', 'dlproxy_cov.test_decimal', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_zero','paa_cluster', 'dlproxy_cov.test_zero', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_datetime','paa_cluster', 'dlproxy_cov.test_datetime', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_scientific','paa_cluster', 'dlproxy_cov.test_scientific', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster','default','test_unicode','paa_cluster', 'dlproxy_cov.test_unicode', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+-- ============================================================
+-- Test 1: WHERE clause filter pushdown (dlproxy/filters.c)
+-- Each operator type triggers a different serialization branch
+-- ============================================================
+-- Equality (=)
+SELECT * FROM dlproxy_cov.test_orc WHERE id = 1;
+ id | name | m 
+----+------+---
+  1 | test | 1
+(1 row)
+
+-- Not-equal (!=)
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE id != 1;
+ count 
+-------
+     0
+(1 row)
+
+-- Greater than (>)
+SELECT * FROM dlproxy_cov.test_parquet WHERE id > 0;
+ id | name 
+----+------
+  1 | test
+(1 row)
+
+-- Less than (<)
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE id < 2;
+ count 
+-------
+     1
+(1 row)
+
+-- Greater or equal (>=)
+SELECT COUNT(*) FROM dlproxy_cov.test_parquet WHERE id >= 1;
+ count 
+-------
+     1
+(1 row)
+
+-- Less or equal (<=)
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE id <= 1;
+ count 
+-------
+     1
+(1 row)
+
+-- IS NULL / IS NOT NULL
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE name IS NULL;
+ count 
+-------
+     0
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE name IS NOT NULL;
+ count 
+-------
+     2
+(1 row)
+
+-- AND compound filter
+SELECT * FROM dlproxy_cov.test_orc WHERE id = 1 AND name = 'test';
+ id | name | m 
+----+------+---
+  1 | test | 1
+(1 row)
+
+-- OR compound filter
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE id = 1 OR name IS NULL;
+ count 
+-------
+     1
+(1 row)
+
+-- NOT filter
+SELECT COUNT(*) FROM dlproxy_cov.test_orc WHERE NOT (id = 1);
+ count 
+-------
+     0
+(1 row)
+
+-- ============================================================
+-- Test 2: Filter on different data types (filters.c type branches)
+-- ============================================================
+-- Integer filter
+SELECT * FROM dlproxy_cov.test_extreme WHERE int_max > 0;
+ tiny_min | tiny_max |   int_min   |  int_max   
+----------+----------+-------------+------------
+     -128 |      127 | -2147483648 | 2147483647
+(1 row)
+
+SELECT * FROM dlproxy_cov.test_extreme WHERE tiny_min < 0;
+ tiny_min | tiny_max |   int_min   |  int_max   
+----------+----------+-------------+------------
+     -128 |      127 | -2147483648 | 2147483647
+(1 row)
+
+-- Decimal filter
+SELECT * FROM dlproxy_cov.test_decimal WHERE dec1 > 0;
+ id |  dec1  |    dec2     
+----+--------+-------------
+  1 | 123.45 | 12345.67890
+  2 |   0.01 |     0.00001
+(2 rows)
+
+SELECT * FROM dlproxy_cov.test_decimal WHERE dec2 > 100;
+ id |  dec1  |    dec2     
+----+--------+-------------
+  1 | 123.45 | 12345.67890
+(1 row)
+
+-- Float/double filter
+SELECT * FROM dlproxy_cov.test_zero WHERE zero_float = 0.0;
+ id | zero_int | zero_float 
+----+----------+------------
+  2 |        0 |          0
+  1 |        0 |          0
+(2 rows)
+
+SELECT * FROM dlproxy_cov.test_scientific WHERE small_val > 0;
+ id | small_val | large_val 
+----+-----------+-----------
+  1 |  1.23e-10 | 1.23e+100
+(1 row)
+
+SELECT * FROM dlproxy_cov.test_scientific WHERE large_val > 1E50;
+ id | small_val | large_val 
+----+-----------+-----------
+  1 |  1.23e-10 | 1.23e+100
+(1 row)
+
+-- Date filter
+SELECT * FROM dlproxy_cov.test_datetime WHERE old_date = '1970-01-01';
+ id |  old_date  |         ts          
+----+------------+---------------------
+  1 | 1970-01-01 | 1970-01-01 00:00:00
+(1 row)
+
+-- Timestamp filter
+SELECT * FROM dlproxy_cov.test_datetime WHERE ts >= '1970-01-01 00:00:00';
+ id |  old_date  |         ts          
+----+------------+---------------------
+  1 | 1970-01-01 | 1970-01-01 00:00:00
+(1 row)
+
+-- Text filter
+SELECT * FROM dlproxy_cov.test_unicode WHERE val = 'ascii_ok';
+ id |   val    
+----+----------
+  1 | ascii_ok
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_text WHERE name = 'hello';
+ count 
+-------
+     1
+(1 row)
+
+-- ============================================================
+-- Test 3: Partition filter (multi-level partition scanning)
+-- ============================================================
+SELECT * FROM dlproxy_cov.test_multi_partition WHERE year = 2024;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+  2 | data2 | 2024 |     1 |   2
+  3 | data3 | 2024 |    12 |  31
+(3 rows)
+
+SELECT * FROM dlproxy_cov.test_multi_partition WHERE year = 2024 AND month = 1;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+  2 | data2 | 2024 |     1 |   2
+(2 rows)
+
+SELECT * FROM dlproxy_cov.test_multi_partition WHERE year = 2024 AND month = 1 AND day = 1;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+(1 row)
+
+SELECT * FROM dlproxy_cov.test_multi_partition WHERE month > 6;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  3 | data3 | 2024 |    12 |  31
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_multi_partition WHERE day >= 2;
+ count 
+-------
+     2
+(1 row)
+
+-- ============================================================
+-- Test 4: Column projection (headers.c projection paths)
+-- ============================================================
+-- Single column projection
+SELECT id FROM dlproxy_cov.test_orc;
+ id 
+----
+  1
+   
+(2 rows)
+
+SELECT name FROM dlproxy_cov.test_parquet;
+ name 
+------
+ test
+(1 row)
+
+-- Subset of columns
+SELECT id, name FROM dlproxy_cov.test_orc WHERE m = 1;
+ id | name 
+----+------
+  1 | test
+(1 row)
+
+-- Aggregate (may or may not push down)
+SELECT COUNT(*) FROM dlproxy_cov.test_parquet;
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(name) FROM dlproxy_cov.test_orc;
+ count 
+-------
+     2
+(1 row)
+
+-- ============================================================
+-- Test 5: Different format reads (headers.c format-specific paths)
+-- ============================================================
+-- ORC format
+SELECT * FROM dlproxy_cov.test_orc ORDER BY id NULLS LAST, m;
+ id | name | m 
+----+------+---
+  1 | test | 1
+    | test | 2
+(2 rows)
+
+-- Parquet format
+SELECT * FROM dlproxy_cov.test_parquet ORDER BY id;
+ id | name 
+----+------
+  1 | test
+(1 row)
+
+-- Text format
+SELECT * FROM dlproxy_cov.test_text ORDER BY id;
+ id | name  
+----+-------
+  1 | .
+  2 | hello
+(2 rows)
+
+-- ============================================================
+-- Test 6: Type-specific header encoding (headers.c type modifier paths)
+-- ============================================================
+-- Decimal precision/scale in headers
+SELECT * FROM dlproxy_cov.test_decimal ORDER BY id;
+ id |  dec1  |    dec2     
+----+--------+-------------
+  1 | 123.45 | 12345.67890
+  2 |   0.01 |     0.00001
+(2 rows)
+
+-- Integer boundary values in headers
+SELECT * FROM dlproxy_cov.test_extreme;
+ tiny_min | tiny_max |   int_min   |  int_max   
+----------+----------+-------------+------------
+     -128 |      127 | -2147483648 | 2147483647
+(1 row)
+
+-- Date/timestamp in headers
+SELECT * FROM dlproxy_cov.test_datetime;
+ id |  old_date  |         ts          
+----+------------+---------------------
+  1 | 1970-01-01 | 1970-01-01 00:00:00
+(1 row)
+
+-- Float/scientific in headers
+SELECT * FROM dlproxy_cov.test_scientific;
+ id | small_val | large_val 
+----+-----------+-----------
+  1 |  1.23e-10 | 1.23e+100
+(1 row)
+
+-- ============================================================
+-- Test 7: Multiple sequential reads (protocol.c connection reuse)
+-- ============================================================
+SELECT COUNT(*) FROM dlproxy_cov.test_orc;
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_parquet;
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_text;
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_orc;
+ count 
+-------
+     2
+(1 row)
+
+SELECT COUNT(*) FROM dlproxy_cov.test_parquet;
+ count 
+-------
+     1
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP SCHEMA dlproxy_cov CASCADE;
+NOTICE:  drop cascades to 10 other objects
+DETAIL:  drop cascades to foreign table dlproxy_cov.test_orc
+drop cascades to foreign table dlproxy_cov.test_parquet
+drop cascades to foreign table dlproxy_cov.test_text
+drop cascades to foreign table dlproxy_cov.test_multi_partition
+drop cascades to foreign table dlproxy_cov.test_extreme
+drop cascades to foreign table dlproxy_cov.test_decimal
+drop cascades to foreign table dlproxy_cov.test_zero
+drop cascades to foreign table dlproxy_cov.test_datetime
+drop cascades to foreign table dlproxy_cov.test_scientific
+drop cascades to foreign table dlproxy_cov.test_unicode

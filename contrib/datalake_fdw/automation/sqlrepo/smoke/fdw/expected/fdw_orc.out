@@ -1,0 +1,127 @@
+-- FDW ORC Read/Write Test
+-- Purpose: Exercise orcWriter.cpp (0% coverage) and ORC read via FDW path
+-- Target: orcWriter.cpp (486 lines), orcRead.cpp, orcFileReader.cpp, orcInputStream.cpp
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_orc_server CASCADE;
+NOTICE:  server "fdw_orc_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_orc_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_orc_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: Basic ORC write + read
+-- ============================================================
+CREATE FOREIGN TABLE fdw_orc_w1 (id int, name text, amount decimal(10,2))
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/basic/', format 'orc');
+INSERT INTO fdw_orc_w1 SELECT i, 'orc_' || i, i * 5.25 FROM generate_series(1, 10) i;
+DROP FOREIGN TABLE fdw_orc_w1;
+CREATE FOREIGN TABLE fdw_orc_r1 (id int, name text, amount decimal(10,2))
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/basic/', format 'orc');
+SELECT COUNT(*) FROM fdw_orc_r1;
+ count 
+-------
+    10
+(1 row)
+
+SELECT * FROM fdw_orc_r1 ORDER BY id;
+ id |  name  | amount 
+----+--------+--------
+  1 | orc_1  |   5.25
+  2 | orc_2  |  10.50
+  3 | orc_3  |  15.75
+  4 | orc_4  |  21.00
+  5 | orc_5  |  26.25
+  6 | orc_6  |  31.50
+  7 | orc_7  |  36.75
+  8 | orc_8  |  42.00
+  9 | orc_9  |  47.25
+ 10 | orc_10 |  52.50
+(10 rows)
+
+DROP FOREIGN TABLE fdw_orc_r1;
+-- ============================================================
+-- Test 2: Multi-type columns
+-- ============================================================
+CREATE FOREIGN TABLE fdw_orc_w2 (
+    col_int int, col_bigint bigint, col_text text,
+    col_bool boolean, col_decimal decimal(15,4)
+)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/types/', format 'orc');
+INSERT INTO fdw_orc_w2 VALUES
+    (1, 100000000000, 'hello', true, 12345.6789),
+    (2, -100000000000, 'world', false, -12345.6789),
+    (3, 0, '', true, 0.0000);
+DROP FOREIGN TABLE fdw_orc_w2;
+CREATE FOREIGN TABLE fdw_orc_r2 (
+    col_int int, col_bigint bigint, col_text text,
+    col_bool boolean, col_decimal decimal(15,4)
+)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/types/', format 'orc');
+SELECT * FROM fdw_orc_r2 ORDER BY col_int;
+ col_int |  col_bigint   | col_text | col_bool | col_decimal 
+---------+---------------+----------+----------+-------------
+       1 |  100000000000 | hello    | t        |  12345.6789
+       2 | -100000000000 | world    | f        | -12345.6789
+       3 |             0 |          | t        |      0.0000
+(3 rows)
+
+DROP FOREIGN TABLE fdw_orc_r2;
+-- ============================================================
+-- Test 3: NULL handling
+-- ============================================================
+CREATE FOREIGN TABLE fdw_orc_w3 (id int, name text, val int)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/nulls/', format 'orc');
+INSERT INTO fdw_orc_w3 VALUES (1, 'a', 10), (2, NULL, 20), (3, 'c', NULL), (4, NULL, NULL);
+DROP FOREIGN TABLE fdw_orc_w3;
+CREATE FOREIGN TABLE fdw_orc_r3 (id int, name text, val int)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/nulls/', format 'orc');
+SELECT * FROM fdw_orc_r3 ORDER BY id;
+ id | name | val 
+----+------+-----
+  1 | a    |  10
+  2 |      |  20
+  3 | c    |    
+  4 |      |    
+(4 rows)
+
+SELECT COUNT(*) AS total, COUNT(name) AS names, COUNT(val) AS vals FROM fdw_orc_r3;
+ total | names | vals 
+-------+-------+------
+     4 |     2 |    2
+(1 row)
+
+DROP FOREIGN TABLE fdw_orc_r3;
+-- ============================================================
+-- Test 4: Bulk insert (1000 rows)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_orc_w4 (id int, val text)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/bulk/', format 'orc');
+INSERT INTO fdw_orc_w4 SELECT i, 'row_' || i FROM generate_series(1, 1000) i;
+DROP FOREIGN TABLE fdw_orc_w4;
+CREATE FOREIGN TABLE fdw_orc_r4 (id int, val text)
+SERVER fdw_orc_server
+OPTIONS (filePath '/warehouse/fdw-test/orc/bulk/', format 'orc');
+SELECT COUNT(*) FROM fdw_orc_r4;
+ count 
+-------
+  1000
+(1 row)
+
+DROP FOREIGN TABLE fdw_orc_r4;
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_orc_server;
+DROP SERVER fdw_orc_server;

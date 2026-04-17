@@ -1,0 +1,229 @@
+-- Cross Foreign Table JOIN Smoke Test
+-- Purpose: Verify JOINs between different foreign table types
+-- Tests: Hive×S3, Iceberg×Hive, Iceberg×S3, Iceberg×Iceberg, foreign×local
+-- Clean up previous run leftovers
+DROP SERVER IF EXISTS join_s3_server CASCADE;
+NOTICE:  server "join_s3_server" does not exist, skipping
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+NOTICE:  foreign-data wrapper "datalake_fdw" does not exist, skipping
+-- Common setup (inline to avoid \i path issues with pg_regress)
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SET datestyle = ISO, MDY;
+-- ============================================================
+-- Setup: S3 server
+-- ============================================================
+CREATE SERVER join_s3_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER join_s3_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Setup: Iceberg builtin catalog + volume
+-- ============================================================
+CREATE SERVER join_catalog_server
+FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER join_catalog_server;
+CREATE FOREIGN CATALOG join_catalog SERVER join_catalog_server;
+SET iceberg_default_catalog = 'join_catalog';
+CREATE SERVER join_volume_server
+FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (
+    type 's3',
+    endpoint 'http://lakehouse:9100',
+    region 'us-east-1',
+    bucket_name 'warehouse',
+    path_style_access 'true'
+);
+CREATE USER MAPPING FOR current_user
+SERVER join_volume_server
+OPTIONS (
+    access_key_id 'admin',
+    secret_access_key 'password');
+CREATE FOREIGN VOLUME join_volume SERVER join_volume_server OPTIONS(base_path '/join_volume/');
+SET iceberg_default_volume = 'join_volume';
+-- ============================================================
+-- Prepare: Iceberg tables
+-- ============================================================
+CREATE ICEBERG TABLE join_iceberg_orders (
+    order_id bigint,
+    customer_id int,
+    amount decimal(10,2));
+INSERT INTO join_iceberg_orders VALUES
+    (1, 101, 500.00),
+    (2, 102, 300.00),
+    (3, 101, 750.00),
+    (4, 103, 200.00),
+    (5, 104, 100.00);
+CREATE ICEBERG TABLE join_iceberg_customers (
+    cust_id int,
+    name text,
+    region text);
+INSERT INTO join_iceberg_customers VALUES
+    (101, 'Alice', 'East'),
+    (102, 'Bob', 'West'),
+    (103, 'Charlie', 'East'),
+    (105, 'Eve', 'North');
+-- ============================================================
+-- Prepare: Local PostgreSQL table
+-- ============================================================
+CREATE TABLE join_local_regions (
+    region text,
+    manager text);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'region' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO join_local_regions VALUES
+    ('East', 'Manager_E'),
+    ('West', 'Manager_W'),
+    ('South', 'Manager_S');
+-- ============================================================
+-- Test 1: Iceberg × Iceberg JOIN
+-- ============================================================
+SELECT o.order_id, c.name, o.amount
+FROM join_iceberg_orders o
+JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+ORDER BY o.order_id;
+ order_id |  name   | amount 
+----------+---------+--------
+        1 | Alice   | 500.00
+        2 | Bob     | 300.00
+        3 | Alice   | 750.00
+        4 | Charlie | 200.00
+(4 rows)
+
+-- LEFT JOIN: orders without matching customer
+SELECT o.order_id, o.customer_id, c.name
+FROM join_iceberg_orders o
+LEFT JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+ORDER BY o.order_id;
+ order_id | customer_id |  name   
+----------+-------------+---------
+        1 |         101 | Alice
+        2 |         102 | Bob
+        3 |         101 | Alice
+        4 |         103 | Charlie
+        5 |         104 | 
+(5 rows)
+
+-- RIGHT JOIN: customers without orders
+SELECT c.name, o.order_id
+FROM join_iceberg_orders o
+RIGHT JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+ORDER BY c.name;
+  name   | order_id 
+---------+----------
+ Alice   |        1
+ Alice   |        3
+ Bob     |        2
+ Charlie |        4
+ Eve     |         
+(5 rows)
+
+-- ============================================================
+-- Test 2: Iceberg × Local table JOIN
+-- ============================================================
+SELECT c.name, r.manager
+FROM join_iceberg_customers c
+JOIN join_local_regions r ON c.region = r.region
+ORDER BY c.name;
+  name   |  manager  
+---------+-----------
+ Alice   | Manager_E
+ Bob     | Manager_W
+ Charlie | Manager_E
+(3 rows)
+
+-- LEFT JOIN: customers in regions without managers
+SELECT c.name, c.region, r.manager
+FROM join_iceberg_customers c
+LEFT JOIN join_local_regions r ON c.region = r.region
+ORDER BY c.name;
+  name   | region |  manager  
+---------+--------+-----------
+ Alice   | East   | Manager_E
+ Bob     | West   | Manager_W
+ Charlie | East   | Manager_E
+ Eve     | North  | 
+(4 rows)
+
+-- ============================================================
+-- Test 3: Three-way JOIN (Iceberg × Iceberg × Local)
+-- ============================================================
+SELECT o.order_id, c.name, o.amount, r.manager
+FROM join_iceberg_orders o
+JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+JOIN join_local_regions r ON c.region = r.region
+ORDER BY o.order_id;
+ order_id |  name   | amount |  manager  
+----------+---------+--------+-----------
+        1 | Alice   | 500.00 | Manager_E
+        2 | Bob     | 300.00 | Manager_W
+        3 | Alice   | 750.00 | Manager_E
+        4 | Charlie | 200.00 | Manager_E
+(4 rows)
+
+-- ============================================================
+-- Test 4: Aggregation with cross-table JOIN
+-- ============================================================
+SELECT c.name, COUNT(*) AS order_count, SUM(o.amount) AS total_amount
+FROM join_iceberg_orders o
+JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+GROUP BY c.name
+ORDER BY total_amount DESC;
+  name   | order_count | total_amount 
+---------+-------------+--------------
+ Alice   |           2 |      1250.00
+ Bob     |           1 |       300.00
+ Charlie |           1 |       200.00
+(3 rows)
+
+-- By region via 3-way join
+SELECT r.manager, COUNT(*) AS order_count, SUM(o.amount) AS region_total
+FROM join_iceberg_orders o
+JOIN join_iceberg_customers c ON o.customer_id = c.cust_id
+JOIN join_local_regions r ON c.region = r.region
+GROUP BY r.manager
+ORDER BY r.manager;
+  manager  | order_count | region_total 
+-----------+-------------+--------------
+ Manager_E |           3 |      1450.00
+ Manager_W |           1 |       300.00
+(2 rows)
+
+-- ============================================================
+-- Test 5: Subquery with cross-table reference
+-- ============================================================
+-- Customers who spent more than 400 total
+SELECT c.name, c.region
+FROM join_iceberg_customers c
+WHERE c.cust_id IN (
+    SELECT customer_id
+    FROM join_iceberg_orders
+    GROUP BY customer_id
+    HAVING SUM(amount) > 400
+)
+ORDER BY c.name;
+ name  | region 
+-------+--------
+ Alice | East
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE join_iceberg_orders;
+DROP TABLE join_iceberg_customers;
+DROP TABLE join_local_regions;
+DROP VOLUME join_volume;
+DROP USER MAPPING FOR current_user SERVER join_volume_server;
+DROP SERVER join_volume_server;
+DROP CATALOG join_catalog;
+DROP USER MAPPING FOR current_user SERVER join_catalog_server;
+DROP SERVER join_catalog_server;
+DROP USER MAPPING IF EXISTS FOR gpadmin SERVER join_s3_server;
+DROP SERVER IF EXISTS join_s3_server;

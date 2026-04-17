@@ -1,0 +1,109 @@
+-- FDW Compression Test
+-- Purpose: Exercise write/read with various compression codecs
+-- Target: parquetFileWriter.cpp (compression paths), textFileSnappyRead, textFileDeflateRead
+
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_comp_server CASCADE;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_comp_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_comp_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+
+-- ============================================================
+-- Test 1: Parquet + snappy
+-- ============================================================
+CREATE FOREIGN TABLE fdw_comp_pq_snappy_w (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_snappy/', format 'parquet', compression 'snappy');
+
+INSERT INTO fdw_comp_pq_snappy_w SELECT i, 'snappy_' || i, i * 1.11 FROM generate_series(1, 100) i;
+DROP FOREIGN TABLE fdw_comp_pq_snappy_w;
+
+CREATE FOREIGN TABLE fdw_comp_pq_snappy_r (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_snappy/', format 'parquet');
+
+SELECT COUNT(*) FROM fdw_comp_pq_snappy_r;
+SELECT * FROM fdw_comp_pq_snappy_r WHERE id <= 3 ORDER BY id;
+DROP FOREIGN TABLE fdw_comp_pq_snappy_r;
+
+-- ============================================================
+-- Test 2: Parquet + gzip
+-- ============================================================
+CREATE FOREIGN TABLE fdw_comp_pq_gzip_w (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_gzip/', format 'parquet', compression 'gzip');
+
+INSERT INTO fdw_comp_pq_gzip_w SELECT i, 'gzip_' || i, i * 2.22 FROM generate_series(1, 100) i;
+DROP FOREIGN TABLE fdw_comp_pq_gzip_w;
+
+CREATE FOREIGN TABLE fdw_comp_pq_gzip_r (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_gzip/', format 'parquet');
+
+SELECT COUNT(*) FROM fdw_comp_pq_gzip_r;
+SELECT * FROM fdw_comp_pq_gzip_r WHERE id <= 3 ORDER BY id;
+DROP FOREIGN TABLE fdw_comp_pq_gzip_r;
+
+-- ============================================================
+-- Test 3: Parquet + zstd
+-- ============================================================
+CREATE FOREIGN TABLE fdw_comp_pq_zstd_w (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_zstd/', format 'parquet', compression 'zstd');
+
+INSERT INTO fdw_comp_pq_zstd_w SELECT i, 'zstd_' || i, i * 3.33 FROM generate_series(1, 100) i;
+DROP FOREIGN TABLE fdw_comp_pq_zstd_w;
+
+CREATE FOREIGN TABLE fdw_comp_pq_zstd_r (id int, name text, val decimal(10,2))
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_zstd/', format 'parquet');
+
+SELECT COUNT(*) FROM fdw_comp_pq_zstd_r;
+SELECT * FROM fdw_comp_pq_zstd_r WHERE id <= 3 ORDER BY id;
+DROP FOREIGN TABLE fdw_comp_pq_zstd_r;
+
+-- ============================================================
+-- Test 4: Parquet + lz4
+-- ============================================================
+CREATE FOREIGN TABLE fdw_comp_pq_lz4_w (id int, name text)
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_lz4/', format 'parquet', compression 'lz4');
+
+INSERT INTO fdw_comp_pq_lz4_w SELECT i, 'lz4_' || i FROM generate_series(1, 50) i;
+DROP FOREIGN TABLE fdw_comp_pq_lz4_w;
+
+CREATE FOREIGN TABLE fdw_comp_pq_lz4_r (id int, name text)
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/pq_lz4/', format 'parquet');
+
+SELECT COUNT(*) FROM fdw_comp_pq_lz4_r;
+DROP FOREIGN TABLE fdw_comp_pq_lz4_r;
+
+-- ============================================================
+-- Test 5: ORC + snappy
+-- ============================================================
+CREATE FOREIGN TABLE fdw_comp_orc_snappy_w (id int, name text)
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/orc_snappy/', format 'orc', compression 'snappy');
+
+INSERT INTO fdw_comp_orc_snappy_w SELECT i, 'orc_snap_' || i FROM generate_series(1, 50) i;
+DROP FOREIGN TABLE fdw_comp_orc_snappy_w;
+
+CREATE FOREIGN TABLE fdw_comp_orc_snappy_r (id int, name text)
+SERVER fdw_comp_server
+OPTIONS (filePath '/warehouse/fdw-test/compress/orc_snappy/', format 'orc');
+
+SELECT COUNT(*) FROM fdw_comp_orc_snappy_r;
+DROP FOREIGN TABLE fdw_comp_orc_snappy_r;
+
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_comp_server;
+DROP SERVER fdw_comp_server;

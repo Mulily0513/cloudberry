@@ -1,0 +1,51 @@
+-- Test 04: ORC Format Basic
+-- Purpose: Test basic read/write with ORC format
+-- Data: 10 rows (minimal)
+-- Expected time: ~20s
+-- Test 1: Write ORC data
+DROP EXTERNAL TABLE IF EXISTS test_orc_write;
+NOTICE:  foreign table "test_orc_write" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_orc_write(
+    id int,
+    name varchar(50),
+    col decimal(10,2),
+    created_at timestamp
+)
+LOCATION('gphdfs://test/basic/orc/write hdfs_cluster_name=paa_cluster')
+FORMAT 'orc';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_orc_write
+SELECT i, 'name_' || i, i * 3.5, NOW()
+FROM generate_series(1, 10) i;
+DROP EXTERNAL TABLE test_orc_write;
+-- Test 2: Read ORC data
+DROP EXTERNAL TABLE IF EXISTS test_orc_read;
+NOTICE:  foreign table "test_orc_read" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_orc_read(
+    id int,
+    name varchar(50),
+    col decimal(10,2),
+    created_at timestamp
+)
+LOCATION('gphdfs://test/basic/orc/write hdfs_cluster_name=paa_cluster')
+FORMAT 'orc';
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT COUNT(*) FROM test_orc_read;
+ count 
+-------
+    10
+(1 row)
+
+SELECT SUM(col) FROM test_orc_read;
+  sum   
+--------
+ 192.50
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM test_orc_read;
+ min | max 
+-----+-----
+   1 |  10
+(1 row)
+
+DROP EXTERNAL TABLE test_orc_read;

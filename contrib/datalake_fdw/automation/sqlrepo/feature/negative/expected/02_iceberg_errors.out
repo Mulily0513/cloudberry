@@ -1,0 +1,267 @@
+-- 02_iceberg_errors.sql
+-- Test Iceberg error paths and negative scenarios
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: Iceberg Error Paths');
+NOTICE:  [TEST] Feature Test: Iceberg Error Paths
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: Iceberg catalog and volume
+-- ============================================================
+CREATE SERVER ne_catalog_server FOREIGN DATA WRAPPER iceberg_catalog_fdw;
+CREATE USER MAPPING FOR current_user SERVER ne_catalog_server;
+CREATE FOREIGN CATALOG ne_catalog SERVER ne_catalog_server;
+SET iceberg_default_catalog = 'ne_catalog';
+CREATE SERVER ne_volume_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+OPTIONS (type 's3', endpoint 'http://lakehouse:9100', region 'us-east-1',
+         bucket_name 'warehouse', path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER ne_volume_server
+OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME ne_volume SERVER ne_volume_server OPTIONS(base_path '/ne_volume/');
+SET iceberg_default_volume = 'ne_volume';
+-- ============================================================
+-- Test 1: DROP TABLE IF EXISTS on non-existent (no error)
+-- ============================================================
+SELECT test_log('Test 1: DROP TABLE IF EXISTS non-existent');
+NOTICE:  [TEST] Test 1: DROP TABLE IF EXISTS non-existent
+ test_log 
+----------
+ 
+(1 row)
+
+DROP TABLE IF EXISTS ne_nonexistent_xyz;
+NOTICE:  table "ne_nonexistent_xyz" does not exist, skipping
+-- ============================================================
+-- Test 2: INSERT type mismatch (text into int)
+-- ============================================================
+SELECT test_log('Test 2: INSERT type mismatch');
+NOTICE:  [TEST] Test 2: INSERT type mismatch
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE ICEBERG TABLE ne_types (id bigint, val int);
+DO $$
+BEGIN
+    INSERT INTO ne_types VALUES ('not_a_number', 'also_not');
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Expected error: %', SQLERRM;
+END $$;
+NOTICE:  Expected error: invalid input syntax for type bigint: "not_a_number"
+-- ============================================================
+-- Test 3: Valid INSERT after error (recovery)
+-- ============================================================
+SELECT test_log('Test 3: Valid INSERT after error');
+NOTICE:  [TEST] Test 3: Valid INSERT after error
+ test_log 
+----------
+ 
+(1 row)
+
+INSERT INTO ne_types VALUES (1, 100);
+SELECT * FROM ne_types ORDER BY id;
+ id | val 
+----+-----
+  1 | 100
+(1 row)
+
+DROP TABLE ne_types;
+-- ============================================================
+-- Test 4: Toolkit operation on non-existent table
+-- ============================================================
+SELECT test_log('Test 4: Toolkit on non-existent table');
+NOTICE:  [TEST] Test 4: Toolkit on non-existent table
+ test_log 
+----------
+ 
+(1 row)
+
+DO $$
+DECLARE
+    result text;
+BEGIN
+    SELECT iceberg_toolkit.catalog_fdw(
+        'load_table', 'public', 'ne_table_does_not_exist',
+        'ne_catalog_server', 'ne_catalog',
+        'ne_volume_server', 'ne_volume', '')
+    INTO result;
+    RAISE NOTICE 'Unexpected success';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Expected error: %', SQLERRM;
+END $$;
+NOTICE:  Expected error: internal error, metadataLocation is required for builtin catalog
+-- ============================================================
+-- Test 5: Invalid volume options
+-- ============================================================
+SELECT test_log('Test 5: Invalid volume options');
+NOTICE:  [TEST] Test 5: Invalid volume options
+ test_log 
+----------
+ 
+(1 row)
+
+DO $$
+BEGIN
+    DROP SERVER IF EXISTS ne_bad_vol_server CASCADE;
+    CREATE SERVER ne_bad_vol_server FOREIGN DATA WRAPPER iceberg_volume_fdw
+    OPTIONS (type 's3', endpoint 'http://invalid_host:9999', region 'us-east-1',
+             bucket_name 'nonexistent_bucket', path_style_access 'true');
+    CREATE USER MAPPING FOR current_user SERVER ne_bad_vol_server
+    OPTIONS (access_key_id 'bad_key', secret_access_key 'bad_secret');
+    CREATE FOREIGN VOLUME ne_bad_volume SERVER ne_bad_vol_server OPTIONS(base_path '/bad_path/');
+    SET iceberg_default_volume = 'ne_bad_volume';
+
+    CREATE ICEBERG TABLE ne_bad_vol_table (id bigint);
+    INSERT INTO ne_bad_vol_table VALUES (1);
+    DROP TABLE IF EXISTS ne_bad_vol_table;
+    DROP VOLUME IF EXISTS ne_bad_volume;
+    DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;
+    DROP SERVER IF EXISTS ne_bad_vol_server;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Expected error: %', SQLERRM;
+    DROP TABLE IF EXISTS ne_bad_vol_table;
+    DROP VOLUME IF EXISTS ne_bad_volume;
+    DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;
+    DROP SERVER IF EXISTS ne_bad_vol_server;
+END $$;
+NOTICE:  server "ne_bad_vol_server" does not exist, skipping
+NOTICE:  Expected error: Failed to create Iceberg table: HTTP Status: 400, CURL Code: 0
+java.lang.IllegalArgumentException: bucket is null/empty
+	at org.apache.hadoop.util.Preconditions.checkArgument(Preconditions.java:185)
+	at org.apache.hadoop.fs.s3a.S3AUtils.propagateBucketOptions(S3AUtils.java:1101)
+	at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:544)
+	at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3601)
+	at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:171)
+	at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3702)
+	at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3653)
+	at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:555)
+	at org.apache.hadoop.fs.Path.getFileSystem(Path.java:366)
+	at org.apache.iceberg.hadoop.Util.getFs(Util.java:56)
+	at org.apache.iceberg.hadoop.HadoopOutputFile.fromPath(HadoopOutputFile.java:53)
+	at org.apache.iceberg.hadoop.HadoopFileIO.newOutputFile(HadoopFileIO.java:100)
+	at org.apache.iceberg.BaseMetastoreTableOperations.writeNewMetadata(BaseMetastoreTableOperations.java:165)
+	at org.apache.iceberg.BaseMetastoreTableOperations.writeNewMetadataIfRequired(BaseMetastoreTableOperations.java:160)
+	at org.apache.iceberg.buildin.DlIcebergBuildInTableOperations.doCommit(DlIcebergBuildInTableOperations.java:71)
+	at org.apache.iceberg.BaseMetastoreTableOperations.commit(BaseMetastoreTableOperations.java:135)
+	at org.apache.iceberg.BaseMetastoreCatalog$BaseMetastoreCatalogTableBuilder.create(BaseMetastoreCatalog.java:199)
+	at org.apache.iceberg.catalog.Catalog.createTable(Catalog.java:75)
+	at cloud.elastic.dlagent.plugins.iceberg.IcebergBuildInCatalog.createTable(IcebergBuildInCatalog.java:98)
+	at cloud.elastic.dlagent.service.iceberg.IcebergServiceImpl.createTable(IcebergServiceImpl.java:113)
+	at cloud.elastic.dlagent.service.rest.IcebergRestController.createTable(IcebergRestController.java:459)
+	at sun.reflect.GeneratedMethodAccessor75.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:205)
+	at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:150)
+	at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:117)
+	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandlerMethod(RequestMappingHandlerAdapter.java:895)
+	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:808)
+	at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:87)
+	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1072)
+	at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:965)
+	at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:1006)
+	at org.springframework.web.servlet.FrameworkServlet.doPost(FrameworkServlet.java:909)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:665)
+	at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:883)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:750)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:209)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:51)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at cloud.elastic.dlagent.service.spring.DlContextMdcLogEnhancerFilter.doFilterInternal(DlContextMdcLogEnhancerFilter.java:59)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.springframework.web.filter.RequestContextFilter.doFilterInternal(RequestContextFilter.java:100)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.springframework.web.filter.FormContentFilter.doFilterInternal(FormContentFilter.java:93)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.springframework.boot.actuate.metrics.web.servlet.WebMvcMetricsFilter.doFilterInternal(WebMvcMetricsFilter.java:96)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.springframework.web.filter.CharacterEncodingFilter.doFilterInternal(CharacterEncodingFilter.java:201)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
+	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:168)
+	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+	at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:481)
+	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:130)
+	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:93)
+	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:343)
+	at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:390)
+	at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:63)
+	at org.apache.coyote.AbstractProtocol$ConnectionHandler.process(AbstractProtocol.java:926)
+	at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1790)
+	at org.apache.tomcat.util.net.SocketProcessorBase.run(SocketProcessorBase.java:52)
+	at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1191)
+	at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:659)
+	at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
+	at java.lang.Thread.run(Thread.java:750)
+NOTICE:  table "ne_bad_vol_table" does not exist, skipping
+NOTICE:  foreign volume "ne_bad_volume" does not exist, skipping
+NOTICE:  server "ne_bad_vol_server" does not exist, skipping
+NOTICE:  server "ne_bad_vol_server" does not exist, skipping
+-- Restore default volume for cleanup
+SET iceberg_default_volume = 'ne_volume';
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VOLUME ne_volume;
+DROP USER MAPPING FOR current_user SERVER ne_volume_server;
+DROP SERVER ne_volume_server;
+DROP CATALOG ne_catalog;
+DROP USER MAPPING FOR current_user SERVER ne_catalog_server;
+DROP SERVER ne_catalog_server;

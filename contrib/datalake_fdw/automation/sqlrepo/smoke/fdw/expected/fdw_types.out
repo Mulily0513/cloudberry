@@ -1,0 +1,118 @@
+-- FDW Data Types Round-Trip Test
+-- Purpose: Exercise logicalType.cpp (5.9%) and type conversion paths via FDW
+-- Target: logicalType.cpp (all type mapping functions), rewrLogical.cpp
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_types_server CASCADE;
+NOTICE:  server "fdw_types_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_types_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_types_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: All supported types via Parquet
+-- ============================================================
+CREATE FOREIGN TABLE fdw_types_w (
+    col_bool boolean,
+    col_smallint smallint,
+    col_int int,
+    col_bigint bigint,
+    col_real real,
+    col_double double precision,
+    col_decimal decimal(15,2),
+    col_text text,
+    col_varchar varchar(100),
+    col_date date,
+    col_timestamp timestamp
+)
+SERVER fdw_types_server
+OPTIONS (filePath '/warehouse/fdw-test/types/parquet/', format 'parquet');
+INSERT INTO fdw_types_w VALUES
+    (true, 32767, 2147483647, 9223372036854775807, 3.14, 2.718281828, 99999999999999.99,
+     'hello world', 'varchar test', '2024-06-15', '2024-06-15 10:30:00'),
+    (false, -32768, -2147483648, -9223372036854775808, -0.0, 0.0, 0.00,
+     '', '', '1970-01-01', '1970-01-01 00:00:00'),
+    (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ERROR:  numeric field overflow
+DETAIL:  A field with precision 15, scale 2 must round to an absolute value less than 10^13.
+DROP FOREIGN TABLE fdw_types_w;
+CREATE FOREIGN TABLE fdw_types_r (
+    col_bool boolean,
+    col_smallint smallint,
+    col_int int,
+    col_bigint bigint,
+    col_real real,
+    col_double double precision,
+    col_decimal decimal(15,2),
+    col_text text,
+    col_varchar varchar(100),
+    col_date date,
+    col_timestamp timestamp
+)
+SERVER fdw_types_server
+OPTIONS (filePath '/warehouse/fdw-test/types/parquet/', format 'parquet');
+SELECT COUNT(*) FROM fdw_types_r;
+ count 
+-------
+     0
+(1 row)
+
+SELECT col_bool, col_smallint, col_int, col_bigint FROM fdw_types_r WHERE col_bool IS NOT NULL ORDER BY col_smallint;
+ col_bool | col_smallint | col_int | col_bigint 
+----------+--------------+---------+------------
+(0 rows)
+
+SELECT col_real, col_double, col_decimal FROM fdw_types_r WHERE col_real IS NOT NULL ORDER BY col_decimal;
+ col_real | col_double | col_decimal 
+----------+------------+-------------
+(0 rows)
+
+SELECT col_text, col_varchar FROM fdw_types_r WHERE col_text IS NOT NULL ORDER BY col_text;
+ col_text | col_varchar 
+----------+-------------
+(0 rows)
+
+SELECT col_date, col_timestamp FROM fdw_types_r WHERE col_date IS NOT NULL ORDER BY col_date;
+ col_date | col_timestamp 
+----------+---------------
+(0 rows)
+
+DROP FOREIGN TABLE fdw_types_r;
+-- ============================================================
+-- Test 2: Same types via ORC (exercises ORC type mapping)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_types_orc_w (
+    col_int int, col_bigint bigint, col_text text,
+    col_decimal decimal(10,4), col_bool boolean
+)
+SERVER fdw_types_server
+OPTIONS (filePath '/warehouse/fdw-test/types/orc/', format 'orc');
+INSERT INTO fdw_types_orc_w VALUES
+    (1, 100, 'orc_type_test', 12345.6789, true),
+    (2, -100, 'negative', -12345.6789, false),
+    (3, NULL, NULL, NULL, NULL);
+DROP FOREIGN TABLE fdw_types_orc_w;
+CREATE FOREIGN TABLE fdw_types_orc_r (
+    col_int int, col_bigint bigint, col_text text,
+    col_decimal decimal(10,4), col_bool boolean
+)
+SERVER fdw_types_server
+OPTIONS (filePath '/warehouse/fdw-test/types/orc/', format 'orc');
+SELECT * FROM fdw_types_orc_r ORDER BY col_int;
+ col_int | col_bigint |   col_text    | col_decimal | col_bool 
+---------+------------+---------------+-------------+----------
+       1 |        100 | orc_type_test |  12345.6789 | t
+       2 |       -100 | negative      | -12345.6789 | f
+       3 |            |               |             | 
+(3 rows)
+
+DROP FOREIGN TABLE fdw_types_orc_r;
+-- Cleanup
+DROP USER MAPPING FOR gpadmin SERVER fdw_types_server;
+DROP SERVER fdw_types_server;

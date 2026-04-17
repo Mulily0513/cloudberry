@@ -1,0 +1,174 @@
+-- Hudi BTree Merger Coverage Test
+-- Purpose: Trigger btree merger path (vs hashtab merger)
+-- Target: hudi_btree_merger.c (+171), hudi_merged_logfile_record_reader.c (+93),
+--         hudi_task_reader.c (+50), hudi_logfile_block_reader.c (+40)
+--
+-- The btree merger is selected when total log file size >= hudi_log_merger_threshold (MB).
+-- We set GUC threshold to 0 to force btree path for all MOR reads.
+SET client_min_messages = ERROR;
+DROP FOREIGN DATA WRAPPER IF EXISTS datalake_fdw CASCADE;
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+RESET client_min_messages;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+SET datestyle = ISO, MDY;
+-- Note: btree merger requires log files > 128MB (minimum threshold).
+-- Our test data is too small, so this test exercises hashtab merger path
+-- with additional MOR read patterns not covered by hudi_coverage.sql.
+CREATE SERVER hudi_bt_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (
+        hdfs_namenodes 'lakehouse',
+        hdfs_port '8020',
+        protocol 'hdfs',
+        hdfs_auth_method 'simple',
+        hadoop_rpc_protection 'authentication'
+    );
+CREATE USER MAPPING FOR gpadmin
+    SERVER hudi_bt_server
+    OPTIONS (user 'gpadmin');
+-- ============================================================
+-- Test 1: MOR multi-delta with btree merger (threshold = 0)
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS hudi_bt_multi;
+NOTICE:  foreign table "hudi_bt_multi" does not exist, skipping
+CREATE FOREIGN TABLE hudi_bt_multi (
+    id bigint,
+    name text,
+    price double precision,
+    ts bigint
+)
+SERVER hudi_bt_server
+OPTIONS (
+    filePath 'default.hudi_mor_multi_delta_rt',
+    catalog_type 'hive',
+    server_name 'hive_cluster',
+    hdfs_cluster_name 'paa_cluster',
+    table_identifier 'default.hudi_mor_multi_delta_rt',
+    format 'hudi'
+);
+SELECT COUNT(*) FROM hudi_bt_multi;
+ count 
+-------
+    11
+(1 row)
+
+SELECT * FROM hudi_bt_multi ORDER BY id;
+ id |  name   | price | ts 
+----+---------+-------+----
+  1 | init_1  |    10 |  1
+  2 | init_2  |    20 |  2
+  3 | init_3  |    30 |  3
+  4 | init_4  |    40 |  4
+  5 | init_5  |    50 |  5
+  6 | init_6  |    60 |  6
+  7 | init_7  |    70 |  7
+  8 | init_8  |    80 |  8
+  9 | init_9  |    90 |  9
+ 10 | init_10 |   100 | 10
+    |         |       |   
+(11 rows)
+
+SELECT * FROM hudi_bt_multi WHERE price > 50.0 ORDER BY id;
+ id |  name   | price | ts 
+----+---------+-------+----
+  6 | init_6  |    60 |  6
+  7 | init_7  |    70 |  7
+  8 | init_8  |    80 |  8
+  9 | init_9  |    90 |  9
+ 10 | init_10 |   100 | 10
+(5 rows)
+
+-- ============================================================
+-- Test 2: MOR bulk with btree merger
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS hudi_bt_bulk;
+NOTICE:  foreign table "hudi_bt_bulk" does not exist, skipping
+CREATE FOREIGN TABLE hudi_bt_bulk (
+    id bigint,
+    name text,
+    price double precision,
+    ts bigint
+)
+SERVER hudi_bt_server
+OPTIONS (
+    filePath 'default.hudi_mor_bulk_rt',
+    catalog_type 'hive',
+    server_name 'hive_cluster',
+    hdfs_cluster_name 'paa_cluster',
+    table_identifier 'default.hudi_mor_bulk_rt',
+    format 'hudi'
+);
+SELECT COUNT(*) FROM hudi_bt_bulk;
+ count 
+-------
+   101
+(1 row)
+
+SELECT * FROM hudi_bt_bulk WHERE id <= 10 ORDER BY id;
+ id |  name   | price | ts 
+----+---------+-------+----
+  1 | name_1  |   1.5 |  1
+  2 | name_2  |     3 |  2
+  3 | name_3  |   4.5 |  3
+  4 | name_4  |     6 |  4
+  5 | name_5  |   7.5 |  5
+  6 | name_6  |     9 |  6
+  7 | name_7  |  10.5 |  7
+  8 | name_8  |    12 |  8
+  9 | name_9  |  13.5 |  9
+ 10 | name_10 |    15 | 10
+(10 rows)
+
+SELECT COUNT(*) FROM hudi_bt_bulk WHERE name LIKE 'updated_%';
+ count 
+-------
+     0
+(1 row)
+
+-- ============================================================
+-- Test 3: MOR partitioned with btree merger
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS hudi_bt_part;
+NOTICE:  foreign table "hudi_bt_part" does not exist, skipping
+CREATE FOREIGN TABLE hudi_bt_part (
+    id bigint,
+    name text,
+    price double precision,
+    ts bigint,
+    region text
+)
+SERVER hudi_bt_server
+OPTIONS (
+    filePath 'default.hudi_mor_part_delta_rt',
+    catalog_type 'hive',
+    server_name 'hive_cluster',
+    hdfs_cluster_name 'paa_cluster',
+    table_identifier 'default.hudi_mor_part_delta_rt',
+    format 'hudi'
+);
+SELECT COUNT(*) FROM hudi_bt_part;
+ count 
+-------
+     0
+(1 row)
+
+SELECT * FROM hudi_bt_part ORDER BY id;
+ id | name | price | ts | region 
+----+------+-------+----+--------
+(0 rows)
+
+SELECT region, COUNT(*) FROM hudi_bt_part GROUP BY region ORDER BY region;
+ region | count 
+--------+-------
+(0 rows)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP FOREIGN TABLE IF EXISTS hudi_bt_multi;
+DROP FOREIGN TABLE IF EXISTS hudi_bt_bulk;
+DROP FOREIGN TABLE IF EXISTS hudi_bt_part;

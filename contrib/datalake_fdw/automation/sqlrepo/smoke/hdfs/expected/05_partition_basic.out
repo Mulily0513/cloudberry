@@ -1,0 +1,71 @@
+-- Test 05: Partition Table Basic
+-- Purpose: Test basic partition table operations
+-- Data: 3 partitions x 5 rows = 15 rows
+-- Expected time: ~30s
+-- Test 1: Create partitioned table via Hive
+-- Assuming hive_connector extension is available
+DROP EXTERNAL TABLE IF EXISTS test_partition_table;
+NOTICE:  foreign table "test_partition_table" does not exist, skipping
+-- Sync from Hive (if table exists) or create directly
+-- For basic test, we'll use gphdfs with partition path
+-- Write to partition p1
+DROP EXTERNAL TABLE IF EXISTS test_part_write_p1;
+NOTICE:  foreign table "test_part_write_p1" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_part_write_p1(id int, name text, col decimal(10,2))
+LOCATION('gphdfs://test/basic/partition/data/p=1 hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_part_write_p1 SELECT i, 'p1_' || i, i * 1.0 FROM generate_series(1, 5) i;
+DROP EXTERNAL TABLE test_part_write_p1;
+-- Write to partition p2
+DROP EXTERNAL TABLE IF EXISTS test_part_write_p2;
+NOTICE:  foreign table "test_part_write_p2" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_part_write_p2(id int, name text, col decimal(10,2))
+LOCATION('gphdfs://test/basic/partition/data/p=2 hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_part_write_p2 SELECT i, 'p2_' || i, i * 2.0 FROM generate_series(1, 5) i;
+DROP EXTERNAL TABLE test_part_write_p2;
+-- Write to partition p3
+DROP EXTERNAL TABLE IF EXISTS test_part_write_p3;
+NOTICE:  foreign table "test_part_write_p3" does not exist, skipping
+CREATE WRITABLE EXTERNAL TABLE test_part_write_p3(id int, name text, col decimal(10,2))
+LOCATION('gphdfs://test/basic/partition/data/p=3 hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+INSERT INTO test_part_write_p3 SELECT i, 'p3_' || i, i * 3.0 FROM generate_series(1, 5) i;
+DROP EXTERNAL TABLE test_part_write_p3;
+-- Test 2: Read all partitions
+DROP EXTERNAL TABLE IF EXISTS test_part_read_all;
+NOTICE:  foreign table "test_part_read_all" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_part_read_all(id int, name text, col decimal(10,2))
+LOCATION('gphdfs://test/basic/partition/data hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT COUNT(*) FROM test_part_read_all;
+ count 
+-------
+    15
+(1 row)
+
+SELECT SUM(col) FROM test_part_read_all;
+  sum  
+-------
+ 90.00
+(1 row)
+
+DROP EXTERNAL TABLE test_part_read_all;
+-- Test 3: Read specific partition
+DROP EXTERNAL TABLE IF EXISTS test_part_read_p2;
+NOTICE:  foreign table "test_part_read_p2" does not exist, skipping
+CREATE READABLE EXTERNAL TABLE test_part_read_p2(id int, name text, col decimal(10,2))
+LOCATION('gphdfs://test/basic/partition/data/p=2 hdfs_cluster_name=paa_cluster')
+FORMAT 'text' (delimiter ',');
+NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
+SELECT COUNT(*) FROM test_part_read_p2;
+ count 
+-------
+     5
+(1 row)
+
+DROP EXTERNAL TABLE test_part_read_p2;

@@ -1,0 +1,217 @@
+-- 02_sync_partitions.sql
+-- Test Hive sync with partitioned tables
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+NOTICE:  extension "datalake_fdw" already exists, skipping
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+NOTICE:  extension "hive_connector" already exists, skipping
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+\i ../../../lib/sql/hive_server_setup.sql
+-- hive_server_setup.sql
+-- Hive server configuration for datalake_fdw tests
+-- Requires: common_setup.sql to be loaded first
+--
+-- This file creates the hive_server foreign server using the public.create_foreign_server() function
+-- Default configuration uses Docker service names from docker-compose.yml
+-- Create server and user mapping for hive
+-- Parameters: server_name, user, wrapper, cluster_name
+-- The public.create_foreign_server() function handles all necessary setup
+SELECT public.create_foreign_server('hive_server', 'gpadmin', 'datalake_fdw', 'paa_cluster');
+ERROR:  server "hive_server" already exists
+CONTEXT:  SQL statement "CREATE SERVER hive_server FOREIGN DATA WRAPPER datalake_fdw OPTIONS (hdfs_namenodes 'lakehouse', hdfs_port '8020', protocol 'hdfs', hdfs_auth_method 'simple', hadoop_rpc_protection 'authentication')"
+-- Log server creation
+SELECT test_log('Hive server setup completed');
+NOTICE:  [TEST] Hive server setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+DROP SCHEMA IF EXISTS feature_test CASCADE;
+NOTICE:  schema "feature_test" does not exist, skipping
+CREATE SCHEMA feature_test;
+SELECT test_log('Feature Test: Hive Sync Partitions');
+NOTICE:  [TEST] Feature Test: Hive Sync Partitions
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Test 1: Sync single-partition table
+-- ============================================================
+SELECT test_log('Test 1: Sync test_single_partition');
+NOTICE:  [TEST] Test 1: Sync test_single_partition
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_single_partition', 'paa_cluster', 'feature_test.sync_single_part', 'hive_server');
+ERROR:  failed to sync table "default.test_single_partition": NoSuchObjectException(message:hive.default.test_single_partition table not found)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result$get_table_req_resultStandardScheme.read(ThriftHiveMetastore.java)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$get_table_req_result.read(ThriftHiveMetastore.java)
+	at org.apache.thrift.TServiceClient.receiveBase(TServiceClient.java:86)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.recv_get_table_req(ThriftHiveMetastore.java:2079)
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Client.get_table_req(ThriftHiveMetastore.java:2066)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility2xx.getTable(HiveMetaStoreClientCompatibility2xx.java:70)
+	at org.apache.hadoop.hive.metastore.HiveMetaStoreClientCompatibility1xx.getTable(HiveMetaStoreClient (hive_connector.c:278)
+SELECT * FROM feature_test.sync_single_part ORDER BY 1 LIMIT 10;
+ERROR:  relation "feature_test.sync_single_part" does not exist
+LINE 1: SELECT * FROM feature_test.sync_single_part ORDER BY 1 LIMIT...
+                      ^
+-- ============================================================
+-- Test 2: Sync multi-partition table
+-- ============================================================
+SELECT test_log('Test 2: Sync test_multi_partition');
+NOTICE:  [TEST] Test 2: Sync test_multi_partition
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_multi_partition', 'paa_cluster', 'feature_test.sync_multi_part', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM feature_test.sync_multi_part ORDER BY 1 LIMIT 10;
+ id | value | year | month | day 
+----+-------+------+-------+-----
+  1 | data1 | 2024 |     1 |   1
+  2 | data2 | 2024 |     1 |   2
+  3 | data3 | 2024 |    12 |  31
+(3 rows)
+
+-- ============================================================
+-- Test 3: GROUP BY on partition columns
+-- ============================================================
+SELECT test_log('Test 3: GROUP BY on partition columns');
+NOTICE:  [TEST] Test 3: GROUP BY on partition columns
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT COUNT(*) AS total_rows FROM feature_test.sync_single_part;
+ERROR:  relation "feature_test.sync_single_part" does not exist
+LINE 1: SELECT COUNT(*) AS total_rows FROM feature_test.sync_single_...
+                                           ^
+SELECT COUNT(*) AS total_rows FROM feature_test.sync_multi_part;
+ total_rows 
+------------
+          3
+(1 row)
+
+-- ============================================================
+-- Test 4: EXPLAIN for partition pruning
+-- ============================================================
+SELECT test_log('Test 4: EXPLAIN partition pruning');
+NOTICE:  [TEST] Test 4: EXPLAIN partition pruning
+ test_log 
+----------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT * FROM feature_test.sync_single_part;
+ERROR:  relation "feature_test.sync_single_part" does not exist
+LINE 1: EXPLAIN (COSTS OFF) SELECT * FROM feature_test.sync_single_p...
+                                          ^
+EXPLAIN (COSTS OFF) SELECT * FROM feature_test.sync_multi_part;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Foreign Scan on sync_multi_part
+ Optimizer: GPORCA
+(3 rows)
+
+-- ============================================================
+-- Test 5: Sync extreme values table
+-- ============================================================
+SELECT test_log('Test 5: Sync test_extreme');
+NOTICE:  [TEST] Test 5: Sync test_extreme
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_extreme', 'paa_cluster', 'feature_test.sync_extreme', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) AS extreme_count FROM feature_test.sync_extreme;
+ extreme_count 
+---------------
+             1
+(1 row)
+
+-- ============================================================
+-- Test 6: Sync empty string table
+-- ============================================================
+SELECT test_log('Test 6: Sync test_empty_str');
+NOTICE:  [TEST] Test 6: Sync test_empty_str
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT public.sync_hive_table('hive_cluster', 'default', 'test_empty_str', 'paa_cluster', 'feature_test.sync_empty_str', 'hive_server');
+ sync_hive_table 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) AS empty_str_count FROM feature_test.sync_empty_str;
+ empty_str_count 
+-----------------
+               2
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP SCHEMA feature_test CASCADE;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to foreign table feature_test.sync_multi_part
+drop cascades to foreign table feature_test.sync_extreme
+drop cascades to foreign table feature_test.sync_empty_str

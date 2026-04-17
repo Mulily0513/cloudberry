@@ -1,0 +1,221 @@
+-- 01_format_reads.sql
+-- Test FDW read operations across formats
+\i ../../../lib/sql/common_setup.sql
+-- common_setup.sql
+-- Base setup for all datalake_fdw tests
+-- This file should be included at the beginning of all test SQL files
+-- Create required extensions
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE EXTENSION IF NOT EXISTS hive_connector;
+-- gp_exttable_delimiter may not be available in all environments
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
+EXCEPTION WHEN OTHERS THEN
+    -- Extension not available, skip silently
+END $$;
+-- Create foreign data wrapper if not already present
+-- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_foreign_data_wrapper WHERE fdwname = 'datalake_fdw') THEN
+        EXECUTE 'CREATE FOREIGN DATA WRAPPER datalake_fdw
+            HANDLER datalake_fdw_handler
+            VALIDATOR datalake_fdw_validator
+            OPTIONS (mpp_execute ''all segments'')';
+    END IF;
+END $$;
+-- Set standard date style for consistent output
+SET datestyle = ISO, MDY;
+-- Create logging utility function
+CREATE OR REPLACE FUNCTION test_log(message text)
+RETURNS void AS $$
+BEGIN
+    RAISE NOTICE '[TEST] %', message;
+END;
+$$ LANGUAGE plpgsql;
+-- Log setup completion
+SELECT test_log('Common setup completed');
+NOTICE:  [TEST] Common setup completed
+ test_log 
+----------
+ 
+(1 row)
+
+SELECT test_log('Feature Test: FDW Format Reads');
+NOTICE:  [TEST] Feature Test: FDW Format Reads
+ test_log 
+----------
+ 
+(1 row)
+
+-- ============================================================
+-- Setup: FDW server
+-- ============================================================
+DROP SERVER IF EXISTS fr_server CASCADE;
+NOTICE:  server "fr_server" does not exist, skipping
+CREATE SERVER fr_server FOREIGN DATA WRAPPER datalake_fdw
+OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin SERVER fr_server
+OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: Parquet write + read roundtrip
+-- ============================================================
+SELECT test_log('Test 1: Parquet write + read roundtrip');
+NOTICE:  [TEST] Test 1: Parquet write + read roundtrip
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE fr_parquet_w (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/parquet/', format 'parquet');
+INSERT INTO fr_parquet_w VALUES
+    (1, 'alpha', 10.50),
+    (2, 'beta', 20.75),
+    (3, 'gamma', 30.00),
+    (4, 'delta', 40.25),
+    (5, 'epsilon', 50.99),
+    (6, 'zeta', 60.00),
+    (7, 'eta', 70.50),
+    (8, 'theta', 80.25),
+    (9, 'iota', 90.75),
+    (10, 'kappa', 100.00);
+DROP FOREIGN TABLE fr_parquet_w;
+CREATE FOREIGN TABLE fr_parquet_r (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/parquet/', format 'parquet');
+SELECT * FROM fr_parquet_r ORDER BY id;
+ id |  name   | amount 
+----+---------+--------
+  1 | alpha   |  10.50
+  2 | beta    |  20.75
+  3 | gamma   |  30.00
+  4 | delta   |  40.25
+  5 | epsilon |  50.99
+  6 | zeta    |  60.00
+  7 | eta     |  70.50
+  8 | theta   |  80.25
+  9 | iota    |  90.75
+ 10 | kappa   | 100.00
+(10 rows)
+
+SELECT COUNT(*) AS parquet_count FROM fr_parquet_r;
+ parquet_count 
+---------------
+            10
+(1 row)
+
+DROP FOREIGN TABLE fr_parquet_r;
+-- ============================================================
+-- Test 2: ORC write + read roundtrip
+-- ============================================================
+SELECT test_log('Test 2: ORC write + read roundtrip');
+NOTICE:  [TEST] Test 2: ORC write + read roundtrip
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE fr_orc_w (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/orc/', format 'orc');
+INSERT INTO fr_orc_w VALUES
+    (1, 'one', 111.11),
+    (2, 'two', 222.22),
+    (3, 'three', 333.33),
+    (4, 'four', 444.44),
+    (5, 'five', 555.55);
+DROP FOREIGN TABLE fr_orc_w;
+CREATE FOREIGN TABLE fr_orc_r (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/orc/', format 'orc');
+SELECT * FROM fr_orc_r ORDER BY id;
+ id | name  | amount 
+----+-------+--------
+  1 | one   | 111.11
+  2 | two   | 222.22
+  3 | three | 333.33
+  4 | four  | 444.44
+  5 | five  | 555.55
+(5 rows)
+
+SELECT COUNT(*) AS orc_count FROM fr_orc_r;
+ orc_count 
+-----------
+         5
+(1 row)
+
+DROP FOREIGN TABLE fr_orc_r;
+-- ============================================================
+-- Test 3: Avro write + read roundtrip
+-- ============================================================
+SELECT test_log('Test 3: Avro write + read roundtrip');
+NOTICE:  [TEST] Test 3: Avro write + read roundtrip
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE fr_avro_w (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/avro/', format 'avro');
+INSERT INTO fr_avro_w VALUES
+    (1, 'avro_a', 11.00),
+    (2, 'avro_b', 22.00),
+    (3, 'avro_c', 33.00);
+DROP FOREIGN TABLE fr_avro_w;
+CREATE FOREIGN TABLE fr_avro_r (id int, name text, amount decimal(10,2))
+SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/avro/', format 'avro');
+SELECT * FROM fr_avro_r ORDER BY id;
+ id |  name  | amount 
+----+--------+--------
+  1 | avro_a |  11.00
+  2 | avro_b |  22.00
+  3 | avro_c |  33.00
+(3 rows)
+
+SELECT COUNT(*) AS avro_count FROM fr_avro_r;
+ avro_count 
+------------
+          3
+(1 row)
+
+DROP FOREIGN TABLE fr_avro_r;
+-- ============================================================
+-- Test 4: Multi-type columns in Parquet
+-- ============================================================
+SELECT test_log('Test 4: Multi-type columns in Parquet');
+NOTICE:  [TEST] Test 4: Multi-type columns in Parquet
+ test_log 
+----------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE fr_multi_w (
+    id int, big_id bigint, label text, amount decimal(10,2), flag boolean, d date
+) SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/multi/', format 'parquet');
+INSERT INTO fr_multi_w VALUES
+    (1, 1000, 'row1', 99.99, true, '2024-01-15'),
+    (2, 2000, 'row2', 199.50, false, '2024-06-30'),
+    (3, 3000, 'row3', 0.01, true, '2024-12-31');
+DROP FOREIGN TABLE fr_multi_w;
+CREATE FOREIGN TABLE fr_multi_r (
+    id int, big_id bigint, label text, amount decimal(10,2), flag boolean, d date
+) SERVER fr_server
+OPTIONS (filePath '/warehouse/fdw-test/feature/read/multi/', format 'parquet');
+SELECT * FROM fr_multi_r ORDER BY id;
+ id | big_id | label | amount | flag |     d      
+----+--------+-------+--------+------+------------
+  1 |   1000 | row1  |  99.99 | t    | 2024-01-15
+  2 |   2000 | row2  | 199.50 | f    | 2024-06-30
+  3 |   3000 | row3  |   0.01 | t    | 2024-12-31
+(3 rows)
+
+DROP FOREIGN TABLE fr_multi_r;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP USER MAPPING FOR gpadmin SERVER fr_server;
+DROP SERVER fr_server;

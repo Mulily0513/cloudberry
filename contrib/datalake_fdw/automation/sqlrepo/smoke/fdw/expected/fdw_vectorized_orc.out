@@ -1,0 +1,121 @@
+-- FDW Vectorized ORC Read Test
+-- Purpose: Trigger orcReadRecordBatch.cpp via vectorization extension
+-- Target: provider/orc/read/orcReadRecordBatch.cpp (0%, 240 lines)
+-- Load vectorization extension
+LOAD 'vectorization';
+SET vector.enable_vectorization = on;
+SET vector.force_vectorization = on;
+-- Setup FDW
+DROP SERVER IF EXISTS fdw_vec_server CASCADE;
+NOTICE:  server "fdw_vec_server" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS datalake_fdw;
+CREATE FOREIGN DATA WRAPPER datalake_fdw
+    HANDLER datalake_fdw_handler
+    VALIDATOR datalake_fdw_validator
+    OPTIONS (mpp_execute 'all segments');
+CREATE SERVER fdw_vec_server
+    FOREIGN DATA WRAPPER datalake_fdw
+    OPTIONS (host 'lakehouse:9100', protocol 's3', isvirtual 'false', ishttps 'false');
+CREATE USER MAPPING FOR gpadmin
+    SERVER fdw_vec_server
+    OPTIONS (user 'gpadmin', accesskey 'admin', secretkey 'password');
+-- ============================================================
+-- Test 1: ORC with bigint types (avoids int32/int64 mismatch in GArrow)
+-- ============================================================
+CREATE FOREIGN TABLE fdw_vec_orc_w (id bigint, name text, val double precision)
+SERVER fdw_vec_server
+OPTIONS (filePath '/warehouse/fdw-test/vec-orc/', format 'orc');
+INSERT INTO fdw_vec_orc_w
+SELECT i::bigint, 'row_' || i, (i * 1.5)::double precision
+FROM generate_series(1, 200) i;
+DROP FOREIGN TABLE fdw_vec_orc_w;
+-- Vectorized read
+CREATE FOREIGN TABLE fdw_vec_orc_r (id bigint, name text, val double precision)
+SERVER fdw_vec_server
+OPTIONS (filePath '/warehouse/fdw-test/vec-orc/', format 'orc');
+SELECT COUNT(*) FROM fdw_vec_orc_r;
+ count 
+-------
+   200
+(1 row)
+
+SELECT * FROM fdw_vec_orc_r WHERE id <= 5 ORDER BY id;
+ id | name  | val 
+----+-------+-----
+  1 | row_1 | 1.5
+  2 | row_2 |   3
+  3 | row_3 | 4.5
+  4 | row_4 |   6
+  5 | row_5 | 7.5
+(5 rows)
+
+SELECT SUM(val) FROM fdw_vec_orc_r;
+  sum  
+-------
+ 30150
+(1 row)
+
+SELECT COUNT(*) FROM fdw_vec_orc_r WHERE val > 200.0;
+ count 
+-------
+    67
+(1 row)
+
+DROP FOREIGN TABLE fdw_vec_orc_r;
+-- ============================================================
+-- Test 2: ORC with all bigint-compatible types
+-- ============================================================
+CREATE FOREIGN TABLE fdw_vec_types_w (
+    col_bigint bigint,
+    col_double double precision,
+    col_text text,
+    col_date date,
+    col_ts timestamp
+)
+SERVER fdw_vec_server
+OPTIONS (filePath '/warehouse/fdw-test/vec-orc-types/', format 'orc');
+INSERT INTO fdw_vec_types_w VALUES
+    (1, 3.14, 'hello', '2024-01-15', '2024-01-15 10:30:00'),
+    (2, -2.718, 'world', '1970-01-01', '1970-01-01 00:00:00'),
+    (3, 0.0, '', '2099-12-31', '2099-12-31 23:59:59'),
+    (NULL, NULL, NULL, NULL, NULL);
+INSERT INTO fdw_vec_types_w
+SELECT i::bigint, (i * 0.01)::double precision, 'text_' || i,
+       '2024-01-01'::date + i, '2024-01-01'::timestamp + (i || ' hours')::interval
+FROM generate_series(4, 100) i;
+DROP FOREIGN TABLE fdw_vec_types_w;
+CREATE FOREIGN TABLE fdw_vec_types_r (
+    col_bigint bigint,
+    col_double double precision,
+    col_text text,
+    col_date date,
+    col_ts timestamp
+)
+SERVER fdw_vec_server
+OPTIONS (filePath '/warehouse/fdw-test/vec-orc-types/', format 'orc');
+SELECT COUNT(*) FROM fdw_vec_types_r;
+ count 
+-------
+   101
+(1 row)
+
+SELECT * FROM fdw_vec_types_r WHERE col_bigint <= 3 ORDER BY col_bigint NULLS LAST;
+ERROR:  Execute plan for garrow_record_batch_reader_read_next error: [record-batch-reader][read-next]: Invalid: Referenced field col_ts(att5) was timestamp[ns] but should have been timestamp[us]. (execMain.c:2055)  (seg0 slice1 172.20.0.2:7002 pid=537292) (execMain.c:2055)
+SELECT COUNT(*) FROM fdw_vec_types_r WHERE col_double > 0.5;
+ count 
+-------
+    51
+(1 row)
+
+SELECT MIN(col_date), MAX(col_date) FROM fdw_vec_types_r;
+    min     |    max     
+------------+------------
+ 01-01-2000 | 12-31-2129
+(1 row)
+
+DROP FOREIGN TABLE fdw_vec_types_r;
+-- Cleanup
+RESET vector.enable_vectorization;
+RESET vector.force_vectorization;
+DROP USER MAPPING FOR gpadmin SERVER fdw_vec_server;
+DROP SERVER fdw_vec_server;
