@@ -85,6 +85,8 @@ typedef struct VacuumStatsContext
 {
 	List		*updated_stats;
 	int			nsegs;
+	List		*all_private_results;	/* nested List: each element is one QE's
+									 * private result List */
 } VacuumStatsContext;
 
 /*
@@ -123,7 +125,7 @@ static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 
-static void dispatchVacuum(VacuumParams *params, Oid relid,
+static void dispatchVacuum(VacuumParams *params, Relation onerel,
 						   VacuumStatsContext *ctx);
 static List *vacuum_params_to_options_list(VacuumParams *params);
 static void vacuum_combine_stats(VacuumStatsContext *stats_context,
@@ -335,6 +337,9 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 	params.log_min_duration = -1;
 
 	params.auto_stats = auto_stats;
+
+	/* Transfer AM-specific private data from stmt to params (QE side) */
+	params.vacuum_private = vacstmt->vacuum_private;
 
 	/* Now go through the common routine */
 	vacuum(vacstmt->rels, &params, NULL, isTopLevel);
@@ -2852,9 +2857,23 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 
 		if (Gp_role == GP_ROLE_DISPATCH)
 		{
+			Relation	vac_rel;
+
+			vac_rel = relation_open(relid, lmode);
+
 			stats_context.updated_stats = NIL;
-			dispatchVacuum(params, relid, &stats_context);
+			stats_context.all_private_results = NIL;
+			dispatchVacuum(params, vac_rel, &stats_context);
 			vac_update_relstats_from_list(&stats_context);
+
+			/*
+			 * Call the AM's combine_dispatch_results callback to aggregate
+			 * QE results (e.g., commit Iceberg metadata updates).
+			 */
+			if (stats_context.all_private_results != NIL)
+				table_relation_vacuum_combine_dispatch_results(vac_rel,
+															   stats_context.all_private_results);
+			relation_close(vac_rel, NoLock);
 		}
 
 		/* Also update pg_stat_last_operation */
@@ -3099,7 +3118,7 @@ get_vacoptval_from_boolean(DefElem *def)
  * Dispatch a Vacuum command.
  */
 static void
-dispatchVacuum(VacuumParams *params, Oid relid, VacuumStatsContext *ctx)
+dispatchVacuum(VacuumParams *params, Relation onerel, VacuumStatsContext *ctx)
 {
 	CdbPgResults cdb_pgresults;
 	VacuumStmt *vacstmt = makeNode(VacuumStmt);
@@ -3132,10 +3151,18 @@ dispatchVacuum(VacuumParams *params, Oid relid, VacuumStatsContext *ctx)
 
 	rel = makeNode(VacuumRelation);
 	rel->relation = NULL;
-	rel->oid = relid;
+	rel->oid = RelationGetRelid(onerel);
 	rel->va_cols = NIL;
 
 	vacstmt->rels = list_make1(rel);
+
+	/*
+	 * Query the AM for VACUUM tasks to distribute to QEs.
+	 * The returned List is serialized into vacstmt->vacuum_private and
+	 * will be deserialized on each QE for execution.
+	 */
+	vacstmt->vacuum_private =
+		table_relation_vacuum_get_dispatch_tasks(onerel, params);
 
 	/* XXX: Some kinds of VACUUM assign a new relfilenode. bitmap indexes maybe? */
 	CdbDispatchUtilityStatement((Node *) vacstmt, flags,
@@ -3279,7 +3306,24 @@ vacuum_combine_stats(VacuumStatsContext *stats_context, CdbPgResults *cdb_pgresu
 	{
 		struct pg_result *pgresult = cdb_pgresults->pg_results[result_no];
 
-		if (pgresult->extras == NULL || pgresult->extraType != PGExtraTypeVacuumStats)
+		if (pgresult->extras == NULL)
+			continue;
+
+		/* Handle AM-specific private results from QE */
+		if (pgresult->extraType == PGExtraTypeVacuumPrivate)
+		{
+			char	   *raw_data = (char *) pgresult->extras;
+			List	   *qe_list;
+
+			old_context = MemoryContextSwitchTo(vac_context);
+			qe_list = (List *) stringToNode(raw_data);
+			stats_context->all_private_results =
+				lappend(stats_context->all_private_results, qe_list);
+			MemoryContextSwitchTo(old_context);
+			continue;
+		}
+
+		if (pgresult->extraType != PGExtraTypeVacuumStats)
 			continue;
 
 		Assert(pgresult->extraslen > sizeof(int));
@@ -3474,6 +3518,38 @@ vac_send_relstats_to_qd(Relation relation,
 	pq_sendint(&buf, sizeof(VPgClassStats), sizeof(int));
 	pq_sendbytes(&buf, (char *) &stats, sizeof(VPgClassStats));
 	pq_endmessage(&buf);
+}
+
+/*
+ * CDB: Send AM-specific private results from QE back to QD.
+ *
+ * This function is called by AM implementations (e.g., Iceberg) after
+ * completing relation_vacuum on the QE side.  The private_results List
+ * is serialized via nodeToString and sent as a 'y' message with
+ * PGExtraTypeVacuumPrivate type identifier.
+ */
+void
+vac_send_private_to_qd(Relation relation, List *private_results)
+{
+	StringInfoData buf;
+	char	   *serialized_data;
+	int			data_len;
+
+	if (private_results == NIL)
+		return;
+
+	serialized_data = nodeToString(private_results);
+	data_len = strlen(serialized_data) + 1;
+
+	pq_beginmessage(&buf, 'y');
+	pq_sendstring(&buf, "VACUUM");
+	pq_sendbyte(&buf, true);  /* Mark the result ready */
+	pq_sendint(&buf, PGExtraTypeVacuumPrivate, sizeof(PGExtraType));
+	pq_sendint(&buf, data_len, sizeof(int));
+	pq_sendbytes(&buf, serialized_data, data_len);
+	pq_endmessage(&buf);
+
+	pfree(serialized_data);
 }
 
 bool

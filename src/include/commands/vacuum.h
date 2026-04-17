@@ -307,6 +307,8 @@ typedef struct VacuumParams
 	 */
 	int			nworkers;
 	bool auto_stats;      /* invoked via automatic statistic collection */
+	List	   *vacuum_private;	/* AM-specific task list for distributed
+								 * VACUUM private dispatch (QE execution) */
 } VacuumParams;
 
 typedef struct
@@ -388,6 +390,7 @@ extern void vac_send_relstats_to_qd(Relation relation,
 						BlockNumber num_pages,
 						double num_tuples,
 						BlockNumber num_all_visible_pages);
+extern void vac_send_private_to_qd(Relation relation, List *private_results);
 extern void vac_update_relstats(Relation relation,
 								BlockNumber num_pages,
 								double num_tuples,
@@ -422,6 +425,7 @@ extern bool vacuumStatement_IsTemporary(Relation onerel);
 extern void analyze_rel(Oid relid, RangeVar *relation,
 						VacuumParams *params, List *va_cols, bool in_outer_xact,
 						BufferAccessStrategy bstrategy, gp_acquire_sample_rows_context *ctx);
+extern List *anl_get_dispatch_private(void);
 
 /* in commands/vacuumlazy.c */
 extern void lazy_vacuum_rel_heap(Relation onerel,
@@ -440,6 +444,7 @@ extern double anl_get_next_S(double t, int n, double *stateptr);
 
 /* in commands/analyzefuncs.c */
 extern Datum gp_acquire_sample_rows(PG_FUNCTION_ARGS);
+extern Datum gp_acquire_sample_rows_ext(PG_FUNCTION_ARGS);
 extern Datum gp_acquire_correlations(PG_FUNCTION_ARGS);
 extern Oid gp_acquire_sample_rows_col_type(Oid typid);
 

@@ -126,6 +126,8 @@
 		"ignore_system_indexes",
 		"ignore_checksum_failure",
 		"IntervalStyle",
+		"iceberg_default_catalog",
+		"iceberg_default_volume",
 		"jit",
 		"jit_above_cost",
 		"jit_debugging_support",

@@ -820,6 +820,22 @@ _readCreateForeignTableStmt(void)
 	READ_DONE();
 }
 
+static CreateLakeTableStmt *
+_readCreateLakeTableStmt(void)
+{
+	READ_LOCALS(CreateLakeTableStmt);
+
+	_readCreateStmt_common(&local_node->base);
+
+	READ_STRING_FIELD(table_type);
+	READ_STRING_FIELD(foreign_catalog);
+	READ_STRING_FIELD(foreign_volume);
+	READ_NODE_FIELD(options);
+	READ_NODE_FIELD(distributedBy);
+
+	READ_DONE();
+}
+
 static AlterDefaultPrivilegesStmt *
 _readAlterDefaultPrivilegesStmt(void)
 {
@@ -930,12 +946,22 @@ _readSequence(void)
 	READ_DONE();
 }
 
+static void
+readSeqScanFields(SeqScan *local_node)
+{
+	READ_TEMP_LOCALS();
+
+	ReadCommonScan(&local_node->scan);
+
+	READ_NODE_FIELD(am_private);
+}
+
 static DynamicSeqScan *
 _readDynamicSeqScan(void)
 {
 	READ_LOCALS(DynamicSeqScan);
 
-	ReadCommonScan(&local_node->seqscan);
+	readSeqScanFields(&local_node->seqscan);
 	READ_NODE_FIELD(partOids);
 	READ_NODE_FIELD(part_prune_info);
 	READ_NODE_FIELD(join_prune_paramids);
@@ -1471,6 +1497,32 @@ _readCreateForeignServerStmt(void)
 	READ_STRING_FIELD(servertype);
 	READ_STRING_FIELD(version);
 	READ_STRING_FIELD(fdwname);
+	READ_NODE_FIELD(options);
+
+	READ_DONE();
+}
+
+static CreateForeignCatalogStmt *
+_readCreateForeignCatalogStmt(void)
+{
+	READ_LOCALS(CreateForeignCatalogStmt);
+
+	READ_STRING_FIELD(catalogname);
+	READ_STRING_FIELD(servername);
+	READ_BOOL_FIELD(if_not_exists);
+	READ_NODE_FIELD(options);
+
+	READ_DONE();
+}
+
+static CreateForeignVolumeStmt *
+_readCreateForeignVolumeStmt(void)
+{
+	READ_LOCALS(CreateForeignVolumeStmt);
+
+	READ_STRING_FIELD(volumename);
+	READ_STRING_FIELD(servername);
+	READ_BOOL_FIELD(if_not_exists);
 	READ_NODE_FIELD(options);
 
 	READ_DONE();
@@ -2378,6 +2430,9 @@ readNodeBinary(void)
 			case T_CreateForeignTableStmt:
 				return_value = _readCreateForeignTableStmt();
 				break;
+			case T_CreateLakeTableStmt:
+				return_value = _readCreateLakeTableStmt();
+				break;
 			case T_ColumnReferenceStorageDirective:
 				return_value = _readColumnReferenceStorageDirective();
 				break;
@@ -2831,6 +2886,12 @@ readNodeBinary(void)
 				break;
 			case T_CreateForeignServerStmt:
 				return_value = _readCreateForeignServerStmt();
+				break;
+			case T_CreateForeignCatalogStmt:
+				return_value = _readCreateForeignCatalogStmt();
+				break;
+			case T_CreateForeignVolumeStmt:
+				return_value = _readCreateForeignVolumeStmt();
 				break;
 			case T_AddForeignSegStmt:
 				return_value = _readAddForeignSegStmt();

@@ -93,6 +93,7 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/print.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_relation.h"
 #include "pgstat.h"
@@ -170,6 +171,14 @@ static BufferAccessStrategy vac_strategy;
 Bitmapset	**acquire_func_colLargeRowIndexes;
 double		 *acquire_func_colLargeRowLength;
 double		 *acquire_func_colNDVBySeg;
+/*
+ * ANALYZE dispatch private payload for the current sampling call.
+ *
+ * We intentionally keep relation_acquire_sample_rows(Relation, ...) callback
+ * signature unchanged for table AM compatibility, so AMs fetch analyze private
+ * data via anl_get_dispatch_private() instead of receiving an extra argument.
+ */
+static List	 *analyze_dispatch_private = NIL;
 
 static void do_analyze_rel(Relation onerel,
 						   VacuumParams *params, List *va_cols,
@@ -210,6 +219,16 @@ static void analyze_rel_internal(Oid relid, RangeVar *relation,
 static void acquire_hll_by_query(Relation onerel, int nattrs, VacAttrStats **attrstats, int elevel);
 
 static int16 AcquireCountOfSegmentFile(Relation onerel);
+
+/*
+ * Accessor for table AMs to read current ANALYZE dispatch-private payload
+ * without changing relation_acquire_sample_rows() callback ABI.
+ */
+List *
+anl_get_dispatch_private(void)
+{
+	return analyze_dispatch_private;
+}
 
 /*
  *	analyze_rel() -- analyze one relation
@@ -800,6 +819,11 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		acquire_func_colLargeRowIndexes = colLargeRowIndexes;
 		acquire_func_colLargeRowLength = colLargeRowLength;
 		acquire_func_colNDVBySeg = colNDVBySeg;
+		/*
+		 * ANALYZE and VACUUM share VacuumParams::vacuum_private as the generic
+		 * dispatch-private carrier, so copy it here for AM sampling callbacks.
+		 */
+		analyze_dispatch_private = params->vacuum_private;
 		pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 									 inh ? PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS_INH :
 									 PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS);
@@ -814,6 +838,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		acquire_func_colLargeRowIndexes = NULL;
 		acquire_func_colLargeRowLength = NULL;
 		acquire_func_colNDVBySeg = NULL;
+		analyze_dispatch_private = NIL;
 		if (ctx)
 			MemoryContextSwitchTo(anl_context);
 	}
@@ -1753,7 +1778,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 * the relation should not be an AO/CO table.
 	 */
 	Assert(!RelationIsAppendOptimized(onerel));
-	if (RelationIsPax(onerel))
+	if (RelationIsPax(onerel) || RelationIsIceberg(onerel))
 	{
 		/* PAX use non-fixed block layout */
 		BlockNumber pages;
@@ -2392,6 +2417,17 @@ AcquireNumberOfBlocks(Relation onerel)
 	if (Gp_role == GP_ROLE_DISPATCH &&
 		onerel->rd_cdbpolicy && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
 	{
+		/*
+		 * Iceberg relation size is catalog-driven and should be obtained on QD.
+		 * Avoid dispatching pg_relation_size() to QEs, because QE side does not
+		 * have access to QD-only iceberg metadata catalogs.
+		 */
+		if (RelationIsIceberg(onerel))
+		{
+			totalbytes = (int64) table_relation_size(onerel, MAIN_FORKNUM);
+			return RelationGuessNumberOfBlocksFromSize(totalbytes);
+		}
+
 		/* Query the segments using pg_relation_size(<rel>). */
 		char		relsize_sql[100];
 
@@ -3003,6 +3039,9 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	int			perseg_targrows;
 	int			sampleTuples;	/* 32 bit - assume that number of tuples will not > 2B */
 	char	   *sql;
+	char	   *serialized_private = NULL;
+	char	   *quoted_private = NULL;
+	List	   *dispatch_tasks = NIL;
 	Portal		portal;
 	QueryDesc  *queryDesc = NULL;
 
@@ -3029,6 +3068,10 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	else
 		elog(ERROR, "acquire_sample_rows_dispatcher() cannot be used on a non-distributed table");
 
+	dispatch_tasks = table_relation_analyze_get_dispatch_tasks(onerel,
+																inh,
+																perseg_targrows);
+
 	/*
 	 * Did not use 'select * from pg_catalog.gp_acquire_sample_rows(...) as (..);'
 	 * here. Because it requires to specify columns explicitly which leads to
@@ -3036,10 +3079,25 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	 * may result in different behaviour under different acl configuration.
 	 */
 	initStringInfo(&str);
-	appendStringInfo(&str, "select pg_catalog.gp_acquire_sample_rows(%u, %d, '%s');",
-					 RelationGetRelid(onerel),
-					 perseg_targrows,
-					 inh ? "t" : "f");
+	if (dispatch_tasks != NIL)
+	{
+		serialized_private = nodeToString(dispatch_tasks);
+		quoted_private = quote_literal_cstr(serialized_private);
+
+		appendStringInfo(&str,
+						 "select pg_catalog.gp_acquire_sample_rows_ext(%u, %d, '%s', %s);",
+						 RelationGetRelid(onerel),
+						 perseg_targrows,
+						 inh ? "t" : "f",
+						 quoted_private);
+	}
+	else
+	{
+		appendStringInfo(&str, "select pg_catalog.gp_acquire_sample_rows(%u, %d, '%s');",
+						 RelationGetRelid(onerel),
+						 perseg_targrows,
+						 inh ? "t" : "f");
+	}
 
 	/*
 	 * Step2: Execute the constructed SQL.
@@ -3090,6 +3148,10 @@ acquire_sample_rows_dispatcher(Relation onerel, bool inh, int elevel,
 	ExecutorEnd(queryDesc);
 	FreeQueryDesc(queryDesc);
 	PortalDrop(portal, false);
+	if (serialized_private != NULL)
+		pfree(serialized_private);
+	if (quoted_private != NULL)
+		pfree(quoted_private);
 
 	return sampleTuples;
 }

@@ -938,6 +938,11 @@ static const SchemaQuery Query_for_list_of_collations = {
 "	FROM pg_catalog.gp_storage_server "\
 "  WHERE substring(pg_catalog.quote_ident(srvname),1,%d)='%s'"
 
+#define Query_for_list_of_foreign_catalogs \
+" SELECT pg_catalog.quote_ident(fcname) "\
+"   FROM pg_catalog.pg_foreign_catalog "\
+"  WHERE substring(pg_catalog.quote_ident(fcname),1,%d)='%s'"
+
 #define Query_for_list_of_access_methods \
 " SELECT pg_catalog.quote_ident(amname) "\
 "   FROM pg_catalog.pg_am "\
@@ -1107,6 +1112,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"AGGREGATE", NULL, NULL, Query_for_list_of_aggregates},
 	{"CAST", NULL, NULL, NULL}, /* Casts have complex structures for names, so
 								 * skip it */
+	{"CATALOG", Query_for_list_of_foreign_catalogs, NULL, NULL},
 	{"COLLATION", NULL, NULL, &Query_for_list_of_collations},
 
 	/*
@@ -1124,6 +1130,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"EVENT TRIGGER", NULL, NULL, NULL},
 	{"EXTENSION", Query_for_list_of_extensions},
 	{"EXTERNAL TABLE", NULL, NULL, NULL},
+	{"FOREIGN CATALOG", Query_for_list_of_foreign_catalogs, NULL, NULL},
 	{"FOREIGN DATA WRAPPER", NULL, NULL, NULL},
 	{"FOREIGN TABLE", NULL, NULL, NULL},
 	{"FUNCTION", NULL, NULL, Query_for_list_of_functions},
@@ -2621,11 +2628,19 @@ psql_completion(const char *text, int start, int end)
 
 	/* CREATE FOREIGN */
 	else if (Matches("CREATE", "FOREIGN"))
-		COMPLETE_WITH("DATA WRAPPER", "TABLE");
+		COMPLETE_WITH("CATALOG", "DATA WRAPPER", "TABLE");
 
 	/* CREATE FOREIGN DATA WRAPPER */
 	else if (Matches("CREATE", "FOREIGN", "DATA", "WRAPPER", MatchAny))
 		COMPLETE_WITH("HANDLER", "VALIDATOR", "OPTIONS");
+
+	/* CREATE FOREIGN CATALOG */
+	else if (Matches("CREATE", "FOREIGN", "CATALOG", MatchAny))
+		COMPLETE_WITH("SERVER");
+	else if (Matches("CREATE", "FOREIGN", "CATALOG", MatchAny, "SERVER"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_servers);
+	else if (Matches("CREATE", "FOREIGN", "CATALOG", MatchAny, "SERVER", MatchAny))
+		COMPLETE_WITH("OPTIONS");
 
 	/* CREATE INDEX --- is allowed inside CREATE SCHEMA, so use TailMatches */
 	/* First off we complete CREATE UNIQUE with "INDEX" */
@@ -3324,12 +3339,13 @@ psql_completion(const char *text, int start, int end)
 /* DROP */
 	/* Complete DROP object with CASCADE / RESTRICT */
 	else if (Matches("DROP",
-					 "COLLATION|CONVERSION|DOMAIN|EXTENSION|LANGUAGE|PUBLICATION|SCHEMA|SEQUENCE|SERVER|SUBSCRIPTION|STATISTICS|TABLE|TYPE|VIEW",
+					 "CATALOG|COLLATION|CONVERSION|DOMAIN|EXTENSION|LANGUAGE|PUBLICATION|SCHEMA|SEQUENCE|SERVER|SUBSCRIPTION|STATISTICS|TABLE|TYPE|VIEW",
 					 MatchAny) ||
 			 Matches("DROP", "ACCESS", "METHOD", MatchAny) ||
 			 (Matches("DROP", "AGGREGATE|FUNCTION|PROCEDURE|ROUTINE", MatchAny, MatchAny) &&
 			  ends_with(prev_wd, ')')) ||
 			 Matches("DROP", "EVENT", "TRIGGER", MatchAny) ||
+			 Matches("DROP", "FOREIGN", "CATALOG", MatchAny) ||
 			 Matches("DROP", "FOREIGN", "DATA", "WRAPPER", MatchAny) ||
 			 Matches("DROP", "FOREIGN", "TABLE", MatchAny) ||
 			 Matches("DROP", "DIRECTORY", "TABLE", MatchAny) ||
@@ -3342,7 +3358,7 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("DROP", "AGGREGATE|FUNCTION|PROCEDURE|ROUTINE", MatchAny, "("))
 		COMPLETE_WITH_FUNCTION_ARG(prev2_wd);
 	else if (Matches("DROP", "FOREIGN"))
-		COMPLETE_WITH("DATA WRAPPER", "TABLE");
+		COMPLETE_WITH("CATALOG", "DATA WRAPPER", "TABLE");
 	else if (Matches("DROP", "DATABASE", MatchAny))
 		COMPLETE_WITH("WITH (");
 	else if (HeadMatches("DROP", "DATABASE") && (ends_with(prev_wd, '(')))
@@ -3531,6 +3547,17 @@ psql_completion(const char *text, int start, int end)
 	else if (TailMatches("FOREIGN", "DATA", "WRAPPER", MatchAny) &&
 			 HeadMatches("CREATE", "SERVER"))
 		COMPLETE_WITH("OPTIONS");
+
+/* FOREIGN CATALOG */
+	else if (TailMatches("FOREIGN", "CATALOG") &&
+			 !TailMatches("CREATE", MatchAny, MatchAny))
+		COMPLETE_WITH_QUERY(Query_for_list_of_foreign_catalogs);
+
+/* CATALOG */
+	else if (TailMatches("CATALOG") &&
+			 !TailMatches("CREATE", MatchAny, MatchAny) &&
+			 !TailMatches("FOREIGN", MatchAny))
+		COMPLETE_WITH_QUERY(Query_for_list_of_foreign_catalogs);
 
 /* FOREIGN TABLE */
 	else if (TailMatches("FOREIGN", "TABLE") &&
@@ -4352,7 +4379,7 @@ psql_completion(const char *text, int start, int end)
 		else if (TailMatches("CREATE|ALTER|DROP", "EVENT"))
 			COMPLETE_WITH("TRIGGER");
 		else if (TailMatches("CREATE|ALTER|DROP", "FOREIGN"))
-			COMPLETE_WITH("DATA WRAPPER", "TABLE");
+			COMPLETE_WITH("CATALOG", "DATA WRAPPER", "TABLE");
 		else if (TailMatches("CREATE|ALTER|DROP", "DIRECTORY"))
 			COMPLETE_WITH("TABLE");
 		else if (TailMatches("ALTER", "LARGE"))

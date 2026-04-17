@@ -222,6 +222,7 @@ struct TupleTableSlotOps
  */
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsVirtual;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsHeapTuple;
+extern PGDLLIMPORT const TupleTableSlotOps TTSOpsFdwHeapTuple;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsMinimalTuple;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsBufferHeapTuple;
 

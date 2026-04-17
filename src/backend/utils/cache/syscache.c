@@ -46,6 +46,8 @@
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
+#include "catalog/pg_foreign_catalog.h"
+#include "catalog/pg_foreign_volume.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
@@ -499,6 +501,50 @@ static const struct cachedesc cacheinfo[] = {
 		1,
 		{
 			Anum_pg_foreign_server_oid,
+			0,
+			0,
+			0
+		},
+		2
+	},
+	{ForeignCatalogRelationId,	/* FOREIGNCATALOGNAME */
+		ForeignCatalogNameServerIndexId,
+		2,
+		{
+			Anum_pg_foreign_catalog_fcname,
+			Anum_pg_foreign_catalog_fcserver,
+			0,
+			0
+		},
+		2
+	},
+	{ForeignCatalogRelationId,	/* FOREIGNCATALOGOID */
+		ForeignCatalogOidIndexId,
+		1,
+		{
+			Anum_pg_foreign_catalog_oid,
+			0,
+			0,
+			0
+		},
+		2
+	},
+	{ForeignVolumeRelationId,	/* FOREIGNVOLUMENAMESERVER */
+		ForeignVolumeNameServerIndexId,
+		2,
+		{
+			Anum_pg_foreign_volume_fvname,
+			Anum_pg_foreign_volume_fvserver,
+			0,
+			0
+		},
+		2
+	},
+	{ForeignVolumeRelationId,	/* FOREIGNVOLUMEOID */
+		ForeignVolumeOidIndexId,
+		1,
+		{
+			Anum_pg_foreign_volume_oid,
 			0,
 			0,
 			0

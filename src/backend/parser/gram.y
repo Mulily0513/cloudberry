@@ -294,7 +294,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
 		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt
 		CreateStorageServerStmt CreateStorageUserMappingStmt
-		CreateTableSpaceStmt CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt CreateDirectoryTableStmt
+		CreateTableSpaceStmt CreateFdwStmt CreateForeignServerStmt CreateForeignCatalogStmt CreateForeignVolumeStmt CreateForeignTableStmt CreateLakeTableStmt CreateDirectoryTableStmt
 		CreateAssertionStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
 		CreatedbStmt CreateWarehouseStmt DeclareCursorStmt DefineStmt DeleteStmt DiscardStmt DoStmt
@@ -386,7 +386,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 %type <defelt>	AlterOnlyOptRoleElem
 %type <defelt>  OptProfileElem
 
-%type <str>		opt_type
+%type <str>		opt_type OptTableType
 %type <str>		foreign_server_version opt_foreign_server_version
 %type <str>		opt_in_database
 
@@ -645,6 +645,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 %type <ival>	key_actions key_delete key_match key_update key_action
 %type <ival>	ConstraintAttributeSpec ConstraintAttributeElem
 %type <str>		ExistingIndex
+%type <str>		OptForeignCatalog OptForeignVolume
 
 %type <list>	constraints_set_list
 %type <boolean> constraints_set_mode
@@ -779,9 +780,9 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
 
-	HANDLER HAVING HEADER_P HOLD HOUR_P
+	HANDLER HAVING HEADER_P HOLD HOUR_P HUDI
 
-	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
+	ICEBERG IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INCREMENTAL INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
 	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
@@ -832,7 +833,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 	UNLISTEN UNLOGGED UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
-	VERBOSE VERSION_P VIEW VIEWS VOLATILE
+	VERBOSE VERSION_P VIEW VIEWS VOLATILE VOLUME
 
 	WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
@@ -1478,7 +1479,10 @@ stmt:
 			| CreateExternalStmt
 			| CreateFdwStmt
 			| CreateForeignServerStmt
+			| CreateForeignCatalogStmt
+			| CreateForeignVolumeStmt
 			| CreateForeignTableStmt
+			| CreateLakeTableStmt
 			| CreateFunctionStmt
 			| CreateGroupStmt
 			| CreateMatViewStmt
@@ -6175,6 +6179,16 @@ OptDistributedBy:   DistributedBy
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+OptForeignCatalog: CATALOG_P name
+			{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
+OptForeignVolume: VOLUME name
+			{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
+
 /* START GPDB LEGACY PARTITION SYNTAX RULES */
 
 OptTabPartitionColumnEncList: TabPartitionColumnEncList { $$ = $1; }
@@ -8206,6 +8220,59 @@ opt_foreign_server_version:
 /*****************************************************************************
  *
  *		QUERY :
+ *				CREATE FOREIGN CATALOG name SERVER name [OPTIONS]
+ *
+ ****************************************************************************/
+
+CreateForeignCatalogStmt: CREATE FOREIGN CATALOG_P name SERVER name create_generic_options
+				{
+					CreateForeignCatalogStmt *n = makeNode(CreateForeignCatalogStmt);
+					n->catalogname = $4;
+					n->servername = $6;
+					n->options = $7;
+					n->if_not_exists = false;
+					$$ = (Node *) n;
+				}
+				| CREATE FOREIGN CATALOG_P IF_P NOT EXISTS name SERVER name create_generic_options
+				{
+					CreateForeignCatalogStmt *n = makeNode(CreateForeignCatalogStmt);
+					n->catalogname = $7;
+					n->servername = $9;
+					n->options = $10;
+					n->if_not_exists = true;
+					$$ = (Node *) n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE FOREIGN VOLUME name SERVER name [OPTIONS]
+ *
+ ****************************************************************************/
+CreateForeignVolumeStmt: CREATE FOREIGN VOLUME name SERVER name create_generic_options
+				{
+					CreateForeignVolumeStmt *n = makeNode(CreateForeignVolumeStmt);
+					n->volumename = $4;
+					n->servername = $6;
+					n->options = $7;
+					n->if_not_exists = false;
+					$$ = (Node *) n;
+				}
+				| CREATE FOREIGN VOLUME IF_P NOT EXISTS name SERVER name create_generic_options
+				{
+					CreateForeignVolumeStmt *n = makeNode(CreateForeignVolumeStmt);
+					n->volumename = $7;
+					n->servername = $9;
+					n->options = $10;
+					n->if_not_exists = true;
+					$$ = (Node *) n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY :
  *				ALTER SERVER name [VERSION] [OPTIONS]
  *
  ****************************************************************************/
@@ -8403,6 +8470,131 @@ CreateForeignTableStmt:
 					n->servername = $14;
 					n->options = $15;
 					n->base.tags = $16;
+					$$ = (Node *) n;
+				}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				CREATE [table_type] TABLE table_name (...)
+ *				FOREIGN CATALOG catalog_name 
+ *				FOREIGN VOLUME volume_name
+ *				OPTIONS (...)
+ *
+ *****************************************************************************/
+
+/* OptTableType allows table type to be specified (no empty allowed to avoid conflicts) */
+OptTableType:
+		ICEBERG			{ $$ = "ICEBERG"; }
+		| HUDI			{ $$ = "HUDI"; }
+		;
+
+
+CreateLakeTableStmt:
+		CREATE OptTableType TABLE qualified_name
+			'(' OptTableElementList ')'
+			OptForeignCatalog OptForeignVolume create_generic_options
+			OptDistributedBy table_access_method_clause
+				{
+					CreateLakeTableStmt *n = makeNode(CreateLakeTableStmt);
+					$4->relpersistence = RELPERSISTENCE_PERMANENT;
+					n->base.relation = $4;
+					n->base.tableElts = $6;
+					n->base.inhRelations = NIL;  /* No inheritance for extended tables */
+					n->base.ofTypename = NULL;
+					n->base.constraints = NIL;
+					n->base.options = NIL;
+					n->base.oncommit = ONCOMMIT_NOOP;
+					n->base.tablespacename = NULL;
+					n->base.accessMethod = $12 ? $12 : pstrdup("iceberg");
+					n->base.if_not_exists = false;
+					n->base.tags = NIL;  /* No tags for extended tables */
+					n->base.origin = ORIGIN_NO_GEN;
+					n->base.relKind = RELKIND_RELATION;
+
+					/* Lake table specific fields */
+					n->table_type = $2;
+					n->foreign_catalog = $8 ? pstrdup($8) : NULL;  /* Optional FOREIGN CATALOG */
+					n->foreign_volume = $9 ? pstrdup($9) : NULL;  /* Optional FOREIGN VOLUME */
+					n->options = $10;
+
+					/*
+					 * Lake tables store data on object storage (S3) where
+					 * fragments are not hash-partitioned across segments.
+					 * Force DISTRIBUTED RANDOMLY to prevent incorrect
+					 * UPDATE/DELETE behavior that only scans target segments.
+					 */
+					{
+						DistributedBy *userDistBy = (DistributedBy *) $11;
+						if (userDistBy != NULL)
+						{
+							if (userDistBy->ptype == POLICYTYPE_REPLICATED)
+								ereport(WARNING,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("DISTRIBUTED REPLICATED clause has no effect for lake tables, using DISTRIBUTED RANDOMLY")));
+							else if (userDistBy->keyCols != NIL)
+								ereport(WARNING,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("DISTRIBUTED BY clause has no effect for lake tables, using DISTRIBUTED RANDOMLY")));
+						}
+						n->base.distributedBy = makeNode(DistributedBy);
+						n->base.distributedBy->ptype = POLICYTYPE_PARTITIONED;
+						n->base.distributedBy->keyCols = NIL;
+						n->base.distributedBy->numsegments = -1;
+						n->distributedBy = NULL;
+					}
+
+					$$ = (Node *) n;
+				}
+		| CREATE OptTableType TABLE IF_P NOT EXISTS qualified_name
+			'(' OptTableElementList ')'
+			OptForeignCatalog OptForeignVolume create_generic_options
+			OptDistributedBy table_access_method_clause
+				{
+					CreateLakeTableStmt *n = makeNode(CreateLakeTableStmt);
+					$7->relpersistence = RELPERSISTENCE_PERMANENT;
+					n->base.relation = $7;
+					n->base.tableElts = $9;
+					n->base.inhRelations = NIL;  /* No inheritance for extended tables */
+					n->base.ofTypename = NULL;
+					n->base.constraints = NIL;
+					n->base.options = NIL;
+					n->base.oncommit = ONCOMMIT_NOOP;
+					n->base.tablespacename = NULL;
+					n->base.accessMethod = $15 ? $15 : pstrdup("iceberg");
+					n->base.if_not_exists = true;
+					n->base.tags = NIL;  /* No tags for extended tables */
+					n->base.origin = ORIGIN_NO_GEN;
+					n->base.relKind = RELKIND_RELATION;
+
+					/* Lake table specific fields */
+					n->table_type = $2;
+					n->foreign_catalog = $11 ? pstrdup($11) : NULL;  /* Optional FOREIGN CATALOG */
+					n->foreign_volume = $12 ? pstrdup($12) : NULL;  /* Optional FOREIGN VOLUME */
+					n->options = $13;
+
+					/* Same as above: force DISTRIBUTED RANDOMLY for lake tables */
+					{
+						DistributedBy *userDistBy = (DistributedBy *) $14;
+						if (userDistBy != NULL)
+						{
+							if (userDistBy->ptype == POLICYTYPE_REPLICATED)
+								ereport(WARNING,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("DISTRIBUTED REPLICATED clause has no effect for lake tables, using DISTRIBUTED RANDOMLY")));
+							else if (userDistBy->keyCols != NIL)
+								ereport(WARNING,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("DISTRIBUTED BY clause has no effect for lake tables, using DISTRIBUTED RANDOMLY")));
+						}
+						n->base.distributedBy = makeNode(DistributedBy);
+						n->base.distributedBy->ptype = POLICYTYPE_PARTITIONED;
+						n->base.distributedBy->keyCols = NIL;
+						n->base.distributedBy->numsegments = -1;
+						n->distributedBy = NULL;
+					}
+
 					$$ = (Node *) n;
 				}
 		;
@@ -9954,6 +10146,8 @@ drop_type_name:
 			| PUBLICATION							{ $$ = OBJECT_PUBLICATION; }
 			| SCHEMA								{ $$ = OBJECT_SCHEMA; }
 			| SERVER								{ $$ = OBJECT_FOREIGN_SERVER; }
+			| CATALOG_P								{ $$ = OBJECT_FOREIGN_CATALOG; }
+			| VOLUME								{ $$ = OBJECT_FOREIGN_VOLUME; }
 			| PROTOCOL								{ $$ = OBJECT_EXTPROTOCOL; }
 		;
 
@@ -19719,6 +19913,8 @@ unreserved_keyword:
 			| HOLD
 			| HOST
 			| HOUR_P
+			| HUDI
+			| ICEBERG
 			| IDENTITY_P
 			| IF_P
 			| IGNORE_P
@@ -19950,6 +20146,7 @@ unreserved_keyword:
 			| VIEW
 			| VIEWS
 			| VOLATILE
+			| VOLUME
 			| WAREHOUSE
 			| WAREHOUSE_SIZE
 			| WEB /* gp */
@@ -20254,6 +20451,7 @@ PartitionIdentKeyword: ABORT_P
 			| VIEW
 			| VALUE_P
 			| VOLATILE
+			| VOLUME
 			| WORK
 			| WRITE
 			| ZONE
@@ -20693,6 +20891,8 @@ bare_label_keyword:
 			| HEADER_P
 			| HOLD
 			| HOST
+			| HUDI
+			| ICEBERG
 			| IDENTITY_P
 			| IF_P
 			| IGNORE_P
@@ -20985,6 +21185,7 @@ bare_label_keyword:
 			| VIEW
 			| VIEWS
 			| VOLATILE
+			| VOLUME
 			| WAREHOUSE
 			| WAREHOUSE_SIZE
 			| WEB

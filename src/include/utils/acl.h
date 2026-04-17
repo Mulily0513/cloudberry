@@ -331,6 +331,8 @@ extern bool pg_ts_dict_ownercheck(Oid dict_oid, Oid roleid);
 extern bool pg_ts_config_ownercheck(Oid cfg_oid, Oid roleid);
 extern bool pg_foreign_data_wrapper_ownercheck(Oid srv_oid, Oid roleid);
 extern bool pg_foreign_server_ownercheck(Oid srv_oid, Oid roleid);
+extern bool pg_foreign_catalog_ownercheck(Oid catalog_oid, Oid roleid);
+extern bool pg_foreign_volume_ownercheck(Oid volume_oid, Oid roleid);
 extern bool gp_storage_server_ownercheck(Oid srv_oid, Oid roleid);
 extern bool pg_event_trigger_ownercheck(Oid et_oid, Oid roleid);
 extern bool pg_extension_ownercheck(Oid ext_oid, Oid roleid);

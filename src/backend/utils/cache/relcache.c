@@ -1248,9 +1248,9 @@ retry:
 			break;
 		case RELKIND_VIEW:
 		case RELKIND_COMPOSITE_TYPE:
-		case RELKIND_FOREIGN_TABLE:
 			Assert(relation->rd_rel->relam == InvalidOid);
 			break;
+		case RELKIND_FOREIGN_TABLE:
 		case RELKIND_PARTITIONED_TABLE:
 			/* gp partition tables may set access method for its children */
 			break;

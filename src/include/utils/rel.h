@@ -549,6 +549,18 @@ typedef struct ViewOptions
 	((relation)->rd_rel->relam == PAX_AM_OID)
 
 /*
+ * FIXME: There are still many places in the kernel using RelationIsNonblockRelation
+ * and RelationIsPax. This suggests that we should expose more specific functional
+ * interfaces to the Table Access Method (TAM) to avoid hardcoding checks for
+ * specific table types in the kernel. Such special logic should theoretically
+ * be encapsulated within the Table Access Method itself, rather than triggering
+ * special cases based on a table's type/identity within the core kernel.
+ */
+#define ICEBERG_AM_OID 8320
+#define RelationIsIceberg(relation) \
+	((relation)->rd_rel->relam == ICEBERG_AM_OID)
+
+/*
  * CAUTION: this macro is a violation of the absraction that table AM and
  * index AM interfaces provide.  Use of this macro is discouraged.  If
  * table/index AM API falls short for your use case, consider enhancing the
@@ -565,7 +577,8 @@ typedef struct ViewOptions
 #define RelationIsNonblockRelation(relation) \
 	((relation)->rd_tableam && \
 	(RelationIsAppendOptimized(relation) || \
-	 RelationIsPax(relation)))
+	 RelationIsPax(relation) || \
+	 RelationIsIceberg(relation)))
 
 /*
  * RelationIsBitmapIndex

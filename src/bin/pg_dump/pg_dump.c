@@ -175,6 +175,13 @@ static int	extra_float_digits;
 #define PAX_AM_OID 7047
 
 /*
+ * FIXME: CBDB should not know the am oid of ICEBERG. We put here because the kernel
+ * can't distinguish the ICEBERG and renamed heap(heap_psql) in test `psql`.
+ * The definition of temporary is here and should be consistent with util/rel.h
+ */
+#define ICEBERG_AM_OID 8320
+
+/*
  * Macro for producing quoted, schema-qualified name of a dumpable object.
  */
 #define fmtQualifiedDumpable(obj) \
@@ -2043,7 +2050,7 @@ selectDumpableTable(TableInfo *tbinfo, Archive *fout)
 	/*
 	 * Pax not support pg_dump yet
 	 */
-	if (tbinfo->amoid == PAX_AM_OID) {
+	if (tbinfo->amoid == PAX_AM_OID || tbinfo->amoid == ICEBERG_AM_OID) {
 		tbinfo->dobj.dump = DUMP_COMPONENT_NONE;
 
 		pg_log_warning("unsupport am pax yet, current relation \"%s\" will be ignore",

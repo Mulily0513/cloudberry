@@ -621,6 +621,16 @@ _outSeqScan(StringInfo str, const SeqScan *node)
 	WRITE_NODE_TYPE("SEQSCAN");
 
 	_outScanInfo(str, (const Scan *) node);
+
+	WRITE_NODE_FIELD(am_private);
+}
+
+static void
+outSeqScanFields(StringInfo str, const SeqScan *node)
+{
+	_outScanInfo(str, (const Scan *) node);
+
+	WRITE_NODE_FIELD(am_private);
 }
 
 static void
@@ -628,7 +638,7 @@ _outDynamicSeqScan(StringInfo str, const DynamicSeqScan *node)
 {
 	WRITE_NODE_TYPE("DYNAMICSEQSCAN");
 
-	_outScanInfo(str, (Scan *)node);
+	outSeqScanFields(str, &node->seqscan);
 	WRITE_NODE_FIELD(partOids);
 	WRITE_NODE_FIELD(part_prune_info);
 	WRITE_NODE_FIELD(join_prune_paramids);
@@ -3081,6 +3091,20 @@ _outCreateForeignTableStmt(StringInfo str, const CreateForeignTableStmt *node)
 }
 
 static void
+_outCreateLakeTableStmt(StringInfo str, const CreateLakeTableStmt *node)
+{
+	WRITE_NODE_TYPE("CREATELAKETABLESTMT");
+
+	_outCreateStmtInfo(str, (const CreateStmt *) &node->base);
+
+	WRITE_STRING_FIELD(table_type);
+	WRITE_STRING_FIELD(foreign_catalog);
+	WRITE_STRING_FIELD(foreign_volume);
+	WRITE_NODE_FIELD(options);
+	WRITE_NODE_FIELD(distributedBy);
+}
+
+static void
 _outImportForeignSchemaStmt(StringInfo str, const ImportForeignSchemaStmt *node)
 {
 	WRITE_NODE_TYPE("IMPORTFOREIGNSCHEMASTMT");
@@ -4866,6 +4890,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_CreateForeignTableStmt:
 				_outCreateForeignTableStmt(str, obj);
+				break;
+			case T_CreateLakeTableStmt:
+				_outCreateLakeTableStmt(str, obj);
 				break;
 			case T_DistributionKeyElem:
 				_outDistributionKeyElem(str, obj);

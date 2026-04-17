@@ -51,6 +51,7 @@ public:
 		ErelstorageAppendOnlyCols,
 		ErelstorageAppendOnlyRows,
 		ErelstoragePAX,
+		ErelstorageIceberg,
 		ErelstorageForeign,
 		ErelstorageMixedPartitioned,
 		ErelstorageCompositeType,
@@ -195,7 +196,8 @@ public:
 		Erelstoragetype st = RetrieveRelStorageType();
 		return st == ErelstorageAppendOnlyCols ||
 			   st == ErelstorageAppendOnlyRows ||
-			   st == ErelstoragePAX;
+			   st == ErelstoragePAX ||
+			   st == ErelstorageIceberg;
 	}
 
 	// get oid of foreign server for foreign table

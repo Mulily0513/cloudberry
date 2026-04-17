@@ -72,7 +72,7 @@ static Node *vectorize_plan_mutator(Node *node, void *context);
 static bool is_plan_vectorable(Plan* plan, List *rtable);
 static bool is_expr_vectorable(Expr* expr, void *context);
 static bool is_hash_expr_vectorable(Expr* expr, void *context);
-static bool is_relation_vectorable(SeqScan* seqscan, List *rtable, bool isForeign);
+static bool is_relation_vectorable(Scan* seqscan, List *rtable, bool isForeign);
 static bool is_sort_collation_vectorable(Sort *sort);
 static bool fallback_distinct_junk(Plan *plan);
 static bool fallback_nested_loop_jointype(Plan *plan);
@@ -1568,7 +1568,7 @@ check_targetlist(Node *node, int varattno, PreNodeContext *context)
 		case T_SeqScan:
 			{
 				SeqScan *seqscan = (SeqScan *)node;
-				return loop_targetlist(seqscan->plan.targetlist, varattno, context);
+				return loop_targetlist(seqscan->scan.plan.targetlist, varattno, context);
 			}
 			break;
 		case T_Motion:

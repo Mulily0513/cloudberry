@@ -2533,8 +2533,7 @@ describeOneTableDetails(const char *schemaname,
 		case RELKIND_FOREIGN_TABLE:
 			printfPQExpBuffer(&title, _("Foreign table \"%s.%s\""),
 							  schemaname, relationname);
-			break;
-		case RELKIND_PARTITIONED_TABLE:
+			break;		case RELKIND_PARTITIONED_TABLE:
 			if (tableinfo.relpersistence == 'u')
 				printfPQExpBuffer(&title, _("Unlogged partitioned table \"%s.%s\""),
 								  schemaname, relationname);
@@ -3928,8 +3927,6 @@ describeOneTableDetails(const char *schemaname,
 		if (tableinfo.relkind == RELKIND_FOREIGN_TABLE)
 		{
 			char	   *ftoptions;
-
-			/* Footer information about foreign table */
 			printfPQExpBuffer(&buf,
 							  "SELECT s.srvname,\n"
 							  "  pg_catalog.array_to_string(ARRAY(\n"
@@ -3948,16 +3945,11 @@ describeOneTableDetails(const char *schemaname,
 				PQclear(result);
 				goto error_return;
 			}
-
 			if (strcmp(PQgetvalue(result, 0, 0), GP_EXTTABLE_SERVER_NAME) != 0)
 			{
-				/* Print server name */
-				printfPQExpBuffer(&buf, _("Server: %s"),
-								  PQgetvalue(result, 0, 0));
+				printfPQExpBuffer(&buf, _("Server: %s"), PQgetvalue(result, 0, 0));
 				printTableAddFooter(&cont, buf.data);
 			}
-
-			/* Print per-table FDW options, if any */
 			ftoptions = PQgetvalue(result, 0, 1);
 			if (ftoptions && ftoptions[0] != '\0')
 			{
@@ -4474,6 +4466,7 @@ error_return:
 	termPQExpBuffer(&buf);
 	termPQExpBuffer(&tmpbuf);
 }
+
 
 static void
 add_distributed_by_footer(printTableContent *const cont, const char *oid)

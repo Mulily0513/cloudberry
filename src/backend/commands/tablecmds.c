@@ -18827,6 +18827,14 @@ ATExecSetDistributedBy(Relation rel, Node *node, AlterTableCmd *cmd)
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("SET DISTRIBUTED REPLICATED is not supported for external table")));
 		}
+
+		/* Lake tables must remain DISTRIBUTED RANDOMLY */
+		if (RelationIsIceberg(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot change distribution policy of lake table \"%s\"",
+							RelationGetRelationName(rel)),
+					 errhint("Lake tables must use DISTRIBUTED RANDOMLY because data is stored on object storage.")));
 	}
 
 	if (Gp_role == GP_ROLE_DISPATCH)

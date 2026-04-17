@@ -561,7 +561,16 @@ typedef struct Scan
  *		sequential scan node
  * ----------------
  */
-typedef Scan SeqScan;
+typedef struct SeqScan
+{
+	Scan		scan;
+
+	/*
+	 * private data for third-party AMs (e.g. Iceberg) to pass file splits
+	 * from QD to QE
+	 */
+	List	   *am_private;
+} SeqScan;
 
 /* ----------------
  *		table sample scan node

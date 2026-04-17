@@ -1922,6 +1922,8 @@ typedef enum ObjectType
 	OBJECT_EXTENSION,
 	OBJECT_FDW,
 	OBJECT_FOREIGN_SERVER,
+	OBJECT_FOREIGN_CATALOG,
+	OBJECT_FOREIGN_VOLUME,
 	OBJECT_STORAGE_SERVER,
 	OBJECT_FOREIGN_TABLE,
 	OBJECT_FUNCTION,
@@ -2938,6 +2940,32 @@ typedef struct AlterForeignServerStmt
 } AlterForeignServerStmt;
 
 /* ----------------------
+ *		Create FOREIGN CATALOG Statements
+ * ----------------------
+ */
+typedef struct CreateForeignCatalogStmt
+{
+	NodeTag		type;
+	char	   *catalogname;		/* catalog name */
+	char	   *servername;			/* server name */
+	bool		if_not_exists;		/* just do nothing if it already exists? */
+	List	   *options;			/* generic options to catalog */
+} CreateForeignCatalogStmt;
+
+/* ----------------------
+ *		Create FOREIGN VOLUME Statements
+ * ----------------------
+ */
+typedef struct CreateForeignVolumeStmt
+{
+	NodeTag		type;
+	char	   *volumename;			/* volume name */
+	char	   *servername;			/* server name */
+	bool		if_not_exists;		/* just do nothing if it already exists? */
+	List	   *options;			/* generic options to volume */
+} CreateForeignVolumeStmt;
+
+/* ----------------------
  *		Create/Alter/Drop STORAGE SERVER Statements
  * ----------------------
  */
@@ -2975,6 +3003,20 @@ typedef struct CreateForeignTableStmt
 	List	   *options;
 	DistributedBy *distributedBy;   /* what columns we distribute the data by */
 } CreateForeignTableStmt;
+
+/* ----------------------
+ *		Create Lake Table Statement (ICEBERG, HUDI, etc.)
+ * ----------------------
+ */
+typedef struct CreateLakeTableStmt
+{
+	CreateStmt	base;				/* base table creation info */
+	char	   *table_type;			/* table type: "ICEBERG", "HUDI", etc. */
+	char	   *foreign_catalog;	/* foreign catalog name */
+	char	   *foreign_volume;		/* foreign volume name */
+	List	   *options;			/* table-specific options */
+	DistributedBy *distributedBy;   /* what columns we distribute the data by */
+} CreateLakeTableStmt;
 
 /* ----------------------
  *		Create/Drop USER MAPPING Statements
@@ -3447,7 +3489,7 @@ typedef struct AlterDirectoryTableStmt
 /* ----------------------
  *		DROP Statement, applies to:
  *        Table, External Table, Sequence, View, Index, Type, Domain,
- *        Conversion, Schema
+ *        Conversion, Schema, Catalog
  * ----------------------
  */
 
@@ -4089,6 +4131,8 @@ typedef struct VacuumStmt
 	List	   *options;		/* list of DefElem nodes */
 	List	   *rels;			/* list of VacuumRelation, or NIL for all */
 	bool		is_vacuumcmd;	/* true for VACUUM, false for ANALYZE */
+	List	   *vacuum_private;	/* AM-specific task or result list for
+								 * distributed VACUUM private dispatch */
 } VacuumStmt;
 
 /*

@@ -63,6 +63,7 @@
 #include "catalog/pg_directory_table.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_foreign_table_seg.h"
+#include "catalog/pg_lake_table.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
@@ -76,6 +77,7 @@
 #include "catalog/storage_xlog.h"
 #include "commands/tablecmds.h"
 #include "commands/typecmds.h"
+#include "commands/laketablecmds.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -2498,7 +2500,11 @@ heap_drop_with_catalog(Oid relid)
 	 * the table.
 	 */
 	CheckTableForSerializableConflictIn(rel);
-
+	/* If iceberg table, remove pg_lake_table entry */
+	if (RelationIsIceberg(rel))
+	{
+		RemoveLakeTableEntry(relid);
+	}
 	/*
 	 * Delete pg_foreign_table tuple first.
 	 */

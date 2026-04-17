@@ -63,6 +63,14 @@ typedef struct ForeignTable
 	int32		num_segments;	/* the number of segments of the foreign table */
 } ForeignTable;
 
+typedef struct ForeignVolume
+{
+	Oid			volumeid;		/* volume Oid */
+	Oid			serverid;		/* server Oid */
+	char	   *volumename;		/* name of the volume */
+	List	   *options;		/* fvoptions as DefElem list */
+} ForeignVolume;
+
 /* Flags for GetForeignServerExtended */
 #define FSV_MISSING_OK	0x01
 
@@ -84,11 +92,14 @@ extern ForeignDataWrapper *GetForeignDataWrapperByName(const char *name,
 													   bool missing_ok);
 extern ForeignTable *GetForeignTable(Oid relid);
 extern bool rel_is_external_table(Oid relid);
+extern ForeignVolume *GetForeignVolumeByName(const char *servername, const char *volumename, bool missing_ok);
 
 extern List *GetForeignColumnOptions(Oid relid, AttrNumber attnum);
 
 extern Oid	get_foreign_data_wrapper_oid(const char *fdwname, bool missing_ok);
 extern Oid	get_foreign_server_oid(const char *servername, bool missing_ok);
+extern Oid	get_foreign_catalog_oid(const char *catalogname, const char *servername, bool missing_ok);
+extern Oid	get_foreign_volume_oid(const char *volumename, const char *servername, bool missing_ok);
 extern Oid GetForeignServerSegByRelid(Oid tableOid);
 extern List *GetForeignServerSegsByRelId(Oid relid);
 

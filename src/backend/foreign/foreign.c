@@ -19,6 +19,8 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_foreign_table_seg.h"
+#include "catalog/pg_foreign_catalog.h"
+#include "catalog/pg_foreign_volume.h"
 #include "catalog/pg_user_mapping.h"
 #include "cdb/cdbgang.h"
 #include "cdb/cdbutil.h"
@@ -995,6 +997,73 @@ get_foreign_server_oid(const char *servername, bool missing_ok)
 }
 
 /*
+ * get_foreign_catalog_oid - given a foreign catalog name and optionally server name,
+ * look up the OID
+ *
+ * If missing_ok is false, throw an error if name not found.  If true, just
+ * return InvalidOid.
+ */
+Oid
+get_foreign_catalog_oid(const char *catalogname, const char *servername, bool missing_ok)
+{
+	Oid			oid;
+	HeapTuple	tuple;
+	Relation	rel;
+	ScanKeyData	key[2];
+	int			nkeys = 1;
+	SysScanDesc scan;
+
+	rel = table_open(ForeignCatalogRelationId, AccessShareLock);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_foreign_catalog_fcname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(catalogname));
+
+	if (servername)
+	{
+		Oid serverid = get_foreign_server_oid(servername, missing_ok);
+		if (!OidIsValid(serverid))
+		{
+			table_close(rel, AccessShareLock);
+			return InvalidOid;
+		}
+		ScanKeyInit(&key[1],
+					Anum_pg_foreign_catalog_fcserver,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(serverid));
+		nkeys = 2;
+	}
+
+	scan = systable_beginscan(rel, ForeignCatalogNameServerIndexId, true,
+							  NULL, nkeys, key);
+
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+		oid = ((Form_pg_foreign_catalog) GETSTRUCT(tuple))->oid;
+	else
+		oid = InvalidOid;
+
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	if (!OidIsValid(oid) && !missing_ok)
+	{
+		if (servername)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("foreign catalog \"%s\" on server \"%s\" does not exist",
+							catalogname, servername)));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("foreign catalog \"%s\" does not exist", catalogname)));
+	}
+
+	return oid;
+}
+
+/*
  * Get a copy of an existing local path for a given join relation.
  *
  * This function is usually helpful to obtain an alternate local path for EPQ
@@ -1325,4 +1394,126 @@ BuildForeignScan(Oid relid, Index scanrelid, List *qual, List *targetlist, Query
 		bms_free(attrs_used);
 	}
 	return fscan;
+}
+
+/*
+ * GetForeignVolumeByName - look up a foreign volume by name
+ */
+ForeignVolume *
+GetForeignVolumeByName(const char *servername, const char *volumename, bool missing_ok)
+{
+	HeapTuple	tp;
+	Form_pg_foreign_volume fvform;
+	ForeignVolume *volume;
+	Oid			serverid;
+	Datum		datum;
+	bool		isnull;
+
+	/* Get server OID first */
+	serverid = get_foreign_server_oid(servername, missing_ok);
+	if (!OidIsValid(serverid))
+		return NULL;
+
+	/* Look up volume by name and server */
+	tp = SearchSysCache2(FOREIGNVOLUMENAMESERVER,
+						 PointerGetDatum(volumename),
+						 ObjectIdGetDatum(serverid));
+	if (!HeapTupleIsValid(tp))
+	{
+		if (!missing_ok)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("foreign volume \"%s\" does not exist on server \"%s\"", 
+					        volumename, servername)));
+		return NULL;
+	}
+
+	fvform = (Form_pg_foreign_volume) GETSTRUCT(tp);
+
+	volume = (ForeignVolume *) palloc(sizeof(ForeignVolume));
+	volume->volumeid = fvform->oid;
+	volume->serverid = fvform->fvserver;
+	volume->volumename = pstrdup(NameStr(fvform->fvname));
+
+	/* Extract the volume options */
+	datum = SysCacheGetAttr(FOREIGNVOLUMENAMESERVER,
+							tp,
+							Anum_pg_foreign_volume_fvoptions,
+							&isnull);
+	if (isnull)
+		volume->options = NIL;
+	else
+		volume->options = untransformRelOptions(datum);
+
+	ReleaseSysCache(tp);
+
+	return volume;
+}
+
+/*
+ * get_foreign_volume_oid - given a foreign volume name and optionally server name,
+ * look up the OID
+ *
+ * If missing_ok is false, throw an error if name not found.  If true, just
+ * return InvalidOid.
+ */
+Oid
+get_foreign_volume_oid(const char *volumename, const char *servername, bool missing_ok)
+{
+	Oid			oid;
+	HeapTuple	tuple;
+	Relation	rel;
+	ScanKeyData	key[2];
+	int			nkeys = 1;
+	SysScanDesc scan;
+
+	rel = table_open(ForeignVolumeRelationId, AccessShareLock);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_foreign_volume_fvname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(volumename));
+
+	if (servername)
+	{
+		Oid serverid = get_foreign_server_oid(servername, missing_ok);
+		if (!OidIsValid(serverid))
+		{
+			table_close(rel, AccessShareLock);
+			return InvalidOid;
+		}
+
+		ScanKeyInit(&key[1],
+					Anum_pg_foreign_volume_fvserver,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(serverid));
+		nkeys = 2;
+	}
+
+	scan = systable_beginscan(rel, ForeignVolumeNameServerIndexId, true,
+							  NULL, nkeys, key);
+
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+		oid = ((Form_pg_foreign_volume) GETSTRUCT(tuple))->oid;
+	else
+		oid = InvalidOid;
+
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	if (!OidIsValid(oid) && !missing_ok)
+	{
+		if (servername)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("foreign volume \"%s\" does not exist on server \"%s\"",
+					        volumename, servername)));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("foreign volume \"%s\" does not exist", volumename)));
+	}
+
+	return oid;
 }

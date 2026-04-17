@@ -731,8 +731,8 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	else
 	{
 		SeqScan *seq_scan = MakeNode(SeqScan);
-		seq_scan->scanrelid = index;
-		plan = &(seq_scan->plan);
+		seq_scan->scan.scanrelid = index;
+		plan = &(seq_scan->scan.plan);
 		plan_return = (Plan *) seq_scan;
 
 		plan->targetlist = targetlist;
@@ -826,8 +826,8 @@ CTranslatorDXLToPlStmt::TranslateDXLParallelTblScan(
 
 	// Parallel table scans are always sequential scans (not foreign scans)
 	SeqScan *seq_scan = MakeNode(SeqScan);
-	seq_scan->scanrelid = index;
-	plan = &(seq_scan->plan);
+	seq_scan->scan.scanrelid = index;
+	plan = &(seq_scan->scan.plan);
 	plan_return = (Plan *) seq_scan;
 
 	// Set parallel execution flags
@@ -5763,7 +5763,7 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	// create dynamic scan node
 	DynamicSeqScan *dyn_seq_scan = MakeNode(DynamicSeqScan);
 
-	dyn_seq_scan->seqscan.scanrelid = index;
+	dyn_seq_scan->seqscan.scan.scanrelid = index;
 
 	const CDXLTableDescr *dxl_table_descr =
 		dyn_tbl_scan_dxlop->GetDXLTableDescr();
@@ -5785,7 +5785,7 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 		TranslateJoinPruneParamids(dyn_tbl_scan_dxlop->GetSelectorIds(),
 								   oid_type, m_dxl_to_plstmt_context);
 
-	Plan *plan = &(dyn_seq_scan->seqscan.plan);
+	Plan *plan = &(dyn_seq_scan->seqscan.scan.plan);
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 	//plan->nMotionNodes = 0;
 

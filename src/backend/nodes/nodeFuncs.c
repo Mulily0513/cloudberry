@@ -1999,6 +1999,7 @@ expression_tree_walker(Node *node,
 		case T_CTESearchClause:
 		case T_Gather:
 		case T_GatherMerge:
+		case T_String:
 			/* primitive node types with no expression subnodes */
 			break;
 		case T_WithCheckOption:

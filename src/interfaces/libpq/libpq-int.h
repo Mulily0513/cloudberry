@@ -187,7 +187,9 @@ typedef struct pgCdbStatCell
 typedef enum PGExtraType {
 	PGExtraTypeNone,
 	PGExtraTypeVacuumStats,		/* Stats collected for vacuum and analyze from QEs */
-	PGExtraTypeTableStats		/* Table stats collected for statement from QEs */
+	PGExtraTypeTableStats,		/* Table stats collected for statement from QEs */
+	PGExtraTypeVacuumPrivate,	/* AM-specific private results from QEs for
+									 * distributed VACUUM task feedback */
 } PGExtraType;
 
 struct pg_result

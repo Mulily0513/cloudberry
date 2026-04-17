@@ -42,6 +42,8 @@
 #include "catalog/pg_extension.h"
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
+#include "catalog/pg_foreign_catalog.h"
+#include "catalog/pg_foreign_volume.h"
 #include "catalog/pg_init_privs.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_largeobject.h"
@@ -196,6 +198,8 @@ static const Oid object_classes[] = {
 	TableSpaceRelationId,		/* OCLASS_TBLSPACE */
 	ForeignDataWrapperRelationId,	/* OCLASS_FDW */
 	ForeignServerRelationId,	/* OCLASS_FOREIGN_SERVER */
+	ForeignCatalogRelationId,   /* OCLASS_FOREIGN_CATALOG */
+	ForeignVolumeRelationId,    /* OCLASS_FOREIGN_VOLUME */
 	UserMappingRelationId,		/* OCLASS_USER_MAPPING */
 	DefaultAclRelationId,		/* OCLASS_DEFACL */
 	ExtensionRelationId,		/* OCLASS_EXTENSION */
@@ -1612,6 +1616,8 @@ doDeletion(const ObjectAddress *object, int flags)
 		case OCLASS_TSTEMPLATE:
 		case OCLASS_FDW:
 		case OCLASS_FOREIGN_SERVER:
+		case OCLASS_FOREIGN_CATALOG:
+		case OCLASS_FOREIGN_VOLUME:
 		case OCLASS_USER_MAPPING:
 		case OCLASS_DEFACL:
 		case OCLASS_EVENT_TRIGGER:
@@ -3048,6 +3054,12 @@ getObjectClass(const ObjectAddress *object)
 
 		case TagDescriptionRelationId:
 			return OCLASS_TAG_DESCRIPTION;
+
+		case ForeignCatalogRelationId:
+			return OCLASS_FOREIGN_CATALOG;
+
+		case ForeignVolumeRelationId:
+			return OCLASS_FOREIGN_VOLUME;
 
 		default:
 		{

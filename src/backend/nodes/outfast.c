@@ -644,6 +644,28 @@ _outCreateForeignServerStmt(StringInfo str, CreateForeignServerStmt *node)
 }
 
 static void
+_outCreateForeignCatalogStmt(StringInfo str, CreateForeignCatalogStmt *node)
+{
+	WRITE_NODE_TYPE("CREATEFOREIGNCATALOGSTMT");
+
+	WRITE_STRING_FIELD(catalogname);
+	WRITE_STRING_FIELD(servername);
+	WRITE_BOOL_FIELD(if_not_exists);
+	WRITE_NODE_FIELD(options);
+}
+
+static void
+_outCreateForeignVolumeStmt(StringInfo str, CreateForeignVolumeStmt *node)
+{
+	WRITE_NODE_TYPE("CREATEFOREIGNVOLUMESTMT");
+
+	WRITE_STRING_FIELD(volumename);
+	WRITE_STRING_FIELD(servername);
+	WRITE_BOOL_FIELD(if_not_exists);
+	WRITE_NODE_FIELD(options);
+}
+
+static void
 _outAddForeignSegstmt(StringInfo str, AddForeignSegStmt *node)
 {
 	WRITE_NODE_TYPE("ADDFOREIGNSEGSTMT");
@@ -1302,6 +1324,9 @@ _outNode(StringInfo str, void *obj)
 			case T_CreateForeignTableStmt:
 				_outCreateForeignTableStmt(str, obj);
 				break;
+			case T_CreateLakeTableStmt:
+				_outCreateLakeTableStmt(str, obj);
+				break;
 			case T_DistributionKeyElem:
 				_outDistributionKeyElem(str, obj);
 				break;
@@ -1805,6 +1830,12 @@ _outNode(StringInfo str, void *obj)
 				break;
 			case T_CreateForeignServerStmt:
 				_outCreateForeignServerStmt(str, obj);
+				break;
+			case T_CreateForeignCatalogStmt:
+				_outCreateForeignCatalogStmt(str, obj);
+				break;
+			case T_CreateForeignVolumeStmt:
+				_outCreateForeignVolumeStmt(str, obj);
 				break;
 			case T_AddForeignSegStmt:
 				_outAddForeignSegstmt(str, obj);

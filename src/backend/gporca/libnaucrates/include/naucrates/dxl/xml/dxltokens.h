@@ -524,6 +524,7 @@ enum Edxltoken
 	EdxltokenRelStorageAppendOnlyCols,
 	EdxltokenRelStorageAppendOnlyRows,
 	EdxltokenRelStoragePAX,
+	EdxltokenRelStorageIceberg,
 	EdxltokenRelStorageMixedPartitioned,
 	EdxltokenRelStorageForeign,
 	EdxltokenRelStorageCompositeType,

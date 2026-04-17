@@ -1484,6 +1484,7 @@ _outVacuumStmt(StringInfo str, const VacuumStmt *node)
 	WRITE_NODE_FIELD(options);
 	WRITE_NODE_FIELD(rels);
 	WRITE_BOOL_FIELD(is_vacuumcmd);
+	WRITE_NODE_FIELD(vacuum_private);
 }
 
 static void

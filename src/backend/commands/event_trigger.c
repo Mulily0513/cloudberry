@@ -965,6 +965,8 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_EXTENSION:
 		case OBJECT_FDW:
 		case OBJECT_FOREIGN_SERVER:
+		case OBJECT_FOREIGN_CATALOG:
+		case OBJECT_FOREIGN_VOLUME:
 		case OBJECT_FOREIGN_TABLE:
 		case OBJECT_FUNCTION:
 		case OBJECT_INDEX:
@@ -2124,6 +2126,10 @@ stringify_grant_objtype(ObjectType objtype)
 			return "FOREIGN DATA WRAPPER";
 		case OBJECT_FOREIGN_SERVER:
 			return "FOREIGN SERVER";
+		case OBJECT_FOREIGN_CATALOG:
+			return "FOREIGN CATALOG";
+		case OBJECT_FOREIGN_VOLUME:
+			return "FOREIGN VOLUME";
 		case OBJECT_STORAGE_SERVER:
 			return "STORAGE SERVER";
 		case OBJECT_FUNCTION:
@@ -2215,6 +2221,10 @@ stringify_adefprivs_objtype(ObjectType objtype)
 			return "FOREIGN DATA WRAPPERS";
 		case OBJECT_FOREIGN_SERVER:
 			return "FOREIGN SERVERS";
+		case OBJECT_FOREIGN_CATALOG:
+			return "FOREIGN CATALOGS";
+		case OBJECT_FOREIGN_VOLUME:
+			return "FOREIGN VOLUMES";
 		case OBJECT_STORAGE_SERVER:
 			return "STORAGE SERVERS";
 		case OBJECT_FUNCTION:

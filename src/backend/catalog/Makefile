@@ -79,7 +79,7 @@ CATALOG_HEADERS := \
 	pg_authid.h pg_auth_members.h pg_shdepend.h pg_shdescription.h \
 	pg_ts_config.h pg_ts_config_map.h pg_ts_dict.h \
 	pg_ts_parser.h pg_ts_template.h pg_extension.h \
-	pg_foreign_data_wrapper.h pg_foreign_server.h pg_user_mapping.h \
+	pg_foreign_data_wrapper.h pg_foreign_server.h pg_foreign_catalog.h pg_foreign_volume.h pg_user_mapping.h \
 	pg_resqueue.h pg_resqueuecapability.h pg_resourcetype.h \
 	pg_resgroup.h pg_resgroupcapability.h \
 	gp_configuration_history.h gp_id.h gp_distribution_policy.h gp_version_at_initdb.h \
@@ -97,7 +97,7 @@ CATALOG_HEADERS := \
 	pg_collation.h pg_partitioned_table.h pg_range.h pg_transform.h \
 	pg_sequence.h pg_publication.h pg_publication_rel.h pg_subscription.h \
 	pg_subscription_rel.h gp_partition_template.h pg_task.h pg_task_run_history.h \
-	pg_profile.h pg_password_history.h pg_directory_table.h gp_storage_server.h \
+	pg_profile.h pg_password_history.h pg_directory_table.h pg_lake_table.h gp_storage_server.h \
 	gp_storage_user_mapping.h pg_tag.h pg_tag_description.h \
 	gp_matview_aux.h \
 	gp_matview_tables.h

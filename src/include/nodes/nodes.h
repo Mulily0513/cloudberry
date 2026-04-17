@@ -509,6 +509,8 @@ typedef enum NodeTag
 	T_AlterFdwStmt,
 	T_CreateForeignServerStmt,
 	T_AlterForeignServerStmt,
+	T_CreateForeignCatalogStmt,
+	T_CreateForeignVolumeStmt,
 	T_CreateStorageServerStmt,
 	T_AlterStorageServerStmt,
 	T_DropStorageServerStmt,
@@ -522,6 +524,7 @@ typedef enum NodeTag
 	T_AlterTableMoveAllStmt,
 	T_SecLabelStmt,
 	T_CreateForeignTableStmt,
+	T_CreateLakeTableStmt,
 	T_ImportForeignSchemaStmt,
 	T_CreateExtensionStmt,
 	T_AlterExtensionStmt,
@@ -691,7 +694,8 @@ typedef enum NodeTag
 	T_EphemeralNamedRelationInfo, /* utils/queryenvironment.h */
 	T_FileFragment,
 	T_FileScanTask,
-	T_ExternalTableMetadata
+	T_ExternalTableMetadata,
+	T_IcebergTableStatistics
 } NodeTag;
 
 /*

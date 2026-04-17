@@ -596,6 +596,11 @@ _copySeqScan(const SeqScan *from)
 	 */
 	CopyScanFields((const Scan *) from, (Scan *) newnode);
 
+	/*
+	 * copy remainder of node
+	 */
+	COPY_NODE_FIELD(am_private);
+
 	return newnode;
 }
 
@@ -4956,6 +4961,7 @@ _copyVacuumStmt(const VacuumStmt *from)
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(rels);
 	COPY_SCALAR_FIELD(is_vacuumcmd);
+	COPY_NODE_FIELD(vacuum_private);
 
 	return newnode;
 }
@@ -5223,6 +5229,32 @@ _copyCreateForeignServerStmt(const CreateForeignServerStmt *from)
 	return newnode;
 }
 
+static CreateForeignCatalogStmt *
+_copyCreateForeignCatalogStmt(const CreateForeignCatalogStmt *from)
+{
+	CreateForeignCatalogStmt *newnode = makeNode(CreateForeignCatalogStmt);
+
+	COPY_STRING_FIELD(catalogname);
+	COPY_STRING_FIELD(servername);
+	COPY_SCALAR_FIELD(if_not_exists);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
+static CreateForeignVolumeStmt *
+_copyCreateForeignVolumeStmt(const CreateForeignVolumeStmt *from)
+{
+	CreateForeignVolumeStmt *newnode = makeNode(CreateForeignVolumeStmt);
+
+	COPY_STRING_FIELD(volumename);
+	COPY_STRING_FIELD(servername);
+	COPY_SCALAR_FIELD(if_not_exists);
+	COPY_NODE_FIELD(options);
+
+	return newnode;
+}
+
 static AlterForeignServerStmt *
 _copyAlterForeignServerStmt(const AlterForeignServerStmt *from)
 {
@@ -5352,6 +5384,22 @@ _copyCreateForeignTableStmt(const CreateForeignTableStmt *from)
 	CopyCreateStmtFields((const CreateStmt *) from, (CreateStmt *) newnode);
 
 	COPY_STRING_FIELD(servername);
+	COPY_NODE_FIELD(options);
+	COPY_NODE_FIELD(distributedBy);
+
+	return newnode;
+}
+
+static CreateLakeTableStmt *
+_copyCreateLakeTableStmt(const CreateLakeTableStmt *from)
+{
+	CreateLakeTableStmt *newnode = makeNode(CreateLakeTableStmt);
+
+	CopyCreateStmtFields((const CreateStmt *) &from->base, (CreateStmt *) &newnode->base);
+
+	COPY_STRING_FIELD(table_type);
+	COPY_STRING_FIELD(foreign_catalog);
+	COPY_STRING_FIELD(foreign_volume);
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(distributedBy);
 
@@ -7273,6 +7321,12 @@ copyObjectImpl(const void *from)
 		case T_CreateForeignServerStmt:
 			retval = _copyCreateForeignServerStmt(from);
 			break;
+		case T_CreateForeignCatalogStmt:
+			retval = _copyCreateForeignCatalogStmt(from);
+			break;
+		case T_CreateForeignVolumeStmt:
+			retval = _copyCreateForeignVolumeStmt(from);
+			break;
 		case T_AlterForeignServerStmt:
 			retval = _copyAlterForeignServerStmt(from);
 			break;
@@ -7305,6 +7359,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_CreateForeignTableStmt:
 			retval = _copyCreateForeignTableStmt(from);
+			break;
+		case T_CreateLakeTableStmt:
+			retval = _copyCreateLakeTableStmt(from);
 			break;
 		case T_ImportForeignSchemaStmt:
 			retval = _copyImportForeignSchemaStmt(from);

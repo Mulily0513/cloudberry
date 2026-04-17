@@ -1924,6 +1924,7 @@ _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(rels);
 	COMPARE_SCALAR_FIELD(is_vacuumcmd);
+	COMPARE_NODE_FIELD(vacuum_private);
 
 	return true;
 }
@@ -2153,6 +2154,28 @@ _equalCreateForeignServerStmt(const CreateForeignServerStmt *a, const CreateFore
 }
 
 static bool
+_equalCreateForeignCatalogStmt(const CreateForeignCatalogStmt *a, const CreateForeignCatalogStmt *b)
+{
+	COMPARE_STRING_FIELD(catalogname);
+	COMPARE_STRING_FIELD(servername);
+	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_NODE_FIELD(options);
+
+	return true;
+}
+
+static bool
+_equalCreateForeignVolumeStmt(const CreateForeignVolumeStmt *a, const CreateForeignVolumeStmt *b)
+{
+	COMPARE_STRING_FIELD(volumename);
+	COMPARE_STRING_FIELD(servername);
+	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_NODE_FIELD(options);
+
+	return true;
+}
+
+static bool
 _equalAddForeignSegStmt(const AddForeignSegStmt *a, const AddForeignSegStmt *b)
 {
 	COMPARE_STRING_FIELD(servername);
@@ -2270,6 +2293,21 @@ _equalCreateForeignTableStmt(const CreateForeignTableStmt *a, const CreateForeig
 		return false;
 
 	COMPARE_STRING_FIELD(servername);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_NODE_FIELD(distributedBy);
+
+	return true;
+}
+
+static bool
+_equalCreateLakeTableStmt(const CreateLakeTableStmt *a, const CreateLakeTableStmt *b)
+{
+	if (!_equalCreateStmt(&a->base, &b->base))
+		return false;
+
+	COMPARE_STRING_FIELD(table_type);
+	COMPARE_STRING_FIELD(foreign_catalog);
+	COMPARE_STRING_FIELD(foreign_volume);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(distributedBy);
 
@@ -4128,6 +4166,12 @@ equal(const void *a, const void *b)
 		case T_CreateForeignServerStmt:
 			retval = _equalCreateForeignServerStmt(a, b);
 			break;
+		case T_CreateForeignCatalogStmt:
+			retval = _equalCreateForeignCatalogStmt(a, b);
+			break;
+		case T_CreateForeignVolumeStmt:
+			retval = _equalCreateForeignVolumeStmt(a, b);
+			break;
 		case T_AddForeignSegStmt:
 			retval = _equalAddForeignSegStmt(a, b);
 			break;
@@ -4163,6 +4207,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_CreateForeignTableStmt:
 			retval = _equalCreateForeignTableStmt(a, b);
+			break;
+		case T_CreateLakeTableStmt:
+			retval = _equalCreateLakeTableStmt(a, b);
 			break;
 		case T_ImportForeignSchemaStmt:
 			retval = _equalImportForeignSchemaStmt(a, b);

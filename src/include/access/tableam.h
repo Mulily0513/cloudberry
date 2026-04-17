@@ -984,6 +984,54 @@ typedef struct TableAmRoutine
 
 	List *		(*transform_column_encoding_clauses) (Relation, List *encoding_opts, bool validate, bool optionFromType);
 
+	/*
+	 * Get AM-specific data (e.g. file splits) to be attached to the SeqScan
+	 * plan node on QD and dispatched to QE.
+	 *
+	 * Returns a List* that will be assigned to SeqScan->am_private.
+	 */
+	List *(*scan_get_am_private) (Relation rel, struct PlanState *ps);
+
+	/*
+	 * relation_analyze_get_dispatch_tasks:
+	 *
+	 * Called on the QD before dispatching ANALYZE sampling to QEs. Returns a
+	 * List that will be serialized and sent to each QE. The AM can encode
+	 * per-segment scan task metadata similarly to SeqScan->am_private.
+	 *
+	 * Optional callback; NULL means ANALYZE uses the legacy dispatcher path
+	 * without AM-specific private task payload.
+	 */
+	List *(*relation_analyze_get_dispatch_tasks) (Relation rel,
+												  bool inh,
+												  int targrows);
+
+	/*
+	 * relation_vacuum_get_dispatch_tasks:
+	 *
+	 * Called on the QD before dispatching VACUUM to QEs.  Returns a List
+	 * (suggested element type: String or DefElem) that will be serialized
+	 * into VacuumStmt->vacuum_private and broadcast to all QEs.  Each QE
+	 * receives the full list and is expected to filter tasks by
+	 * GpIdentity.segindex.
+	 *
+	 * Optional callback; NULL means no dispatch tasks to distribute.
+	 */
+	List *(*relation_vacuum_get_dispatch_tasks) (Relation rel,
+												 struct VacuumParams *params);
+
+	/*
+	 * relation_vacuum_combine_dispatch_results:
+	 *
+	 * Called on the QD after all QE results have been received.
+	 * all_dispatch_results is a nested List: each element is the result
+	 * List returned by a single QE via vac_send_private_to_qd().
+	 *
+	 * Optional callback; NULL means no post-aggregation work is needed.
+	 */
+	void (*relation_vacuum_combine_dispatch_results) (Relation rel,
+													  List *all_dispatch_results);
+
 } TableAmRoutine;
 
 
@@ -1924,6 +1972,35 @@ table_relation_vacuum(Relation rel, struct VacuumParams *params,
 }
 
 /*
+ * Get AM-specific VACUUM dispatch tasks to distribute to QEs.
+ *
+ * Returns NIL if the AM does not implement this callback.
+ */
+static inline List *
+table_relation_vacuum_get_dispatch_tasks(Relation rel,
+										 struct VacuumParams *params)
+{
+	if (rel->rd_tableam->relation_vacuum_get_dispatch_tasks)
+		return rel->rd_tableam->relation_vacuum_get_dispatch_tasks(rel, params);
+
+	return NIL;
+}
+
+/*
+ * Combine AM-specific VACUUM results collected from QEs.
+ *
+ * If the AM does not implement this callback, this is a no-op.
+ */
+static inline void
+table_relation_vacuum_combine_dispatch_results(Relation rel,
+											   List *all_dispatch_results)
+{
+	if (rel->rd_tableam->relation_vacuum_combine_dispatch_results)
+		rel->rd_tableam->relation_vacuum_combine_dispatch_results(rel,
+																  all_dispatch_results);
+}
+
+/*
  * GPDB: Interface to acquire sample rows from a given relation (currently
  * AO/CO).
  *
@@ -2322,6 +2399,37 @@ table_scan_sample_next_tuple(TableScanDesc scan,
 														   slot);
 }
 
+/*
+ * Get AM-specific data (e.g. file splits) to be attached to the SeqScan
+ * plan node on QD and dispatched to QE.
+ *
+ * Returns a List* that will be assigned to SeqScan->am_private.
+ * If the AM does not implement this callback, returns NIL.
+ */
+static inline List *
+table_scan_get_am_private(Relation rel, struct PlanState *ps)
+{
+	if (rel->rd_tableam->scan_get_am_private)
+		return rel->rd_tableam->scan_get_am_private(rel, ps);
+
+	return NIL;
+}
+
+/*
+ * Get AM-specific ANALYZE dispatch tasks to distribute to QEs.
+ *
+ * Returns NIL if the AM does not implement this callback.
+ */
+static inline List *
+table_relation_analyze_get_dispatch_tasks(Relation rel, bool inh, int targrows)
+{
+	if (rel->rd_tableam->relation_analyze_get_dispatch_tasks)
+		return rel->rd_tableam->relation_analyze_get_dispatch_tasks(rel,
+																	inh,
+																	targrows);
+
+	return NIL;
+}
 
 /* ----------------------------------------------------------------------------
  * Functions to make modifications a bit simpler.

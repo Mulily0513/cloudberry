@@ -2607,6 +2607,9 @@ CTranslatorRelcacheToDXL::RetrieveRelStorageType(Relation rel)
 		case PAX_AM_OID:
 			rel_storage_type = IMDRelation::ErelstoragePAX;
 			break;
+		case ICEBERG_AM_OID:
+			rel_storage_type = IMDRelation::ErelstorageIceberg;
+			break;
 		case AO_COLUMN_TABLE_AM_OID:
 			rel_storage_type = IMDRelation::ErelstorageAppendOnlyCols;
 			break;
