@@ -21,6 +21,7 @@ package cloud.elastic.dlagent.plugins.iceberg;
 
 import java.io.UncheckedIOException;
 import java.util.Map;
+import java.util.List;
 
 import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
 import org.apache.hadoop.conf.Configuration;
@@ -32,6 +33,8 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import com.google.common.base.Preconditions;
+import org.apache.iceberg.avro.Avro;
+
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,8 +49,9 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
     private HadoopCatalog hadoopCatalog;
     private IcebergUtilities icebergUtilities;
     private Configuration configuration;
+    private boolean isUseGopherClient = true;
 
-    public IcebergHadoopCatalog(String catalogLocation, IcebergUtilities icebergUtilities, Configuration configuration) {
+    public void createDefaultHadoopCatalog(String catalogLocation, IcebergUtilities icebergUtilities, Configuration configuration) {
         this.icebergUtilities = icebergUtilities;
         this.configuration = configuration;
         this.hadoopCatalog = new HadoopCatalog();
@@ -126,6 +130,50 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
         }
     }
 
+    public void createGopherHadoopCatalog(String catalogLocation,
+                                          IcebergUtilities icebergUtilities,
+                                          Configuration configuration,
+                                          Map<String, String> gopherProperties) {
+        this.icebergUtilities = icebergUtilities;
+        this.configuration = configuration;
+        this.hadoopCatalog = new HadoopCatalog();
+
+        Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
+
+        // Use gopher:// URI when Gopher is enabled, otherwise use standard hdfs:// URI for HadoopFileIO
+        String warehouseLocation;
+        if (icebergUtilities.isGopherEnabled(this.configuration)) {
+            warehouseLocation = convertToGopherURI(configuration.get("fs.defaultFS"), catalogLocation);
+        } else {
+            warehouseLocation = buildStandardURI(configuration.get("fs.defaultFS"), catalogLocation);
+        }
+        props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
+
+
+        for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+            props.put(entry.getKey(), entry.getValue());
+        }
+        //TODO(liuxiaoyu): need set gopherFileIO
+        //props.put(CatalogProperties.FILE_IO_IMPL, "");
+
+        LOG.debug("iceberg hadoop catalog gopher properties: {}", gopherProperties);
+        LOG.info("warehouse location of iceberg hadoop-table {}", warehouseLocation);
+
+        hadoopCatalog.setConf(this.configuration);
+        hadoopCatalog.initialize("", props);
+    }
+
+    public IcebergHadoopCatalog(String catalogLocation,
+                                IcebergUtilities icebergUtilities,
+                                Configuration configuration,
+                                Map<String, String> gopherProperties) {
+        if (isUseGopherClient) {
+            createGopherHadoopCatalog(catalogLocation, icebergUtilities, configuration, gopherProperties);
+        } else {
+            createDefaultHadoopCatalog(catalogLocation, icebergUtilities, configuration);
+        }
+    }
+
     @Override
     public Table createTable(
             TableIdentifier identifier,
@@ -133,7 +181,8 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
             PartitionSpec spec,
             String location,
             Map<String, String> tableProps) throws Exception {
-        return hadoopCatalog.createTable(identifier, schema, spec, location, tableProps);
+        return hadoopCatalog.createTable(identifier, schema, spec, location,
+                IcebergUtilities.stripInternalProperties(tableProps));
     }
 
     @Override
@@ -179,6 +228,12 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
     @Override
     public void renameTable(String tableName, String newTableName) {
         throw new UnsupportedOperationException("Iceberg accessor does not support renameTable operation.");
+    }
+
+    @Override
+    public boolean createNamespace(String catalogName, String namespaceName, 
+                                  Map<String, String> properties) throws Exception {
+        throw new UnsupportedOperationException("Hadoop catalog does not support createNamespace operation.");
     }
 }
 

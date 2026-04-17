@@ -19,6 +19,7 @@
 
 package cloud.elastic.dlagent.plugins.iceberg;
 
+import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -68,5 +69,15 @@ public interface IcebergCatalog {
      * For HadoopCatalog, Iceberg implement 'renameTable' method with Exception threw
      */
     void renameTable(String tableName, String newTableName);
+
+    /**
+     * Creates a namespace in the specified catalog.
+     * @param catalogName the catalog name
+     * @param namespaceName the namespace name
+     * @param properties namespace properties
+     * @return true if namespace was created successfully
+     */
+    boolean createNamespace(String catalogName, String namespaceName,
+                           Map<String, String> properties) throws Exception;
 }
 

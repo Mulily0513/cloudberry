@@ -30,12 +30,13 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hadoop.ConfigProperties;
 import org.apache.iceberg.hive.DlIcebergHiveCatalog;
-
+import org.apache.iceberg.util.LocationUtil;
 import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * Implementation of IcebergCatalog for tables stored in HiveCatalog.
@@ -47,17 +48,37 @@ public class IcebergHiveCatalog implements IcebergCatalog {
     private DlIcebergHiveCatalog hiveCatalog;
     private IcebergUtilities icebergUtilities;
     private Configuration configuration;
+    private boolean isUseGopherClient = false;
+    private String catalogLocation;
 
     public IcebergHiveCatalog(String catalogLocation,
                               IcebergUtilities icebergUtilities,
                               Configuration configuration,
                               SecureLogin secureLogin,
                               String serverName,
-                              String configFile) {
+                              String configFile,
+                              Map<String, String> gopherProperties) {
         this.icebergUtilities = icebergUtilities;
         this.configuration = configuration;
+        this.catalogLocation = catalogLocation;
 
+        if (isUseGopherClient) {
+            createGopherHiveCatalog(catalogLocation, icebergUtilities, configuration, secureLogin, serverName, configFile, gopherProperties);
+        } else {
+            createDefaultHiveCatalog(catalogLocation, icebergUtilities, configuration, secureLogin, serverName, configFile);
+        }
+    }
+
+    public void createDefaultHiveCatalog(String catalogLocation,
+                                         IcebergUtilities icebergUtilities,
+                                         Configuration configuration,
+                                         SecureLogin secureLogin,
+                                         String serverName,
+                                         String configFile) {
         HiveConf conf = new HiveConf(configuration, IcebergHiveCatalog.class);
+
+        // Set hadoop temp directory
+        conf.set("hadoop.tmp.dir", "/tmp/hadoop-" + System.getProperty("user.name"));
         conf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
 
         hiveCatalog = new DlIcebergHiveCatalog(secureLogin, serverName, configFile);
@@ -67,10 +88,40 @@ public class IcebergHiveCatalog implements IcebergCatalog {
         if (catalogLocation != null) {
             properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
         }
-
-        properties.put(CatalogProperties.CLIENT_POOL_SIZE, "5");
+        properties.forEach((key, value) -> LOG.debug(" createDefaultHiveCatalog properties {}: {}", key, value));
 
         hiveCatalog.initialize("IcebergHiveCatalog", properties);
+    }
+
+    public void createGopherHiveCatalog(String catalogLocation,
+                                        IcebergUtilities icebergUtilities,
+                                        Configuration configuration,
+                                        SecureLogin secureLogin,
+                                        String serverName,
+                                        String configFile,
+                                        Map<String, String> gopherProperties) {
+        HiveConf conf = new HiveConf(configuration, IcebergHiveCatalog.class);
+
+        conf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
+
+        hiveCatalog = new DlIcebergHiveCatalog(secureLogin, serverName, configFile);
+        hiveCatalog.setConf(conf);
+        Map<String, String> properties = icebergUtilities.composeCatalogProperties(this.configuration);
+        if (catalogLocation != null) {
+            properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
+        }
+
+        for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+            properties.put(entry.getKey(), entry.getValue());
+        }
+
+        properties.put(CatalogProperties.CLIENT_POOL_SIZE, "5");
+        hiveCatalog.initialize("IcebergHiveCatalog", properties);
+    }
+
+    private String buildTableLocation(String warehouseLocation, String namespace, String tableName) {
+        String warehouse = LocationUtil.stripTrailingSlash(warehouseLocation);
+        return String.format("%s/%s.db/%s", warehouse, namespace, tableName);
     }
 
     @Override
@@ -80,7 +131,17 @@ public class IcebergHiveCatalog implements IcebergCatalog {
             PartitionSpec spec,
             String location,
             Map<String, String> properties) {
-        return hiveCatalog.createTable(identifier, schema, spec, location, properties);
+        if (catalogLocation != null && !catalogLocation.isEmpty()) {
+            if (location == null || location.isEmpty()) {
+                String namespace = identifier.namespace().level(0);
+                String tableName = identifier.name();
+                location = buildTableLocation(catalogLocation, namespace, tableName);
+            }
+            return hiveCatalog.createTable(identifier, schema, spec, location,
+                    IcebergUtilities.stripInternalProperties(properties));
+        } else {
+            return hiveCatalog.createTable(identifier, schema);
+        }
     }
 
     @Override
@@ -104,5 +165,11 @@ public class IcebergHiveCatalog implements IcebergCatalog {
     @Override
     public void renameTable(String tableName, String newTableName) {
         throw new UnsupportedOperationException("Iceberg accessor does not support renameTable operation.");
+    }
+
+    @Override
+    public boolean createNamespace(String catalogName, String namespaceName,
+                                   Map<String, String> properties) throws Exception {
+        throw new UnsupportedOperationException("Hive catalog does not support createNamespace operation.");
     }
 }

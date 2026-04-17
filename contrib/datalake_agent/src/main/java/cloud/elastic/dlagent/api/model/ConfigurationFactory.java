@@ -52,4 +52,6 @@ public interface ConfigurationFactory {
                                     String userName,
                                     String location,
                                     Map<String, String> additionalProperties);
+
+    void initIcebergConfigFormJson(RequestContext context);
 }

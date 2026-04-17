@@ -22,6 +22,7 @@ package cloud.elastic.dlagent.plugins.iceberg;
 import cloud.elastic.dlagent.api.utilities.Utilities;
 import java.io.UncheckedIOException;
 import java.util.Map;
+import java.util.List;
 
 import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
 import org.apache.hadoop.conf.Configuration;
@@ -47,7 +48,7 @@ public class IcebergS3Catalog implements IcebergCatalog {
     private IcebergUtilities icebergUtilities;
     private Configuration configuration;
 
-    public IcebergS3Catalog(String catalogLocation, IcebergUtilities icebergUtilities, Configuration configuration) {
+    public IcebergS3Catalog(String catalogLocation, IcebergUtilities icebergUtilities, Configuration configuration, Map<String, String> gopherProperties) {
         this.icebergUtilities = icebergUtilities;
         this.configuration = configuration;
         this.hadoopCatalog = new HadoopCatalog();
@@ -76,7 +77,8 @@ public class IcebergS3Catalog implements IcebergCatalog {
             PartitionSpec spec,
             String location,
             Map<String, String> tableProps) throws Exception {
-        return hadoopCatalog.createTable(identifier, schema, spec, location, tableProps);
+        return hadoopCatalog.createTable(identifier, schema, spec, location,
+                IcebergUtilities.stripInternalProperties(tableProps));
     }
 
     @Override
@@ -100,6 +102,12 @@ public class IcebergS3Catalog implements IcebergCatalog {
     @Override
     public void renameTable(String tableName, String newTableName) {
         throw new UnsupportedOperationException("Iceberg accessor does not support renameTable operation.");
+    }
+
+    @Override
+    public boolean createNamespace(String catalogName, String namespaceName, 
+                                  Map<String, String> properties) throws Exception {
+        throw new UnsupportedOperationException("S3 catalog does not support createNamespace operation.");
     }
 }
 

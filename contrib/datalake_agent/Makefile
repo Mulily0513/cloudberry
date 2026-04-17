@@ -4,7 +4,10 @@ include $(top_builddir)/src/Makefile.global
 MVN_EXISTS := $(shell command -v mvn 2> /dev/null)
 
 all:
-	mvn package
+	mvn package -DskipTests
+
+test:
+	cd test && ./make-test.sh
 
 clean:
 ifdef MVN_EXISTS

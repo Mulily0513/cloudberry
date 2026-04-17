@@ -1,0 +1,356 @@
+package cloud.elastic.dlagent.service.iceberg;
+
+import cloud.elastic.dlagent.api.model.RequestContext;
+import cloud.elastic.dlagent.api.model.CombinedTask;
+import cloud.elastic.dlagent.api.model.Fragment;
+import cloud.elastic.dlagent.api.model.FragmentDescription;
+import cloud.elastic.dlagent.api.model.ScanTask;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergCatalog;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergCatalogFactory;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergMetadataFetcher;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergFileFragmentMetadata;
+import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergCatalogWrapper;
+import cloud.elastic.dlagent.plugins.iceberg.IcebergPolarisCatalogManager;
+import cloud.elastic.dlagent.service.ServiceResult;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.iceberg.CombinedScanTask;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.AppendFiles;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.NoSuchNamespaceException;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.types.TypeUtil;
+import org.apache.iceberg.types.Types;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.stream.Collectors;
+
+import static org.apache.iceberg.FileContent.EQUALITY_DELETES;
+
+/**
+ * Implementation of IcebergService
+ */
+@Service
+@Slf4j
+public class IcebergServiceImpl implements IcebergService {
+    @Autowired(required = false)
+    private IcebergCatalogFactory icebergCatalogFactory;
+
+    @Autowired
+    private IcebergMetadataFetcher icebergMetadataFetcher;
+
+    @Autowired
+    private IcebergCatalogWrapper icebergCatalogWrapper;
+
+    @Autowired
+    @Qualifier("polarisIcebergCatalogManager")
+    private IcebergPolarisCatalogManager polarisCatalogManager;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    
+    /**
+     * Enable auto-creation of namespaces for Polaris catalog when they don't exist.
+     * This feature is only supported for Polaris catalog type.
+     * Other catalog types will throw exception if namespace doesn't exist.
+     */
+    @Value("${iceberg.polaris.auto-create-namespace:true}")
+    private boolean polarisAutoCreateNamespace;
+
+    @Override
+    public Boolean checkTableExists(String namespace, String tableName, Map<String, String> properties,
+            RequestContext context) throws Exception {
+        IcebergCatalog catalog = icebergCatalogWrapper.getIcebergCatalog(context);
+        TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
+        catalog.loadTable(tableId, context.getPath(), properties);
+        return true;
+    }
+
+    @Override
+    public Table loadTable(String namespace, String tableName, Map<String, String> properties, RequestContext context)
+            throws Exception {
+        IcebergCatalog catalog = icebergCatalogWrapper.getIcebergCatalog(context);
+        TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
+        Table table = catalog.loadTable(tableId, context.getPath(), properties);
+        return table;
+    }
+
+    @Override
+    public Table createTable(String namespace, String tableName, Schema schema, String location,
+            Map<String, String> properties, RequestContext context) throws Exception {
+        TableIdentifier tableId = TableIdentifier.of(namespace, tableName);
+        IcebergCatalog catalog = icebergCatalogWrapper.getIcebergCatalog(context);
+        PartitionSpec spec = PartitionSpec.unpartitioned();
+
+        // Set format version to 2 to support UPDATE/DELETE operations.
+        // Belt-and-suspenders: the controller already filters user props via
+        // extractUserTableProperties, but strip any internal runtime-config
+        // key again here to guarantee nothing leaks into TableMetadata regardless
+        // of how this service method is called.
+        Map<String, String> tableProperties = new HashMap<>();
+        tableProperties.put(TableProperties.FORMAT_VERSION, "2");
+        if (properties != null) {
+            tableProperties.putAll(IcebergUtilities.stripInternalProperties(properties));
+        }
+        try {
+            Table table = catalog.createTable(tableId, schema, spec, location, tableProperties);
+            return table;
+        } catch (org.apache.iceberg.exceptions.AlreadyExistsException e) {
+            log.info("Table {} already exists, loading existing table", tableId);
+            return catalog.loadTable(tableId, context.getPath(), properties);
+        } catch (NoSuchNamespaceException e) {
+            String catalogType = context.getCatalogType();
+
+            // Only support auto-create namespace for polaris catalog
+            if (!"polaris".equals(catalogType)) {
+                log.error("Namespace {} not found and auto-creation not supported for catalog type: {}",
+                        namespace, catalogType);
+                throw e;
+            }
+
+            // Check if auto-create is enabled for polaris
+            if (!polarisAutoCreateNamespace) {
+                log.error("Namespace {} not found and auto-creation is disabled for polaris catalog", namespace);
+                throw e;
+            }
+
+            log.info("Namespace {} not found in polaris catalog, attempting to create it", namespace);
+
+            // Auto-create namespace for polaris catalog
+            String[] catalogAndNamespace = extractCatalogNameAndNamespace(context);
+            String catalogName = catalogAndNamespace[0];
+
+            boolean created = catalog.createNamespace(catalogName, namespace, null);
+
+            log.info("Successfully auto-created namespace: {}", namespace);
+            // Retry table creation
+            Table table = catalog.createTable(tableId, schema, spec, location, tableProperties);
+            return table;
+        }
+    }
+
+    /**
+     * Extract catalog name and namespace from full path
+     * Format: catalog_name.namespace.tablename or catalog_name.namespace1.namespace2.namespace3.tablename
+     * @param context RequestContext containing the full path in dataSource
+     * @return String array [catalogName, namespace]
+     */
+    private String[] extractCatalogNameAndNamespace(RequestContext context) {
+        String fullPath = context.getDataSource();
+        String[] parts = fullPath.split("\\.");
+
+        String catalogName = parts[0];
+
+        // Join all parts except first (catalog) and last (table) as namespace
+        StringBuilder namespace = new StringBuilder();
+        for (int i = 1; i < parts.length - 1; i++) {
+            if (i > 1) {
+                namespace.append(".");
+            }
+            namespace.append(parts[i]);
+        }
+
+        return new String[]{catalogName, namespace.toString()};
+    }
+
+    @Override
+    public String getTableFragment(String namespace, String tableName, Map<String, String> properties,
+            RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+
+        // Check for uncommitted metadata location (deferred commit Read-Your-Own-Writes)
+        String uncommittedLocation = properties != null
+            ? properties.get("metadata_location")
+            : null;
+
+        FragmentDescription fragmentDescription;
+        if (uncommittedLocation != null && !uncommittedLocation.isEmpty()) {
+            log.debug("Scanning with uncommitted metadata location: {}", uncommittedLocation);
+            fragmentDescription = icebergMetadataFetcher.getFragmentsByUncommittedMetadata(uncommittedLocation);
+        } else {
+            fragmentDescription = icebergMetadataFetcher.getFragments(null);
+        }
+
+        String result = objectMapper.writeValueAsString(fragmentDescription);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> appendToTable(String namespace, String tableName, Map<String, String> properties,
+            RequestContext context) throws Exception {
+        // For the logic of the AM, appending data should not involve creating tables.
+        // The Iceberg AM is already different
+        // from the FDW approach. Therefore, we should directly call appendTable here.
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.onlyBatchAppend();
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+
+        return result;
+    }
+
+    public Map<String, Object> rowUpdate(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.rowUpdateAndReturnLocation();
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+        return result;
+    }
+
+    @Override
+    public boolean dropTable(String namespace, String tableName, boolean purgeRequested, 
+                             Map<String, String> properties, RequestContext context) throws Exception {
+        IcebergCatalog catalog = icebergCatalogWrapper.getIcebergCatalog(context);
+        return catalog.dropTable(tableName, purgeRequested);
+    }
+
+    @Override
+    public boolean createCatalog(String catalogName, Map<String, String> catalogProperties,
+            Map<String, Object> storageConfig, Map<String, String> properties) throws Exception {
+        List<String> catalogs = polarisCatalogManager.listCatalogs(properties);
+        if (catalogs.contains(catalogName)) {
+            log.info("Catalog {} already exists, skipping creation", catalogName);
+            return true;
+        }
+        if (storageConfig == null || storageConfig.isEmpty()) {
+            throw new IllegalArgumentException("storageConfig cannot be null or empty for catalog creation");
+        }
+        return polarisCatalogManager.createCatalog(catalogName, catalogProperties, storageConfig, properties);
+    }
+
+    @Override
+    public boolean createNamespace(String catalogName, String namespaceName,
+            Map<String, String> namespaceProperties, Map<String, String> properties) throws Exception {
+        try {
+            RequestContext context = polarisCatalogManager.createRequestContextForCatalogOps(properties);
+            IcebergCatalog catalog = icebergCatalogWrapper.getIcebergCatalog(context);
+            return catalog.createNamespace(catalogName, namespaceName, namespaceProperties);
+        } catch (Exception e) {
+            log.error("Failed to create namespace: {} in catalog: {}", namespaceName, catalogName, e);
+            // If namespace already exists, return true
+            if (e.getMessage() != null && e.getMessage().contains("already exists")) {
+                return true;
+            }
+            throw e;
+        }
+    }
+
+    @Override
+    public List<String> listCatalogs(Map<String, String> properties) throws Exception {
+        return polarisCatalogManager.listCatalogs(properties);
+    }
+
+    @Override
+    public List<String> listNamespaces(String catalogName, Map<String, String> properties) throws Exception {
+        return polarisCatalogManager.listNamespaces(catalogName, properties);
+    }
+
+    @Override
+    public String planFileGroups(String namespace, String tableName, Map<String, String> properties,
+            RequestContext context, int minInputFiles, int targetFileSizeMb) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        FragmentDescription fragmentDescription = icebergMetadataFetcher.planFileGroups(minInputFiles, targetFileSizeMb);
+        String result = objectMapper.writeValueAsString(fragmentDescription);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> commitFileGroups(String namespace, String tableName,
+            Map<String, String> properties, RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.commitFileGroups();
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> commitAppend(String namespace, String tableName,
+            Map<String, String> properties, RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.commitAppend();
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> commitUpdate(String namespace, String tableName,
+            Map<String, String> properties, RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.commitUpdate();
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> commitRewrite(String namespace, String tableName,
+            Map<String, String> properties, RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        String metadataLocation = icebergMetadataFetcher.commitRewrite();
+        Map<String, Object> result = new HashMap<>();
+        result.put("metadata-location", metadataLocation);
+        return result;
+    }
+
+    @Override
+    public String getTableStatistics(String namespace, String tableName, Map<String, String> properties,
+            RequestContext context) throws Exception {
+        icebergMetadataFetcher.setRequestContext(context);
+        Map<String, String> summary = icebergMetadataFetcher.getCurrentSnapshotSummary();
+        if (summary == null) {
+            summary = Collections.emptyMap();
+        }
+        Map<String, String> statistics = new HashMap<>();
+        statistics.put("total-records", summary.getOrDefault("total-records", "0"));
+        statistics.put("total-files-size", summary.getOrDefault("total-files-size", "0"));
+        return objectMapper.writeValueAsString(statistics);
+    }
+
+    /**
+     * Helper method to convert Iceberg Table to metadata map
+     */
+    private Map<String, Object> convertTableToMetadata(Table table) {
+        Map<String, Object> metadata = new HashMap<>();
+
+        // Basic table information
+
+        // metadata.put("format-version", table.ops().current().formatVersion());
+        // metadata.put("table-uuid", table.uuid());
+        metadata.put("location", table.location());
+        metadata.put("last-updated-ms", table.currentSnapshot() != null ? table.currentSnapshot().timestampMillis()
+                : System.currentTimeMillis());
+
+        // Schema information
+        Schema schema = table.schema();
+        metadata.put("current-schema-id", schema.schemaId());
+
+        // Add more metadata fields as needed
+
+        return metadata;
+    }
+
+}

@@ -1,0 +1,2333 @@
+openapi: 3.0.3
+info:
+  title: datalake_agent openapi
+  version: 1.0.0
+  description: this is datalake_agent openapi
+
+servers:
+  - url: http://localhost:3000/api
+    description: development
+
+paths:
+  /v1/{prefix}/catalog/
+
+  # Catalog Management API
+  /v1/{prefix}/catalogs/create:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+    post:
+      tags:
+        - Catalog Management API
+      summary: Create a catalog
+      description: |
+        Creates a catalog with the specified configuration.
+      operationId: createCatalogWithNamespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCatalogOnlyRequest'
+      responses:
+        201:
+          $ref: '#/components/responses/CreateCatalogOnlyResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        409:
+          description: Conflict - The catalog already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/namespaces/create:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+    post:
+      tags:
+        - Namespace Management API
+      summary: Create a namespace in a catalog
+      description: |
+        Creates a namespace in the specified catalog.
+      operationId: createNamespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNamespaceRequest'
+      responses:
+        201:
+          $ref: '#/components/responses/CreateNamespaceResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The catalog specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        409:
+          description: Conflict - The namespace already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/catalogs/list:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+    post:
+      tags:
+        - Catalog Management API
+      summary: List all catalogs
+      description: List all available catalogs
+      operationId: listCatalogs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListCatalogsRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/ListCatalogsResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/namespaces/list:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+    post:
+      tags:
+        - Namespace Management API
+      summary: List all namespaces in a catalog
+      description: List all namespaces in the specified catalog
+      operationId: listNamespaces
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListNamespacesRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/ListNamespacesResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The catalog specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  # Standard Iceberg REST API
+  /v1/{prefix}/tables/create:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+    post:
+      tags:
+        - Catalog API
+      summary: Create a table in the given namespace
+      description: |
+        Create a table or start a create transaction, like atomic CTAS.
+        If `stage-create` is false, the table is created immediately.
+        If `stage-create` is true, the table is not created, but table metadata
+        is initialized and returned. The service should prepare as needed for
+        a commit to the table commit endpoint to complete the create transaction.
+        The client uses the returned metadata to begin a transaction. To commit
+        the transaction, the client sends all create and subsequent changes
+        to the table commit route. Changes from the table create operation
+        include changes like AddSchemaUpdate and SetCurrentSchemaUpdate
+        that set the initial table state.
+      operationId: createTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/data-access'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTableRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/CreateTableResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The namespace specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                NamespaceNotFound:
+                  $ref: '#/components/examples/NoSuchNamespaceError'
+        409:
+          description: Conflict - The table already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableAlreadyExists:
+                  $ref: '#/components/examples/TableAlreadyExistsError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/load:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+      - $ref: '#/components/parameters/table'
+    post:
+      tags:
+        - Catalog API
+      summary: Load a table from the catalog
+      operationId: loadTable
+      description:
+        Load a table from the catalog.
+        The response contains both configuration and table metadata. The configuration, if non-empty is used
+        as additional configuration for the table that overrides catalog configuration. For example, this
+        configuration may change the FileIO implementation to be used for the table.
+        The response also contains the table's full metadata, matching the table metadata JSON file.
+        The catalog configuration may contain credentials that should be used for subsequent requests for the
+        table. The configuration key "token" is used to pass an access token to be used as a bearer token
+        for table requests. Otherwise, a token may be passed using a RFC 8693 token type as a configuration
+        key. For example, "urn:ietf:params:oauth:token-type:jwt=<JWT-token>".
+      parameters:
+        - $ref: '#/components/parameters/data-access'
+        - name: If-None-Match
+          in: header
+          description:
+            An optional header that allows the server to return 304 (Not Modified) if the metadata
+            is current. The content is the value of the ETag received in a CreateTableResponse or
+            LoadTableResponse.
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: snapshots
+          description:
+            The snapshots to return in the body of the metadata. Setting the value to `all` would
+            return the full set of snapshots currently valid for the table. Setting the value to
+            `refs` would load all snapshots referenced by branches or tags.
+            Default if no param is provided is `all`.
+          required: false
+          schema:
+            type: string
+            enum: [ all, refs ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoadTableRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/LoadTableResponse'
+        304:
+          description:
+            Not Modified - Based on the content of the 'If-None-Match' header the table metadata has
+            not changed since.
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description:
+            Not Found - NoSuchTableException, table to load does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableToLoadDoesNotExist:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/exists:
+    parameters:
+      - $ref: '#/components/parameters/prefix'
+      - $ref: '#/components/parameters/namespace'
+      - $ref: '#/components/parameters/table'
+    post:
+      tags:
+        - Catalog API
+      summary: Check if a table exists in the given namespace
+      description: |
+        Check if a table exists in the given namespace.
+        A 200 OK status indicates that the table exists.
+        A 404 Not Found status indicates that the table does not exist.
+      operationId: tableExists
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TableExistsRequest'
+      responses:
+        200:
+          description: The table exists
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableNotFound:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+  /v1/{prefix}/tables/{table}/getFragment:
+    post:
+      tags:
+        - Catalog API
+      summary: Get Fragment data from the given table
+      description: |
+        Get Fragment data from the given table
+      operationId: getTableMetadata
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/data-access'
+        - name: If-None-Match
+          in: header
+          description:
+            An optional header that allows the server to return 304 (Not Modified) if the metadata
+            is current. The content is the value of the ETag received in a CreateTableResponse or
+            LoadTableResponse.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetFragmentRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/GetFragmentResponse'
+        304:
+          description:
+            Not Modified - Based on the content of the 'If-None-Match' header the table metadata has
+            not changed since.
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description:
+            Not Found - NoSuchTableException, table to load does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableToLoadDoesNotExist:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/getStatistics:
+    post:
+      tags:
+        - Catalog API
+      summary: Get statistics from the given table
+      description: |
+        Get statistics (total-records, total-files-size) from the current snapshot summary
+        of the given table.
+      operationId: getTableStatistics
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/data-access'
+        - name: If-None-Match
+          in: header
+          description:
+            An optional header that allows the server to return 304 (Not Modified) if the statistics
+            have not changed.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetStatisticsRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/GetStatisticsResponse'
+        304:
+          description:
+            Not Modified - Based on the content of the 'If-None-Match' header the statistics have
+            not changed since.
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description:
+            Not Found - NoSuchTableException, table to load does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableToLoadDoesNotExist:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/append:
+    post:
+      tags:
+        - Catalog API
+      summary: Append data files to a table
+      description: |
+        Append data files to a table by creating a new snapshot.
+        This operation creates a new snapshot with the provided data files appended to the table.
+        The operation is atomic and will either succeed completely or fail without making any changes.
+      operationId: appendToTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/data-access'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/AppendResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableNotFound:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/update:
+    post:
+      tags:
+        - Catalog API
+      summary: update data files to a table
+      operationId: updateToTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+        - $ref: '#/components/parameters/data-access'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/AppendResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableNotFound:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/commitAppend:
+    post:
+      tags:
+        - Catalog API
+      summary: PRE_COMMIT append - normal AppendFiles commit that updates catalog
+      description: |
+        Performs a normal AppendFiles commit that updates the catalog.
+        Used during PRE_COMMIT phase to finalize INSERT operations.
+      operationId: commitAppend
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/AppendResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/commitUpdate:
+    post:
+      tags:
+        - Catalog API
+      summary: PRE_COMMIT update - normal RowDelta commit that updates catalog
+      description: |
+        Performs a normal RowDelta commit that updates the catalog.
+        Used during PRE_COMMIT phase to finalize UPDATE/DELETE operations.
+      operationId: commitUpdate
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/AppendResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/commitRewrite:
+    post:
+      tags:
+        - Catalog API
+      summary: VACUUM commit - RewriteFiles + commit to catalog
+      description: |
+        Performs a RewriteFiles commit that updates the catalog.
+        Used during VACUUM to atomically replace old files with new files.
+        Request body contains fragments (new files) and rewrittenFragments (old files).
+      operationId: commitRewrite
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendRequest'
+      responses:
+        200:
+          $ref: '#/components/responses/AppendResponse'
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+  /v1/{prefix}/tables/{table}/drop:
+    post:
+      tags:
+        - Catalog API
+      summary: Drop a table
+      description: |
+        Drop a table from the catalog.
+        This operation permanently deletes the table metadata and optionally purges all data files.
+        The operation is atomic and will either succeed completely or fail without making any changes.
+      operationId: dropTable
+      parameters:
+        - $ref: '#/components/parameters/prefix'
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/table'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DropTableRequest'
+      responses:
+        204:
+          description: Success, no content
+        400:
+          $ref: '#/components/responses/BadRequestErrorResponse'
+        401:
+          $ref: '#/components/responses/UnauthorizedResponse'
+        403:
+          $ref: '#/components/responses/ForbiddenResponse'
+        404:
+          description: Not Found - The table specified does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+              examples:
+                TableNotFound:
+                  $ref: '#/components/examples/NoSuchTableError'
+        419:
+          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+        503:
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        5XX:
+          $ref: '#/components/responses/ServerErrorResponse'
+
+components:
+  parameters:
+    namespace:
+      name: namespace
+      in: path
+      required: true
+      description:
+        A namespace identifier as a single string.
+        Multipart namespace parts should be separated by the unit separator (`0x1F`) byte.
+      schema:
+        type: string
+      examples:
+        singlepart_namespace:
+          value: "accounting"
+        multipart_namespace:
+          value: "accounting%1Ftax"
+
+    prefix:
+      name: prefix
+      in: path
+      required: true
+      description: An optional prefix in the path
+      schema:
+        type: string
+
+    table:
+      name: table
+      in: path
+      description: A table name
+      required: true
+      schema:
+        type: string
+      example: "sales"
+
+    data-access:
+      name: X-Iceberg-Access-Delegation
+      in: header
+      description: >
+        Optional signal to the server that the client supports delegated access
+        via a comma-separated list of access mechanisms.  The server may choose
+        to supply access via any or none of the requested mechanisms.
+        Specific properties and handling for `vended-credentials` is documented
+        in the `LoadTableResult` schema section of this spec document.
+        The protocol and specification for `remote-signing` is documented in
+        the `s3-signer-open-api.yaml` OpenApi spec in the `aws` module.
+      required: false
+      schema:
+        type: string
+        enum:
+          - vended-credentials
+          - remote-signing
+      style: simple
+      explode: false
+      example: "vended-credentials,remote-signing"
+
+    etag:
+      name: ETag
+      in: header
+      description: Identifies a unique version of the table metadata.
+      required: false
+      schema:
+        type: string
+
+  schemas:
+    CreateCatalogOnlyRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - catalog
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        catalog:
+          $ref: '#/components/schemas/CatalogInfo'
+
+    CatalogInfo:
+      type: object
+      required:
+        - name
+        - type
+        - readOnly
+      properties:
+        name:
+          type: string
+          description: Name of the catalog to create
+          example: "my_catalog"
+        type:
+          type: string
+          description: Type of the catalog
+          enum: ["INTERNAL", "EXTERNAL"]
+          example: "INTERNAL"
+        readOnly:
+          type: boolean
+          description: Whether the catalog is read-only
+          example: false
+        properties:
+          type: object
+          description: Catalog properties
+          additionalProperties:
+            type: string
+          example:
+            default-base-location: "s3://bucket123"
+        storageConfigInfo:
+          $ref: '#/components/schemas/StorageConfigInfo'
+
+    StorageConfigInfo:
+      type: object
+      required:
+        - storageType
+        - allowedLocations
+        - endpoint
+        - pathStyleAccess
+      properties:
+        storageType:
+          type: string
+          description: Type of storage
+          enum: ["S3", "HDFS", "GCS", "AZURE"]
+          example: "S3"
+        allowedLocations:
+          type: array
+          description: List of allowed storage locations
+          items:
+            type: string
+          example: ["s3://bucket123"]
+        endpoint:
+          type: string
+          description: Storage endpoint URL
+          example: "http://minio:9000"
+        endpointInternal:
+          type: string
+          description: Internal storage endpoint URL
+          example: "http://minio:9000"
+        pathStyleAccess:
+          type: boolean
+          description: Whether to use path-style access
+          example: true
+
+    CreateNamespaceRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - catalogName
+        - namespaceName
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        catalogName:
+          type: string
+          description: Name of the catalog where namespace will be created
+          example: "my_catalog"
+        namespaceName:
+          type: string
+          description: Name of the namespace to create
+          example: "default"
+        namespaceProperties:
+          type: object
+          description: Namespace properties
+          additionalProperties:
+            type: string
+
+    ListCatalogsRequest:
+      type: object
+      required:
+        - IcebergConfig
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+
+    ListNamespacesRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - catalogName
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        catalogName:
+          type: string
+          description: Name of the catalog to list namespaces from
+          example: "my_catalog"
+
+    CreateCatalogOnlyResult:
+      type: object
+      required:
+        - success
+        - catalogName
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+          example: true
+        catalogName:
+          type: string
+          description: Name of the created catalog
+          example: "my_catalog"
+        message:
+          type: string
+          description: Success or error message
+          example: "Catalog created successfully"
+
+    CreateNamespaceResult:
+      type: object
+      required:
+        - success
+        - catalogName
+        - namespaceName
+      properties:
+        success:
+          type: boolean
+          description: Whether the operation was successful
+          example: true
+        catalogName:
+          type: string
+          description: Name of the catalog
+          example: "my_catalog"
+        namespaceName:
+          type: string
+          description: Name of the created namespace
+          example: "default"
+        message:
+          type: string
+          description: Success or error message
+          example: "Namespace created successfully"
+
+    ListCatalogsResult:
+      type: object
+      required:
+        - catalogs
+      properties:
+        catalogs:
+          type: array
+          description: List of catalog names
+          items:
+            type: string
+          example: ["catalog1", "catalog2", "catalog3"]
+
+    ListNamespacesResult:
+      type: object
+      required:
+        - namespaces
+      properties:
+        namespaces:
+          type: array
+          description: List of namespace names
+          items:
+            type: string
+          example: ["default", "analytics", "staging"]
+
+    GopherConfig:
+      type: object
+      description: gopher config
+      properties:
+        common:
+          $ref: '#/components/schemas/GopherCommonConfig'
+
+    GopherCommonConfig:
+      type: object
+      description: Gopher common config
+      properties:
+        worker_path:
+          type: string
+          description: gopher work path
+          example: "/tmp/gopher/worker"
+        connect_path:
+          type: string
+          description: gopher connect socket path
+          example: "/tmp/gopher/connect"
+        connect_plasma_path:
+          type: string
+          description: Plasma connect socket path
+          example: "/tmp/gopher/plasma"
+        ufs_type:
+          type: string
+          description: gopher ufs type support visit oss and hdfs
+          enum: [QINGSTOR, HUAWEI, S3A, S3AV2, QCLOUD, OSS, KSYUN, QINIU, UCLOUD, HDFS, SWIFT, FTP, UFS_LOCAL]
+          example: "hdfs"
+        uri_prefix:
+          type: string
+          description: URI prefix
+          example: "/prefix"
+        cache_strategy:
+          type: string
+          enum: [GOPHER_CACHE, GOPHER_NOT_CACHE]
+          description: whether cache file for gopher
+          example: "GOPHER_CACHE"
+        gopher_mode:
+          type: string
+          enum: [GOPHER_NORMAL, GOPHER_DELEGATE]
+          description: Gopher mode, default set GOPHER_NORMAL
+          example: "GOPHER_NORMAL"
+        log_level:
+          type: string
+          description: gopher log level
+          enum: [GOPHER_FATAL, GOPHER_ERROR, GOPHER_WARNING, GOPHER_INFO, GOPHER_DEBUG1, GOPHER_DEBUG2, GOPHER_DEBUG3]
+          example: "GOPHER_FATAL"
+        liboss2_log_severity:
+          type: string
+          description: liboss2 log level
+          enum: [GOPHER_LIBOSS2_FATAL, GOPHER_LIBOSS2_ERROR, GOPHER_LIBOSS2_WARNING, GOPHER_LIBOSS2_INFO, GOPHER_LIBOSS2_DEBUG1, GOPHER_LIBOSS2_DEBUG2, GOPHER_LIBOSS2_DEBUG3]
+          example: "GOPHER_LIBOSS2_FATAL"
+        cache_predict_num:
+          type: integer
+          description: cache predict num, default set 3 num
+          example: 3
+        local_path:
+          type: string
+          description: local path
+          example: "/tmp/gopher/local"
+        load_libgopherClient_path:
+          type: string
+          description: load libgopherClient.so path
+          example: "/workspace/dist/thirdparty/lib"
+
+    IcebergConfig:
+      type: object
+      description: iceberg config
+      properties:
+        IcebergCatalogConfig:
+          $ref: '#/components/schemas/IcebergCatalogConfig'
+        IcebergVolumeConfig:
+          $ref: '#/components/schemas/IcebergVolumeConfig'
+        IcebergAdditionalConfig:
+          $ref: '#/components/schemas/IcebergAdditionalConfig'
+
+    IcebergCatalogConfig:
+      type: object
+      description: iceberg catalog config
+      properties:
+        server_type:
+          type: string
+          description: iceberg catalog type
+          enum: [hive, hadoop, s3, polaris]
+          example: "hive"
+        hive_metastore_uri:
+          type: string
+          description: Hive Metastore URI
+          example: "thrift://metastore.example.com:9083"
+        username:
+          type: string
+          description: iceberg catalog user name
+          example: "iceberg_user"
+        auth_method:
+          type: string
+          description: auth method
+          enum: [simple, kerberos]
+          example: "simple"
+        krb_service_principal:
+          type: string
+          description: Kerberos service principal
+          example: "hive/metastore@EXAMPLE.COM"
+        krb_client_principal:
+          type: string
+          description: Kerberos client principal
+          example: "iceberg_user@EXAMPLE.COM"
+        krb_client_keytab:
+          type: string
+          description: Kerberos client keytab
+          example: "/etc/security/keytabs/iceberg.keytab"
+        catalog_name:
+          type: string
+          description: catalog name
+          example: "my_catalog"
+        enable_metadata_cache:
+          type: boolean
+          description: whether iceberg metadata cache
+          example: true
+        metadata_cache_ttl:
+          type: integer
+          description: iceberg metadata cache ttl(s)
+          example: 3600
+        auto_refresh_metadata:
+          type: boolean
+          description: auto refresh metadata
+          example: true
+        warehouse_location_prefix:
+          type: string
+          description: catalog location prefix
+        polaris_server_url:
+          type: string
+          description: polaris server url
+        client_id:
+          type: string
+          description: polaris client_id
+        client_secret:
+          type: string
+          description: polaris client_secret
+        scope:
+          type: string
+          description: polaris scope
+
+    IcebergVolumeConfig:
+      type: object
+      description: iceberg volume config
+      properties:
+        volume_server_type:
+          type: string
+          description: volume server type
+          enum: [s3]
+          example: "s3"
+        volume_endpoint:
+          type: string
+          description: volume endpoint
+          example: "s3.amazonaws.com"
+        volume_region:
+          type: string
+          description: volume regoin
+          example: "us-east-1"
+        bucket_name:
+          type: string
+          description: bucket name
+          example: "my-iceberg-bucket"
+        path_style_access:
+          type: boolean
+          description: path style access
+          example: false
+        access_key_id:
+          type: string
+          description: access key id
+          example: "xxx"
+        secret_access_key:
+          type: string
+          description: secret key id
+          example: "xxx"
+        base_path:
+          type: string
+          description: base path
+          example: "/warehouse/iceberg"
+        enable_caching:
+          type: boolean
+          description: enable cache
+          example: true
+        allow_writes:
+          type: boolean
+          description: allow writes
+          example: true
+        uername:
+          type: string
+          description: volume user name
+          
+    ErrorModel:
+      type: object
+      description: JSON error payload returned in a response with further details on the error
+      required:
+        - message
+        - type
+        - code
+      properties:
+        message:
+          type: string
+          description: Human-readable error message
+        type:
+          type: string
+          description: Internal type definition of the error
+          example: NoSuchNamespaceException
+        code:
+          type: integer
+          minimum: 400
+          maximum: 600
+          description: HTTP response code
+          example: 404
+        stack:
+          type: array
+          items:
+            type: string
+
+    IcebergErrorResponse:
+      description: JSON wrapper for all error responses (non-2xx)
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorModel'
+      additionalProperties: false
+      example:
+        error:
+          message: The server does not support this operation
+          type: UnsupportedOperationException
+          code: 406
+
+    IcebergAdditionalConfig:
+      type: object
+      description: iceberg additional config
+      properties:
+        totalSegment:
+          type: string
+          description: total segment num
+        splitSize:
+          type: string
+          description: split size defualt 128M
+        filterString:
+          type: string
+          description: filter string
+        fileIOConfig:
+          $ref: '#/components/schemas/FileIOConfig'
+        tableIdentifier:
+          type: string
+          description: polaris table identifier
+
+    FileIOConfig:
+      type: object
+      description: FileIO implementation configuration
+      properties:
+        impl_class:
+          type: string
+          description: io-impl name
+        simpleFileIOConfig:
+          $ref: '#/components/schemas/SimpleFileIOConfig'
+        gopherFileIOConfig:
+          $ref: '#/components/schemas/GopherFileIOConfig'
+
+    SimpleFileIOConfig:
+      type: object
+      description: Hadoop FileIO/S3 FileIO configuration
+      required:
+        - impl_class
+      properties:
+        impl_class:
+          type: string
+        properties:
+          type: object
+          description: "additionalProperties is used for dynamically extending parameters. In the code, no validation or modification will be performed on these parameters—they will be directly set into the code. This design is intended to enable better dynamic extensibility."
+          additionalProperties:
+            type: string
+
+    GopherFileIOConfig:
+      type: object
+      description: Gopher FileIO configuration
+      required:
+        - gopherConfig
+      properties:
+        gopherConfig:
+          $ref: '#/components/schemas/GopherConfig'
+        properties:
+          type: object
+          description: "additionalProperties is used for dynamically extending parameters. In the code, no validation or modification will be performed on these parameters—they will be directly set into the code. This design is intended to enable better dynamic extensibility."
+          additionalProperties:
+            type: string
+
+    CreateTableRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - namespace
+        - name
+        - schema
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        namespace:
+          type: string
+          description: "Namespace as string, supports nested namespaces with dot notation"
+          example: "accounting.tax.reports"
+        name:
+          type: string
+        schema:
+          $ref: '#/components/schemas/Schema'
+        partition-spec:
+          $ref: '#/components/schemas/PartitionSpec'
+        write-order:
+          $ref: '#/components/schemas/SortOrder'
+        stage-create:
+          type: boolean
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - buildInCatalog.table_exists: Boolean indicating if table exists (true/false)
+            - buildInCatalog.metadata_location: Current metadata file location path
+          additionalProperties:
+            type: string
+          example:
+            buildInCatalog.table_exists: "true"
+            buildInCatalog.metadata_location: "/warehouse/db/table/metadata/v1.metadata.json"
+    LoadTableRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - namespace
+        - properties
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        namespace:
+          type: string
+          description: "Namespace as string, supports nested namespaces with dot notation"
+          example: "accounting.tax.reports"
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - buildInCatalog.table_exists: Boolean indicating if table exists (true/false)
+            - buildInCatalog.metadata_location: Current metadata file location path
+          additionalProperties:
+            type: string
+          example:
+            buildInCatalog.table_exists: "true"
+            buildInCatalog.metadata_location: "/warehouse/db/table/metadata/v1.metadata.json"
+    TableExistsRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - properties
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - buildInCatalog.table_exists: Boolean indicating if table exists (true/false)
+          additionalProperties:
+            type: string
+          example:
+            buildInCatalog.table_exists: "true"
+    AppendRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - fragments
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        fragments:
+          type: array
+          description: List of fragments containing data files to append
+          items:
+            $ref: '#/components/schemas/Fragment'
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - dl.table.exists: Boolean indicating if table exists (true/false)
+            - metadata_location: Current metadata file location path
+          additionalProperties:
+            type: string
+    GetFragmentRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - properties
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - buildInCatalog.table_exists: Boolean indicating if table exists (true/false)
+            - buildInCatalog.metadata_location: Current metadata file location path (builtin catalog only)
+            - metadata_location: Uncommitted metadata file location for deferred commit
+              Read-Your-Own-Writes. When present, the agent reads fragments from this
+              staged metadata instead of loading from the catalog. Used by external
+              catalogs (Hadoop/Hive/REST) during in-transaction scans.
+          additionalProperties:
+            type: string
+          example:
+            buildInCatalog.table_exists: "true"
+            buildInCatalog.metadata_location: "/warehouse/db/table/metadata/v1.metadata.json"
+            metadata_location: "/warehouse/db/table/metadata/staged-00006-uuid.metadata.json"
+
+    GetStatisticsRequest:
+      type: object
+      required:
+        - namespace
+        - IcebergConfig
+        - properties
+      properties:
+        namespace:
+          type: string
+          description: The namespace of the table
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - dl.table.exists: Boolean indicating if table exists (true/false)
+            - metadata_location: Current metadata file location path
+          additionalProperties:
+            type: string
+
+    DropTableRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - properties
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        properties:
+          type: object
+          description: |
+            Table properties including catalog information:
+            - buildInCatalog.table_exists: Boolean indicating if table exists (true/false)
+            - buildInCatalog.metadata_location: Current metadata file location path
+          additionalProperties:
+            type: string
+          example:
+            buildInCatalog.table_exists: "true"
+            buildInCatalog.metadata_location: "/warehouse/db/table/metadata/v1.metadata.json"
+        purgeRequested:
+          type: boolean
+          description: Whether to purge all table data files
+          default: false
+
+    Schema:
+      allOf:
+        - $ref: '#/components/schemas/StructType'
+        - type: object
+      properties:
+        schema-id:
+          type: integer
+          readOnly: true
+        identifier-field-ids:
+          type: array
+          items:
+                type: integer
+
+    StructType:
+      type: object
+      required:
+        - type
+        - fields
+      properties:
+        type:
+          type: string
+          enum: ["struct"]
+        fields:
+          type: array
+          items:
+                $ref: '#/components/schemas/StructField'
+
+    StructField:
+      type: object
+      required:
+        - id
+        - name
+        - type
+        - required
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/Type'
+        required:
+          type: boolean
+        doc:
+          type: string
+        initial-default:
+          $ref: "#/components/schemas/PrimitiveTypeValue"
+        write-default:
+          $ref: "#/components/schemas/PrimitiveTypeValue"
+
+    Type:
+      oneOf:
+        - $ref: '#/components/schemas/PrimitiveType'
+        - $ref: '#/components/schemas/StructType'
+        - $ref: '#/components/schemas/ListType'
+        - $ref: '#/components/schemas/MapType'
+
+    PrimitiveType:
+      type: string
+      example:
+        - "long"
+        - "string"
+        - "fixed[16]"
+        - "decimal(10,2)"
+
+    ListType:
+      type: object
+      required:
+        - type
+        - element-id
+        - element
+        - element-required
+      properties:
+        type:
+          type: string
+          enum: ["list"]
+        element-id:
+          type: integer
+        element:
+          $ref: '#/components/schemas/Type'
+        element-required:
+          type: boolean
+
+    MapType:
+      type: object
+      required:
+        - type
+        - key-id
+        - key
+        - value-id
+        - value
+        - value-required
+      properties:
+        type:
+          type: string
+          enum: ["map"]
+        key-id:
+          type: integer
+        key:
+          $ref: '#/components/schemas/Type'
+        value-id:
+          type: integer
+        value:
+          $ref: '#/components/schemas/Type'
+        value-required:
+          type: boolean
+
+    PartitionField:
+      type: object
+      required:
+        - source-id
+        - transform
+        - name
+      properties:
+        field-id:
+          type: integer
+        source-id:
+          type: integer
+        name:
+          type: string
+        transform:
+          $ref: '#/components/schemas/Transform'
+
+    Transform:
+      type: string
+      example:
+        - "identity"
+        - "year"
+        - "month"
+        - "day"
+        - "hour"
+        - "bucket[256]"
+        - "truncate[16]"
+
+    PartitionSpec:
+      type: object
+      required:
+        - fields
+      properties:
+        spec-id:
+          type: integer
+          readOnly: true
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartitionField'
+
+    SortDirection:
+      type: string
+      enum: ["asc", "desc"]
+
+    NullOrder:
+      type: string
+      enum: ["nulls-first", "nulls-last"]
+
+    SortField:
+      type: object
+      required:
+        - source-id
+        - transform
+        - direction
+        - null-order
+      properties:
+        source-id:
+          type: integer
+        transform:
+          $ref: '#/components/schemas/Transform'
+        direction:
+          $ref: '#/components/schemas/SortDirection'
+        null-order:
+          $ref: '#/components/schemas/NullOrder'
+
+    SortOrder:
+      type: object
+      required:
+        - order-id
+        - fields
+      properties:
+        order-id:
+          type: integer
+          readOnly: true
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/SortField'
+
+    Snapshot:
+      type: object
+      required:
+        - snapshot-id
+        - timestamp-ms
+        - manifest-list
+        - summary
+      properties:
+        snapshot-id:
+          type: integer
+          format: int64
+        parent-snapshot-id:
+          type: integer
+          format: int64
+        sequence-number:
+          type: integer
+          format: int64
+        timestamp-ms:
+          type: integer
+          format: int64
+        manifest-list:
+          type: string
+          description: Location of the snapshot's manifest list file
+        first-row-id:
+          type: integer
+          format: int64
+          description: The first _row_id assigned to the first row in the first data file in the first manifest
+        summary:
+          type: object
+          required:
+            - operation
+          properties:
+            operation:
+              type: string
+              enum: ["append", "replace", "overwrite", "delete"]
+          additionalProperties:
+            type: string
+        schema-id:
+          type: integer
+
+    SnapshotReference:
+      type: object
+      required:
+        - type
+        - snapshot-id
+      properties:
+        type:
+          type: string
+          enum: ["tag", "branch"]
+        snapshot-id:
+          type: integer
+          format: int64
+        max-ref-age-ms:
+          type: integer
+          format: int64
+        max-snapshot-age-ms:
+          type: integer
+          format: int64
+        min-snapshots-to-keep:
+          type: integer
+
+    SnapshotReferences:
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/SnapshotReference'
+
+    SnapshotLog:
+      type: array
+      items:
+        type: object
+        required:
+          - snapshot-id
+          - timestamp-ms
+        properties:
+          snapshot-id:
+            type: integer
+            format: int64
+          timestamp-ms:
+            type: integer
+            format: int64
+
+    MetadataLog:
+      type: array
+      items:
+        type: object
+        required:
+          - metadata-file
+          - timestamp-ms
+        properties:
+          metadata-file:
+            type: string
+          timestamp-ms:
+            type: integer
+            format: int64
+
+    TableMetadata:
+      type: object
+      required:
+        - format-version
+        - table-uuid
+      properties:
+        format-version:
+          type: integer
+          minimum: 1
+          maximum: 3
+        table-uuid:
+          type: string
+        location:
+          type: string
+        last-updated-ms:
+          type: integer
+          format: int64
+        next-row-id:
+          type: integer
+          format: int64
+          description: A long higher than all assigned row IDs; the next snapshot's first-row-id.
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+        # schema tracking
+        schemas:
+          type: array
+          items:
+            $ref: '#/components/schemas/Schema'
+        current-schema-id:
+          type: integer
+        last-column-id:
+          type: integer
+        # partition spec tracking
+        partition-specs:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartitionSpec'
+        default-spec-id:
+          type: integer
+        last-partition-id:
+          type: integer
+        # sort order tracking
+        sort-orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/SortOrder'
+        default-sort-order-id:
+          type: integer
+        # snapshot tracking
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/Snapshot'
+        refs:
+          $ref: '#/components/schemas/SnapshotReferences'
+        current-snapshot-id:
+          type: integer
+          format: int64
+        last-sequence-number:
+          type: integer
+          format: int64
+        # logs
+        snapshot-log:
+          $ref: '#/components/schemas/SnapshotLog'
+        metadata-log:
+          $ref: '#/components/schemas/MetadataLog'
+
+    LoadTableResult:
+      description: |
+        Result used when a table is successfully loaded.
+
+        The table metadata JSON is returned in the `metadata` field. The corresponding file location of table metadata should be returned in the `metadata-location` field, unless the metadata is not yet committed. For example, a create transaction may return metadata that is staged but not committed.
+        Clients can check whether metadata has changed by comparing metadata locations after the table has been created.
+
+        The `config` map returns table-specific configuration for the table's resources, including its HTTP client and FileIO. For example, config may contain a specific FileIO implementation class for the table depending on its underlying storage.
+      
+        The following configurations should be respected by clients:
+        
+        ## General Configurations
+        
+        - `token`: Authorization bearer token to use for table requests if OAuth2 security is enabled 
+        
+        ## AWS Configurations
+        
+        The following configurations should be respected when working with tables stored in AWS S3
+         - `client.region`: region to configure client for making requests to AWS
+         - `s3.access-key-id`: id for credentials that provide access to the data in S3
+         - `s3.secret-access-key`: secret for credentials that provide access to data in S3 
+         - `s3.session-token`: if present, this value should be used for as the session token 
+         - `s3.remote-signing-enabled`: if `true` remote signing should be performed as described in the `s3-signer-open-api.yaml` specification
+         - `s3.cross-region-access-enabled`: if `true`, S3 Cross-Region bucket access is enabled
+
+        ## Storage Credentials
+
+        Credentials for ADLS / GCS / S3 / ... are provided through the `storage-credentials` field.
+        Clients must first check whether the respective credentials exist in the `storage-credentials` field before checking the `config` for credentials.
+      type: object
+      required:
+        - metadata
+      properties:
+        metadata-location:
+          type: string
+          description: May be null if the table is staged as part of a transaction
+          nullable: true
+        table-location:
+          type: string
+          description: The table's base data storage location URI (e.g., s3://bucket/warehouse/ns/table)
+        metadata:
+          $ref: '#/components/schemas/TableMetadata'
+        config:
+          type: object
+          additionalProperties:
+            type: string
+        storage-credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+
+    StorageCredential:
+      type: object
+      required:
+        - prefix
+        - config
+      properties:
+        prefix:
+          type: string
+          description: Indicates a storage location prefix where the credential is relevant. Clients should choose the most specific prefix (by selecting the longest prefix) if several credentials of the same type are available.
+        config:
+          type: object
+          additionalProperties:
+            type: string
+
+    BooleanTypeValue:
+      type: boolean
+      example: true
+
+    IntegerTypeValue:
+      type: integer
+      example: 42
+
+    LongTypeValue:
+      type: integer
+      format: int64
+      example: 9223372036854775807
+
+    FloatTypeValue:
+      type: number
+      format: float
+      example: 3.14
+
+    DoubleTypeValue:
+      type: number
+      format: double
+      example: 123.456
+
+    DecimalTypeValue:
+      type: string
+      description:
+        "Decimal type values are serialized as strings. Decimals with a positive scale serialize as numeric plain 
+        text, while decimals with a negative scale use scientific notation and the exponent will be equal to the 
+        negated scale. For instance, a decimal with a positive scale is '123.4500', with zero scale is '2', 
+        and with a negative scale is '2E+20'"
+      example: "123.4500"
+
+    StringTypeValue:
+      type: string
+      example: "hello"
+
+    UUIDTypeValue:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      maxLength: 36
+      minLength: 36
+      description:
+        "UUID type values are serialized as a 36-character lowercase string in standard UUID format as specified 
+        by RFC-4122"
+      example: "eb26bdb1-a1d8-4aa6-990e-da940875492c"
+
+    DateTypeValue:
+      type: string
+      format: date
+      description:
+        "Date type values follow the 'YYYY-MM-DD' ISO-8601 standard date format"
+      example: "2007-12-03"
+
+    TimeTypeValue:
+      type: string
+      description:
+        "Time type values follow the 'HH:MM:SS.ssssss' ISO-8601 format with microsecond precision"
+      example: "22:31:08.123456"
+
+    TimestampTypeValue:
+      type: string
+      description:
+        "Timestamp type values follow the 'YYYY-MM-DDTHH:MM:SS.ssssss' ISO-8601 format with microsecond precision"
+      example: "2007-12-03T10:15:30.123456"
+
+    TimestampTzTypeValue:
+      type: string
+      description:
+        "TimestampTz type values follow the 'YYYY-MM-DDTHH:MM:SS.ssssss+00:00' ISO-8601 format with microsecond precision, 
+        and a timezone offset (+00:00 for UTC)"
+      example: "2007-12-03T10:15:30.123456+00:00"
+
+    TimestampNanoTypeValue:
+      type: string
+      description:
+        "Timestamp_ns type values follow the 'YYYY-MM-DDTHH:MM:SS.sssssssss' ISO-8601 format with nanosecond precision"
+      example: "2007-12-03T10:15:30.123456789"
+
+    TimestampTzNanoTypeValue:
+      type: string
+      description:
+        "Timestamp_ns type values follow the 'YYYY-MM-DDTHH:MM:SS.sssssssss+00:00' ISO-8601 format with nanosecond 
+        precision, and a timezone offset (+00:00 for UTC)"
+      example: "2007-12-03T10:15:30.123456789+00:00"
+
+    FixedTypeValue:
+      type: string
+      description:
+        "Fixed length type values are stored and serialized as an uppercase hexadecimal string 
+        preserving the fixed length"
+      example: "78797A"
+
+    BinaryTypeValue:
+      type: string
+      description:
+        "Binary type values are stored and serialized as an uppercase hexadecimal string"
+      example: "78797A"
+    PrimitiveTypeValue:
+      oneOf:
+        - $ref: '#/components/schemas/BooleanTypeValue'
+        - $ref: '#/components/schemas/IntegerTypeValue'
+        - $ref: '#/components/schemas/LongTypeValue'
+        - $ref: '#/components/schemas/FloatTypeValue'
+        - $ref: '#/components/schemas/DoubleTypeValue'
+        - $ref: '#/components/schemas/DecimalTypeValue'
+        - $ref: '#/components/schemas/StringTypeValue'
+        - $ref: '#/components/schemas/UUIDTypeValue'
+        - $ref: '#/components/schemas/DateTypeValue'
+        - $ref: '#/components/schemas/TimeTypeValue'
+        - $ref: '#/components/schemas/TimestampTypeValue'
+        - $ref: '#/components/schemas/TimestampTzTypeValue'
+        - $ref: '#/components/schemas/TimestampNanoTypeValue'
+        - $ref: '#/components/schemas/TimestampTzNanoTypeValue'
+        - $ref: '#/components/schemas/FixedTypeValue'
+        - $ref: '#/components/schemas/BinaryTypeValue'
+
+    Fragment:
+      type: object
+      required:
+        - path
+        - format
+        - record_count
+        - file_size_in_bytes
+      properties:
+        path:
+          type: string
+          description: File path of the data file
+          example: "/warehouse/table/data/file1.parquet"
+        format:
+          type: string
+          description: File format
+          enum: [PARQUET, ORC, AVRO]
+          example: "PARQUET"
+        record_count:
+          type: integer
+          format: int64
+          description: Number of records in the file
+          example: 1000
+        file_size_in_bytes:
+          type: integer
+          format: int64
+          description: Size of the file in bytes
+          example: 1048576
+        partition:
+          type: object
+          description: Partition values for the file
+          additionalProperties:
+            type: string
+        column_sizes:
+          type: object
+          description: Map of column ID to size in bytes
+          additionalProperties:
+            type: integer
+            format: int64
+        value_counts:
+          type: object
+          description: Map of column ID to value count
+          additionalProperties:
+            type: integer
+            format: int64
+        null_value_counts:
+          type: object
+          description: Map of column ID to null value count
+          additionalProperties:
+            type: integer
+            format: int64
+        nan_value_counts:
+          type: object
+          description: Map of column ID to NaN value count
+          additionalProperties:
+            type: integer
+            format: int64
+        lower_bounds:
+          type: object
+          description: Map of column ID to lower bound values
+          additionalProperties:
+            type: string
+        upper_bounds:
+          type: object
+          description: Map of column ID to upper bound values
+          additionalProperties:
+            type: string
+        key_metadata:
+          type: string
+          description: Encryption key metadata
+        split_offsets:
+          type: array
+          description: List of split offsets for the file
+          items:
+            type: integer
+            format: int64
+        equality_ids:
+          type: array
+          description: List of equality field IDs
+          items:
+            type: integer
+        sort_order_id:
+          type: integer
+          description: Sort order ID for the file
+
+    AppendResult:
+      type: object
+      required:
+        - success
+        - snapshot_id
+      properties:
+        success:
+          type: boolean
+          description: Whether the append operation was successful
+          example: true
+        snapshot_id:
+          type: integer
+          format: int64
+          description: ID of the new snapshot created by the append operation
+          example: 1234567890
+        metadata_location:
+          type: string
+          description: Location of the updated table metadata
+          example: "/warehouse/table/metadata/v2.metadata.json"
+        added_files_count:
+          type: integer
+          description: Number of files added in this append operation
+          example: 5
+        added_records_count:
+          type: integer
+          format: int64
+          description: Number of records added in this append operation
+          example: 10000
+        added_data_size:
+          type: integer
+          format: int64
+          description: Total size of data added in bytes
+          example: 5242880
+
+    UpdateRequest:
+      type: object
+      required:
+        - IcebergConfig
+        - updateFragments
+      properties:
+        IcebergConfig:
+          $ref: '#/components/schemas/IcebergConfig'
+        updateFragments:
+          type: array
+          description: List of updateFragments containing data files to append
+          items:
+            $ref: '#/components/schemas/UpdateFragment'
+        properties:
+          type: object
+          description: Additional properties for the append operation
+          additionalProperties:
+            type: string
+    UpdateFragment:
+      type: object
+      required:
+        - path
+        - format
+        - record_count
+        - file_size_in_bytes
+        - position_on_delete
+      properties:
+        path:
+          type: string
+          description: File path of the data file
+          example: "/warehouse/table/data/file1.parquet"
+        format:
+          type: string
+          description: File format
+          enum: [PARQUET, ORC, AVRO]
+          example: "PARQUET"
+        record_count:
+          type: integer
+          format: int64
+          description: Number of records in the file
+          example: 1000
+        file_size_in_bytes:
+          type: integer
+          format: int64
+          description: Size of the file in bytes
+          example: 1048576
+        position_on_delete:
+          type: string
+          description: position on delete
+          enum: [DATA_FILE, POSITION_DELETE, EQUALITY_DELETE]
+          example: "DATA_FILE"
+
+  responses:
+    CreateCatalogOnlyResponse:
+      description: Result of catalog creation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateCatalogOnlyResult'
+
+    CreateNamespaceResponse:
+      description: Result of namespace creation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateNamespaceResult'
+
+    ListCatalogsResponse:
+      description: List of all catalogs
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ListCatalogsResult'
+
+    ListNamespacesResponse:
+      description: List of namespaces in the specified catalog
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ListNamespacesResult'
+
+    BadRequestErrorResponse:
+      description:
+        Indicates a bad request error. It could be caused by an unexpected request
+        body format or other forms of request validation failure, such as invalid json.
+        Usually serves application/json content, although in some cases simple text/plain content might
+        be returned by the server's middleware.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Malformed request",
+                "type": "BadRequestException",
+                "code": 400
+              }
+            }
+
+    UnauthorizedResponse:
+      description:
+        Unauthorized. The REST Catalog SHOULD respond with the 401 UnauthorizedResponse when
+        the access token provided is expired, revoked, malformed, or invalid for other reasons.
+        The client MAY request a new access token and retry the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Not authorized to make this request",
+                "type": "NotAuthorizedException",
+                "code": 401
+              }
+            }
+
+    ForbiddenResponse:
+      description: Forbidden. Authenticated user does not have the necessary permissions.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Not authorized to make this request",
+                "type": "NotAuthorizedException",
+                "code": 403
+              }
+            }
+
+    AuthenticationTimeoutResponse:
+      description:
+        This is an optional status response type that the REST Catalog can issue when the
+        token has expired. The client MAY request a new access token and retry the request.
+        401 UnauthorizedResponse SHOULD be preferred over this response type on token expiry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Credentials have timed out",
+                "type": "AuthenticationTimeoutException",
+                "code": 419
+              }
+            }
+
+    ServiceUnavailableResponse:
+      description:
+        The service is not ready to handle the request, request could have been partially processed.
+
+        The service may additionally send a Retry-After header to indicate when to retry, a non idempotent
+        request should only be retried by the client when the Retry-After header is present.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Slow down",
+                "type": "SlowDownException",
+                "code": 503
+              }
+            }
+
+    ServerErrorResponse:
+      description:
+        A server-side problem that might not be addressable from the client
+        side. Used for server 5xx errors without more specific documentation in
+        individual routes.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+          example: {
+              "error": {
+                "message": "Internal Server Error",
+                "type": "InternalServerError",
+                "code": 500
+              }
+            }
+
+    CreateTableResponse:
+      description: Table metadata result after creating a table
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LoadTableResult'
+      headers:
+        etag:
+          $ref: '#/components/parameters/etag'
+
+    LoadTableResponse:
+      description: Table metadata result when loading a table
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LoadTableResult'
+      headers:
+        etag:
+          $ref: '#/components/parameters/etag'
+
+    GetFragmentResponse:
+      description: Table metadata result when getting table metadata
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GetFragmentResult'
+
+    AppendResponse:
+      description: Result of the append operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AppendResult'
+      headers:
+        etag:
+          $ref: '#/components/parameters/etag'
+
+    GetFragmentResult:
+      type: string
+      description: A json string fragment of the table
+
+    GetStatisticsResponse:
+      description: Table statistics result from the current snapshot summary
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GetStatisticsResult'
+
+    GetStatisticsResult:
+      type: object
+      description: Table statistics from the current snapshot summary
+      properties:
+        total-records:
+          type: string
+          description: Total number of records in the table
+        total-files-size:
+          type: string
+          description: Total size of all data files in bytes
+
+
+  examples:
+    NoSuchNamespaceError:
+      summary: The requested namespace does not exist
+      value: {
+          "error": {
+            "message": "The given namespace does not exist",
+            "type": "NoSuchNamespaceException",
+            "code": 404
+          }
+        }
+
+    TableAlreadyExistsError:
+      summary: The requested table identifier already exists
+      value: {
+          "error": {
+            "message": "The given table already exists",
+            "type": "AlreadyExistsException",
+            "code": 409
+          }
+        }
+
+    NoSuchTableError:
+      summary: The requested table does not exist
+      value: {
+          "error": {
+            "message": "The given table does not exist",
+            "type": "NoSuchTableException",
+            "code": 404
+          }
+                }

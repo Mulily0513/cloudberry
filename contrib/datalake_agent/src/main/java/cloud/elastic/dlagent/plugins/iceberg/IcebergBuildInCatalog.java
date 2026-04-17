@@ -1,0 +1,134 @@
+package cloud.elastic.dlagent.plugins.iceberg;
+
+import cloud.elastic.dlagent.api.security.SecureLogin;
+import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.hadoop.ConfigProperties;
+import org.apache.iceberg.buildin.DlIcebergBuildInCatalog;
+import org.apache.iceberg.util.LocationUtil;
+import com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Map;
+import java.util.List;
+
+/**
+ * Implementation of IcebergCatalog for tables stored in BuildInCatalog.
+ */
+public class IcebergBuildInCatalog implements IcebergCatalog {
+
+    private static final Logger LOG = LoggerFactory.getLogger(IcebergBuildInCatalog.class);
+
+    private DlIcebergBuildInCatalog buildInCatalog;
+    private IcebergUtilities icebergUtilities;
+    private Configuration configuration;
+    private boolean isUseGopherClient = false;
+    private String catalogLocation;
+
+    public IcebergBuildInCatalog(String catalogLocation,
+                              IcebergUtilities icebergUtilities,
+                              Configuration configuration,
+                              SecureLogin secureLogin,
+                              String serverName,
+                              String configFile,
+                              Map<String, String> gopherProperties,
+                              Map<String, String> buildInCatalogProperties) {
+        this.icebergUtilities = icebergUtilities;
+        this.configuration = configuration;
+        this.catalogLocation = catalogLocation;
+
+        createDefaultBuildInCatalog(catalogLocation, icebergUtilities, configuration,
+                                    secureLogin, serverName, configFile, buildInCatalogProperties);
+    }
+
+    public void createDefaultBuildInCatalog(String catalogLocation,
+                                         IcebergUtilities icebergUtilities,
+                                         Configuration configuration,
+                                         SecureLogin secureLogin,
+                                         String serverName,
+                                         String configFile,
+                                         Map<String, String> buildInCatalogProperties) {
+        HiveConf conf = new HiveConf(configuration, IcebergBuildInCatalog.class);
+
+        // Set hadoop temp directory
+        conf.set("hadoop.tmp.dir", "/tmp/hadoop-" + System.getProperty("user.name"));
+        conf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
+
+        buildInCatalog = new DlIcebergBuildInCatalog(secureLogin, serverName, configFile, buildInCatalogProperties);
+        buildInCatalog.setConf(conf);
+
+        Map<String, String> properties = icebergUtilities.composeCatalogProperties(this.configuration);
+        if (catalogLocation != null) {
+            properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
+        }
+        properties.forEach((key, value) -> LOG.debug(" createDefaultBuildInCatalog properties {}: {}", key, value));
+
+        buildInCatalog.initialize("IcebergBuildInCatalog", properties);
+    }
+
+    private String buildTableLocation(String warehouseLocation, String namespace, String tableName) {
+        String warehouse = LocationUtil.stripTrailingSlash(warehouseLocation);
+        if (warehouse.isEmpty()) {
+            return String.format("%s/%s", namespace, tableName);
+        } else {
+            return String.format("%s/%s/%s", warehouse, namespace, tableName);
+        }
+    }
+
+    @Override
+    public Table createTable(
+            TableIdentifier identifier,
+            Schema schema,
+            PartitionSpec spec,
+            String location,
+            Map<String, String> properties) {
+        if (catalogLocation != null && !catalogLocation.isEmpty()) {
+            if (location == null || location.isEmpty()) {
+                String namespace = identifier.namespace().level(0);
+                String tableName = identifier.name();
+                location = buildTableLocation(catalogLocation, namespace, tableName);
+            }
+            return buildInCatalog.createTable(identifier, schema, spec, location,
+                    IcebergUtilities.stripInternalProperties(properties));
+        } else {
+            return buildInCatalog.createTable(identifier, schema);
+        }
+    }
+
+    @Override
+    public Table loadTable(String tableName) throws Exception {
+        TableIdentifier tableId = icebergUtilities.getIcebergTableIdentifier(tableName);
+        return loadTable(tableId, null, null);
+    }
+
+    @Override
+    public Table loadTable(TableIdentifier tableId, String tableLocation,
+                           Map<String, String> properties) throws Exception {
+        Preconditions.checkState(tableId != null);
+        return buildInCatalog.loadTable(tableId);
+    }
+
+    @Override
+    public boolean dropTable(String tableName, boolean purge) {
+        TableIdentifier tableId = icebergUtilities.getIcebergTableIdentifier(tableName);
+        return buildInCatalog.dropTable(tableId, purge);
+    }
+
+    @Override
+    public void renameTable(String tableName, String newTableName) {
+        throw new UnsupportedOperationException("Iceberg accessor does not support renameTable operation.");
+    }
+
+    @Override
+    public boolean createNamespace(String catalogName, String namespaceName, 
+                                  Map<String, String> properties) throws Exception {
+        throw new UnsupportedOperationException("BuildIn catalog does not support createNamespace operation.");
+    }
+}

@@ -30,6 +30,7 @@ import cloud.elastic.dlagent.api.utilities.Utilities;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -52,6 +53,16 @@ public class RequestContext {
      * accessing
      */
     private Configuration configuration;
+
+    private String icebergConfigJsonString;
+
+    private Map<String, String> gopherProperties;
+
+    private Map<String, String> buildInCatalogProperties;
+
+    private String icebergConfigVersion;
+
+    private String icebergConfigUseDefaultCatalogImpl;
 
     /**
      * The data source of the required resource (i.e a file path or a table
@@ -166,6 +177,8 @@ public class RequestContext {
     private String defaultPartitionName;
 
     private List<Fragment> fragments = new ArrayList<Fragment>();
+
+    private List<Fragment> rewrittenFragments = new ArrayList<Fragment>();
 
     /**
      * File list for write operations.
@@ -313,5 +326,53 @@ public class RequestContext {
      */
     public Map<String, String> getOptions() {
         return Collections.unmodifiableMap(options);
+    }
+
+    public void setGopherProperties(Map<String, String> gopherProperties) {
+        this.gopherProperties = gopherProperties != null ? new HashMap<>(gopherProperties) : null;
+    }
+
+    public Map<String, String> getGopherProperties() {
+        return gopherProperties;
+    }
+
+    public void setBuildInCatalogProperties(Map<String, String> buildInCatalogProperties) {
+        this.buildInCatalogProperties = buildInCatalogProperties != null ? new HashMap<>(buildInCatalogProperties) : null;
+    }
+
+    public Map<String, String> getBuildInCatalogPropertiesProperties() {
+        return buildInCatalogProperties;
+    }
+
+    public void setIcebergConfigJsonString(String icebergConfigJsonString) {
+        this.icebergConfigJsonString = icebergConfigJsonString;
+    }
+
+    public String getIcebergConfigJsonString() {
+        return icebergConfigJsonString;
+    }
+
+    public void setIcebergConfigUseDefaultCatalogImpl(String icebergConfigUseDefaultCatalogImpl) {
+        this.icebergConfigUseDefaultCatalogImpl = icebergConfigUseDefaultCatalogImpl;
+    }
+
+    public String getIcebergConfigUseDefaultCatalogImpl() {
+        return icebergConfigUseDefaultCatalogImpl;
+    }
+
+    public void setIcebergConfigVersion(String icebergConfigVersion) {
+        this.icebergConfigVersion = icebergConfigVersion;
+    }
+
+    public String getIcebergConfigVersion() {
+        return icebergConfigVersion;
+    }
+
+    public void setTotalSegments(int segmentNum) {
+        totalSegments = segmentNum;
+    }
+
+    public String getMethod() {
+        return method;
     }
 }

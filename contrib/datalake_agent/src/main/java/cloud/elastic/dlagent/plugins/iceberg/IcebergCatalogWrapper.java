@@ -92,10 +92,10 @@ public class IcebergCatalogWrapper {
         switch (catalogType) {
             case "s3":
                 return new IcebergS3Catalog(FilePathUtils.unescapeString(context.getPath()),
-                    icebergUtilities, context.getConfiguration());
+                    icebergUtilities, context.getConfiguration(), context.getGopherProperties());
             case "hadoop":
                 return new IcebergHadoopCatalog(FilePathUtils.unescapeString(context.getPath()),
-                        icebergUtilities, context.getConfiguration());
+                        icebergUtilities, context.getConfiguration(), context.getGopherProperties());
             case "hive":
                 return getHiveCatalog(context);
             case "polaris":
@@ -103,6 +103,15 @@ public class IcebergCatalogWrapper {
                     context.getDataSource(),
                     icebergUtilities,
                     context.getConfiguration());
+            case "builtin":
+                return new IcebergBuildInCatalog(context.getPath(),
+                    icebergUtilities,
+                    context.getConfiguration(),
+                    secureLogin,
+                    context.getServerName(),
+                    context.getConfig(),
+                    context.getGopherProperties(),
+                    context.getBuildInCatalogProperties());
             default:
                 throw new DlRuntimeException("Unexpected catalog type: " + catalogType);
         }
@@ -125,7 +134,8 @@ public class IcebergCatalogWrapper {
                                 context.getConfiguration(),
                                 secureLogin,
                                 context.getServerName(),
-                                context.getConfig());
+                                context.getConfig(),
+                                context.getGopherProperties());
 
                         LOG.info("Returning hive catalog for {} [user={}, table={}.{}, resource={}, path={}, " +
                                         "profile={}, predicate {}available]",

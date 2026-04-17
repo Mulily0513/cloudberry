@@ -34,8 +34,12 @@ import cloud.elastic.dlagent.plugins.hudi.utilities.FilePathUtils;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.Properties;
 
 import org.yaml.snakeyaml.Yaml;
 
@@ -145,29 +149,67 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
         return configuration;
     }
 
-    private void transformOptions(Map<String, Object> serverMap,
-                                  Map<String, String> configMap,
-                                  Configuration configuration) {
-        serverMap.forEach((oldKey, value) -> {
-            if (value == null) {
-                return;
+    @Override
+    public void initIcebergConfigFormJson(RequestContext context) {
+
+        String jsonString = context.getIcebergConfigJsonString();
+        if (jsonString == null || jsonString.isEmpty()) {
+            LOG.warn("Invalid input parameters for initIcebergConfigFormJson");
+            return;
+        }
+
+        try {
+            org.json.JSONObject jsonObject = new org.json.JSONObject(jsonString);
+            // parser common conifg
+            if (jsonObject.has("iceberg_config_version")) {
+                context.setIcebergConfigVersion(jsonObject.getString("iceberg_config_version"));
+            }
+            if (jsonObject.has("set_catalog_defualt_impl")) {
+                context.setIcebergConfigUseDefaultCatalogImpl(jsonObject.getString("set_catalog_defualt_impl"));
             }
 
-            String newKey = configMap.get(oldKey);
-            if (newKey != null) {
-                configuration.set(newKey, value.toString());
-                return;
+            // parser gopher
+            if (jsonObject.has("gopher")) {
+                org.json.JSONObject gopher = jsonObject.getJSONObject("gopher");
+                parseGopherJsonToProperties(gopher, context.getGopherProperties());
             }
 
-            configuration.set(oldKey, value.toString());
-        });
+            // parser iceberg config
+            if (jsonObject.has("iceberg")) {
+                //TODO
+                org.json.JSONObject iceberg = jsonObject.getJSONObject("iceberg");
+            }
+        } catch (Exception e) {
+            LOG.error("Failed to init iceberg config from json string", e);
+        }
     }
 
-    private void processServerResource(String catalogType,
-                                       String configFile,
-                                       String serverName,
-                                       Configuration configuration,
-                                       String location) {
+    /**
+     * Parse Gopher JSON object and map to configuration properties
+     *
+     * @param gopherJson Gopher JSON object
+     * @param properties Configuration properties map
+     */
+    private void parseGopherJsonToProperties(org.json.JSONObject gopherJson, Map<String, String> properties) {
+        Iterator<String> keys = gopherJson.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            Object value = gopherJson.get(key);
+            if (value != null) {
+                // Add "gopher." prefix so keys match what isGopherEnabled() and
+                // setupGopherConfiguration() expect (e.g. "gopher.enabled",
+                // "gopher.worker_path").
+                String propKey = key.startsWith("gopher.") ? key : "gopher." + key;
+                properties.put(propKey, value.toString());
+            }
+        }
+    }
+
+    public void processServerResource(String catalogType,
+                                      String configFile,
+                                      String serverName,
+                                      Configuration configuration,
+                                      String location) {
         try (InputStream stream = new FileInputStream(configFile)) {
             Yaml yaml = new Yaml();
             Map<String, Map<String, Object>> configMap = yaml.load(stream);
@@ -221,6 +263,23 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
             } else {
                 configuration.set(key, value.toString());
             }
+        });
+    }
+
+    private void transformOptions(Map<String, Object> serverMap,
+                                  Map<String, String> configMap,
+                                  Configuration configuration) {
+        serverMap.forEach((oldKey, value) -> {
+            if (value == null) {
+                return;
+            }
+            String newKey = configMap.get(oldKey);
+            if (newKey != null) {
+                configuration.set(newKey, value.toString());
+                return;
+            }
+
+            configuration.set(oldKey, value.toString());
         });
     }
 

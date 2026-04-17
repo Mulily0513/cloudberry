@@ -23,6 +23,7 @@ package cloud.elastic.dlagent.service.bridge;
 
 import cloud.elastic.dlagent.api.io.Writable;
 
+
 /**
  * Bridge interface - defines the interface of the Bridge classes. Any Bridge
  * class acts as an iterator over externally stored data, and should implement

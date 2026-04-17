@@ -16,8 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
-
 package cloud.elastic.dlagent.api.utilities;
 
 import org.apache.commons.lang.ArrayUtils;

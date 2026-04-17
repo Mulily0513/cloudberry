@@ -48,6 +48,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.UpdateProperties;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.DeleteFile;
@@ -56,17 +57,30 @@ import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.RowDelta;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.TableOperations;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.RewriteFiles;
+import org.apache.iceberg.Transaction;
+import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.StaticTableOperations;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 
 import java.io.IOException;
+import java.util.UUID;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -126,7 +140,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         this(SpringContext.getBean(IcebergUtilities.class), SpringContext.getBean(IcebergCatalogWrapper.class));
     }
 
-    IcebergMetadataFetcher(IcebergUtilities icebergUtilities, IcebergCatalogWrapper icebergClientWrapper) {
+    public IcebergMetadataFetcher(IcebergUtilities icebergUtilities, IcebergCatalogWrapper icebergClientWrapper) {
         this.icebergUtilities = icebergUtilities;
         this.icebergClientWrapper = icebergClientWrapper;
     }
@@ -217,6 +231,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
         try {
             table = catalog.loadTable(context.getDataSource());
+            healLegacyTableProperties(table);
         } catch (NoSuchTableException e) {
             Map<String, String> properties = new HashMap<String, String>();
             properties.put(TableProperties.FORMAT_VERSION, "2");
@@ -246,6 +261,30 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         batchAppend.commit();
         return true;
     }
+
+    public String onlyBatchAppend() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+
+        // Transaction wrapper: commit() only writes manifest, does NOT update catalog
+        Transaction txn = table.newTransaction();
+        AppendFiles batchAppend = txn.newAppend();
+        for (Fragment fragment : context.getFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            batchAppend.appendFile(dataFile);
+        }
+        batchAppend.commit(); // writes manifest only
+
+        // Extract metadata and write metadata.json to object storage
+        HasTableOperations txnTableOps = (HasTableOperations) txn.table();
+        TableMetadata updatedMetadata = txnTableOps.operations().current();
+        String metadataLocation = writeMetadataFile(table, updatedMetadata);
+
+        // Do NOT call txn.commitTransaction() — catalog remains unchanged
+        return metadataLocation;
+    }
+
 
     @Override
     public Metadata getOrCreateSchema() throws Exception {
@@ -279,6 +318,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
     public Boolean rowUpdate() throws Exception {
         IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
         Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
         RowDelta rowDelta = table.newRowDelta();
 
         // Use file list from JSON POST request body
@@ -298,6 +338,437 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         return true;
     }
 
+    public String rowUpdateAndReturnLocation() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+
+        // Transaction wrapper: commit() only writes manifest, does NOT update catalog
+        Transaction txn = table.newTransaction();
+        RowDelta rowDelta = txn.newRowDelta();
+        for (Fragment fragment : context.getFragments()) {
+            GpdbFragmentMetadata meta = (GpdbFragmentMetadata)fragment.getMetadata();
+            if (meta.getContentType() == GpdbFragmentMetadata.ContentType.DATA_FILE) {
+                DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+                rowDelta.addRows(dataFile);
+            } else if (meta.getContentType() == GpdbFragmentMetadata.ContentType.POSITION_DELETE) {
+                DeleteFile deleteFile = icebergUtilities.transPosDeleteFromGpdb(fragment);
+                rowDelta.addDeletes(deleteFile);
+            }
+        }
+        rowDelta.commit(); // writes manifest only
+
+        // Extract metadata and write metadata.json to object storage
+        HasTableOperations txnTableOps = (HasTableOperations) txn.table();
+        TableMetadata updatedMetadata = txnTableOps.operations().current();
+        String metadataLocation = writeMetadataFile(table, updatedMetadata);
+
+        // Do NOT call txn.commitTransaction() — catalog remains unchanged
+        return metadataLocation;
+    }
+
+    /**
+     * Parse metadata version from file path, following Iceberg naming convention.
+     * E.g., ".../metadata/00005-abc-def.metadata.json" -> 5
+     */
+    private static int parseMetadataVersion(String metadataFileLocation) {
+        if (metadataFileLocation == null) {
+            return -1;
+        }
+        int vStart = metadataFileLocation.lastIndexOf('/') + 1;
+        int vEnd = metadataFileLocation.indexOf('-', vStart);
+        if (vEnd > vStart) {
+            try {
+                return Integer.parseInt(metadataFileLocation.substring(vStart, vEnd));
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Commit file groups for vacuum/compaction using Iceberg RewriteFiles API.
+     * Atomically replaces old (rewritten) files with new files.
+     */
+    public String commitFileGroups() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+
+        // Use transaction: rewrite.commit() only writes manifests, NOT metadata.json
+        Transaction txn = table.newTransaction();
+
+        long startingSnapshotId = table.currentSnapshot().snapshotId();
+        RewriteFiles rewrite = txn.newRewrite().validateFromSnapshot(startingSnapshotId);
+
+        long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
+        rewrite.dataSequenceNumber(sequenceNumber);
+
+        for (Fragment fragment : context.getRewrittenFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            rewrite.deleteFile(dataFile);
+        }
+        for (Fragment fragment : context.getFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            rewrite.addFile(dataFile);
+        }
+
+        // Commit to transaction only (writes manifest files, NOT metadata.json)
+        rewrite.commit();
+
+        // Extract updated metadata from transaction (don't commit to table/catalog)
+        HasTableOperations txnTableOps = (HasTableOperations) txn.table();
+        TableMetadata updatedMetadata = txnTableOps.operations().current();
+
+        // Write metadata file to object storage following Iceberg naming conventions
+        // (NOT committed to catalog)
+        TableOperations tableOps = ((HasTableOperations) table).operations();
+        FileIO io = tableOps.io();
+
+        // Respect metadata compression codec
+        String codecName = updatedMetadata.property(
+            TableProperties.METADATA_COMPRESSION,
+            TableProperties.METADATA_COMPRESSION_DEFAULT);
+        String fileExtension = TableMetadataParser.getFileExtension(codecName);
+
+        // Filename: staged- prefix prevents HadoopCatalog version-hint scanning
+        // from confusing temp files with committed metadata of the same version
+        String filename = String.format("%s%s",
+            java.util.UUID.randomUUID(),
+            fileExtension);
+
+        // Path: use updatedMetadata's properties to match Iceberg's writeNewMetadata semantics
+        String newMetadataFilePath = tableOps.temp(updatedMetadata).metadataFileLocation(filename);
+
+        OutputFile outputFile = io.newOutputFile(newMetadataFilePath);
+        TableMetadataParser.overwrite(updatedMetadata, outputFile);
+
+        return newMetadataFilePath;
+    }
+
+    /**
+     * Self-heal: if the loaded table has internal runtime-config keys in its
+     * persisted properties (from before this fix), strip them via a one-shot
+     * UpdateProperties commit. After this runs once per legacy table, subsequent
+     * commits produce clean metadata.json files.
+     *
+     * <p>No-op when the table is already clean, so the overhead is negligible.
+     */
+    private void healLegacyTableProperties(Table table) {
+        Set<String> toRemove = new HashSet<>();
+        for (String key : table.properties().keySet()) {
+            if (IcebergUtilities.isInternalConfigKey(key)) {
+                toRemove.add(key);
+            }
+        }
+        if (toRemove.isEmpty()) {
+            return;
+        }
+        LOG.info("Iceberg self-heal: removing {} internal runtime-config keys from table '{}' properties",
+                toRemove.size(), table.name());
+        UpdateProperties upd = table.updateProperties();
+        for (String key : toRemove) {
+            upd.remove(key);
+        }
+        upd.commit();
+        table.refresh();
+    }
+
+    /**
+     * Write metadata.json to object storage without updating catalog pointer.
+     * Used by deferred commit operations (onlyBatchAppend, rowUpdateAndReturnLocation).
+     */
+    private String writeMetadataFile(Table table, TableMetadata metadata) {
+        TableOperations tableOps = ((HasTableOperations) table).operations();
+        FileIO io = tableOps.io();
+
+        // If the in-memory metadata still carries internal runtime-config keys
+        // (legacy data), rebuild it without them before serialising.
+        Set<String> dirtyKeys = new HashSet<>();
+        for (String k : metadata.properties().keySet()) {
+            if (IcebergUtilities.isInternalConfigKey(k)) {
+                dirtyKeys.add(k);
+            }
+        }
+        if (!dirtyKeys.isEmpty()) {
+            LOG.info("Iceberg self-heal: stripping {} internal keys from staged metadata for '{}'",
+                    dirtyKeys.size(), table.name());
+            metadata = TableMetadata.buildFrom(metadata)
+                    .removeProperties(dirtyKeys)
+                    .build();
+        }
+
+        // Respect metadata compression codec
+        String codecName = metadata.property(
+            TableProperties.METADATA_COMPRESSION,
+            TableProperties.METADATA_COMPRESSION_DEFAULT);
+        String fileExtension = TableMetadataParser.getFileExtension(codecName);
+
+        // Filename: staged- prefix prevents HadoopCatalog version-hint scanning
+        // from confusing temp files with committed metadata of the same version
+        String filename = String.format("%s%s",
+            UUID.randomUUID(),
+            fileExtension);
+
+        // Use Iceberg's path resolution (respects custom metadata location)
+        String newMetadataFilePath = tableOps.metadataFileLocation(filename);
+
+        OutputFile outputFile = io.newOutputFile(newMetadataFilePath);
+        TableMetadataParser.overwrite(metadata, outputFile);
+
+        return newMetadataFilePath;
+    }
+
+    /**
+     * PRE_COMMIT append: normal commit that updates catalog.
+     * Called during PRE_COMMIT phase to finalize INSERT operations.
+     */
+    public String commitAppend() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+        AppendFiles batchAppend = table.newAppend();
+        for (Fragment fragment : context.getFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            batchAppend.appendFile(dataFile);
+        }
+        batchAppend.commit(); // normal commit — updates catalog
+        TableMetadata metadata = ((BaseTable) table).operations().current();
+        return metadata.metadataFileLocation();
+    }
+
+    /**
+     * PRE_COMMIT update: normal commit that updates catalog.
+     * Called during PRE_COMMIT phase to finalize UPDATE/DELETE operations.
+     */
+    public String commitUpdate() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+        RowDelta rowDelta = table.newRowDelta();
+        for (Fragment fragment : context.getFragments()) {
+            GpdbFragmentMetadata meta = (GpdbFragmentMetadata)fragment.getMetadata();
+            if (meta.getContentType() == GpdbFragmentMetadata.ContentType.DATA_FILE) {
+                DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+                rowDelta.addRows(dataFile);
+            } else if (meta.getContentType() == GpdbFragmentMetadata.ContentType.POSITION_DELETE) {
+                DeleteFile deleteFile = icebergUtilities.transPosDeleteFromGpdb(fragment);
+                rowDelta.addDeletes(deleteFile);
+            }
+        }
+        rowDelta.commit(); // normal commit — updates catalog
+        TableMetadata metadata = ((BaseTable) table).operations().current();
+        return metadata.metadataFileLocation();
+    }
+
+    /**
+     * VACUUM commit: RewriteFiles + commit to catalog.
+     * Atomically replaces old files with new files and updates catalog.
+     */
+    public String commitRewrite() throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+        healLegacyTableProperties(table);
+
+        Transaction txn = table.newTransaction();
+        long startingSnapshotId = table.currentSnapshot().snapshotId();
+        RewriteFiles rewrite = txn.newRewrite().validateFromSnapshot(startingSnapshotId);
+        long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
+        rewrite.dataSequenceNumber(sequenceNumber);
+
+        for (Fragment fragment : context.getRewrittenFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            rewrite.deleteFile(dataFile);
+        }
+        for (Fragment fragment : context.getFragments()) {
+            DataFile dataFile = icebergUtilities.transFileFromGpdb(fragment);
+            rewrite.addFile(dataFile);
+        }
+
+        rewrite.commit();
+        txn.commitTransaction(); // normal commit — updates catalog
+
+        TableMetadata metadata = ((BaseTable) table).operations().current();
+        return metadata.metadataFileLocation();
+    }
+
+    /**
+     * Scan using uncommitted metadata from object storage.
+     * Unified approach for all catalog types: loads FileIO from catalog,
+     * then reads uncommitted metadata.json from the given location.
+     */
+    public FragmentDescription getFragmentsByUncommittedMetadata(
+            String uncommittedMetadataLocation) throws Exception {
+        // 1. Load table from catalog to get FileIO
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table catalogTable = catalog.loadTable(context.getDataSource());
+        FileIO io = catalogTable.io();
+
+        // 2. Build scannable Table using uncommitted metadata location
+        //    StaticTableOperations reads the metadata.json internally
+        StaticTableOperations ops = new StaticTableOperations(uncommittedMetadataLocation, io);
+        BaseTable table = new BaseTable(ops, context.getDataSource());
+
+        // 4. Reuse existing scan logic
+        TableScan scan = table.newScan().project(expectedSchema(table));
+        List<CombinedScanTask> scanTasks;
+        try (CloseableIterable<CombinedScanTask> tasks = scan.planTasks()) {
+            scanTasks = Lists.newArrayList(tasks);
+        }
+        long snapshotId = table.currentSnapshot() != null ? table.currentSnapshot().snapshotId() : 0L;
+        return transformTasks(table, scanTasks, snapshotId);
+    }
+
+    /**
+     * Plan file groups for vacuum/compaction.
+     * Groups small files by partition and applies bin-pack algorithm.
+     *
+     * @param minInputFiles minimum number of files in a group to be eligible for compaction
+     * @param targetFileSizeMb target file size in MB for bin-packing
+     * @return FragmentDescription with combined tasks representing file groups
+     */
+    public FragmentDescription planFileGroups(int minInputFiles, int targetFileSizeMb) throws Exception {
+        IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
+        Table table = catalog.loadTable(context.getDataSource());
+
+        long targetFileSizeBytes = (long) targetFileSizeMb * 1024 * 1024;
+
+        // Scan all files
+        TableScan scan = table.newScan();
+        List<FileScanTask> allTasks;
+        try (CloseableIterable<FileScanTask> tasksIterable = scan.planFiles()) {
+            allTasks = Lists.newArrayList(tasksIterable);
+        }
+
+        // Group by partition
+        Map<String, List<FileScanTask>> partitionGroups = new HashMap<>();
+        for (FileScanTask task : allTasks) {
+            String partitionKey = task.file().partition().toString();
+            partitionGroups.computeIfAbsent(partitionKey, k -> new ArrayList<>()).add(task);
+        }
+
+        List<CombinedTask> combinedTasks = new ArrayList<>();
+
+        for (Map.Entry<String, List<FileScanTask>> entry : partitionGroups.entrySet()) {
+            // Filter to only small files (smaller than target size)
+            List<FileScanTask> smallFiles = entry.getValue().stream()
+                    .filter(t -> t.file().fileSizeInBytes() < targetFileSizeBytes)
+                    .collect(Collectors.toList());
+
+            // Skip partitions without enough small files
+            if (smallFiles.size() < minInputFiles) {
+                continue;
+            }
+
+            // Bin-pack the small files
+            List<List<FileScanTask>> bins = binPack(smallFiles, targetFileSizeBytes);
+
+            // Merge adjacent small bins to ensure each group meets minInputFiles
+            List<List<FileScanTask>> mergedBins = mergeSmallBins(bins, minInputFiles);
+
+            for (List<FileScanTask> bin : mergedBins) {
+                // Skip groups that still don't meet the minimum file count
+                if (bin.size() < minInputFiles) {
+                    continue;
+                }
+                List<ScanTask> scanTasks = new ArrayList<>();
+                for (FileScanTask fileScanTask : bin) {
+                    DataFile file = fileScanTask.file();
+                    Fragment data = new Fragment(file.path().toString(),
+                            new IcebergFileFragmentMetadata(file.format(), file.content(),
+                                    file.recordCount(), null));
+
+                    List<Fragment> deletes = Lists.newArrayList();
+                    for (DeleteFile delete : fileScanTask.deletes()) {
+                        List<String> deleteSchemas = null;
+                        if (delete.content() == EQUALITY_DELETES) {
+                            deleteSchemas = getEqColumnNames(table, delete);
+                        }
+                        Fragment deleteFragment = new Fragment(delete.path().toString(),
+                                new IcebergFileFragmentMetadata(delete.format(), delete.content(),
+                                        delete.recordCount(), deleteSchemas));
+                        deletes.add(deleteFragment);
+                    }
+
+                    scanTasks.add(new ScanTask(data, deletes,
+                            fileScanTask.start(), fileScanTask.length(), null));
+                }
+                combinedTasks.add(new CombinedTask(scanTasks));
+            }
+        }
+
+        return new FragmentDescription(null, combinedTasks);
+    }
+
+    /**
+     * Bin-pack algorithm: groups files into bins targeting the given size.
+     * Files are sorted by size descending and placed into the first bin that has room.
+     */
+    private List<List<FileScanTask>> binPack(List<FileScanTask> tasks, long targetSizeBytes) {
+        // Sort by file size descending
+        List<FileScanTask> sorted = new ArrayList<>(tasks);
+        sorted.sort((a, b) -> Long.compare(b.file().fileSizeInBytes(), a.file().fileSizeInBytes()));
+
+        List<List<FileScanTask>> bins = new ArrayList<>();
+        List<Long> binSizes = new ArrayList<>();
+
+        for (FileScanTask task : sorted) {
+            long fileSize = task.file().fileSizeInBytes();
+            boolean placed = false;
+
+            // Try to fit into existing bin
+            for (int i = 0; i < bins.size(); i++) {
+                if (binSizes.get(i) + fileSize <= targetSizeBytes) {
+                    bins.get(i).add(task);
+                    binSizes.set(i, binSizes.get(i) + fileSize);
+                    placed = true;
+                    break;
+                }
+            }
+
+            // Create new bin if needed
+            if (!placed) {
+                List<FileScanTask> newBin = new ArrayList<>();
+                newBin.add(task);
+                bins.add(newBin);
+                binSizes.add(fileSize);
+            }
+        }
+
+        return bins;
+    }
+
+    /**
+     * Merge adjacent small bins so each resulting group has at least minInputFiles.
+     * Leftover files that cannot form a full group are appended to the last emitted group.
+     */
+    private List<List<FileScanTask>> mergeSmallBins(List<List<FileScanTask>> bins, int minInputFiles) {
+        List<List<FileScanTask>> merged = new ArrayList<>();
+        List<FileScanTask> current = new ArrayList<>();
+
+        for (List<FileScanTask> bin : bins) {
+            current.addAll(bin);
+            if (current.size() >= minInputFiles) {
+                merged.add(current);
+                current = new ArrayList<>();
+            }
+        }
+
+        // Leftover files: append to last group if one exists
+        if (!current.isEmpty()) {
+            if (!merged.isEmpty()) {
+                merged.get(merged.size() - 1).addAll(current);
+            } else {
+                // No group was emitted; return the leftover as a single group
+                // (it will be filtered out by the minInputFiles check in the caller)
+                merged.add(current);
+            }
+        }
+
+        return merged;
+    }
+
     @Override
     public Map<String, String> getCurrentSnapshotSummary() throws Exception {
         IcebergCatalog catalog = icebergClientWrapper.getIcebergCatalog(context);
@@ -305,14 +776,15 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         try {
             table = catalog.loadTable(context.getDataSource());
         } catch (NoSuchTableException e) {
-            return java.util.Collections.emptyMap();
+            return Collections.emptyMap();
         }
         Snapshot currentSnapshot = table.currentSnapshot();
         if (currentSnapshot == null) {
-            return java.util.Collections.emptyMap();
+            return Collections.emptyMap();
         }
         return currentSnapshot.summary();
     }
+
 
     public Schema expectedSchema(Table table) {
         Map<String, Types.NestedField> columnMetadata = Maps.newHashMap();

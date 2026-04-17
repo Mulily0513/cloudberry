@@ -32,6 +32,7 @@ import cloud.elastic.dlagent.service.bridge.Bridge;
 import cloud.elastic.dlagent.service.bridge.BridgeFactory;
 import cloud.elastic.dlagent.service.security.SecurityService;
 
+
 import java.io.DataOutputStream;
 import java.io.OutputStream;
 import java.security.PrivilegedAction;
@@ -82,6 +83,9 @@ public abstract class BaseServiceImpl<T> extends DlErrorReporter<T> {
     protected OperationStats processData(RequestContext context, PrivilegedAction<OperationResult> action) throws Exception {
         log.debug("{} service is called for resource {} using profile {}",
                 serviceName, context.getDataSource(), context.getProfile());
+
+        // initialize iceberg configuration
+        configurationFactory.initIcebergConfigFormJson(context);
 
         // initialize the configuration for this request
         Configuration configuration = configurationFactory.

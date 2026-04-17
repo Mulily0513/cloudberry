@@ -108,6 +108,7 @@ public class ReadBridge extends BaseBridge {
         return makeOutput(accessor.getCurrentSnapshotSummary());
     }
 
+
     /**
      * Close the underlying resource
      */

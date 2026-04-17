@@ -33,6 +33,7 @@ import cloud.elastic.dlagent.api.utilities.CharsetUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.info.BuildProperties;
+import org.springframework.http.HttpEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
 
@@ -83,6 +84,10 @@ public class HttpRequestParser implements RequestParser<MultiValueMap<String, St
 
     @Override
     public RequestContext parseRequest(MultiValueMap<String, String> requestHeaders) {
+        return parseRequest(requestHeaders, null);
+    }
+
+    public RequestContext parseRequest(MultiValueMap<String, String> requestHeaders, String requestBody) {
         RequestMap params = new RequestMap(requestHeaders, headerDecoder);
         if (LOG.isDebugEnabled()) {
             // Logging only keys to prevent sensitive data to be logged
@@ -124,13 +129,21 @@ public class HttpRequestParser implements RequestParser<MultiValueMap<String, St
 
         // parse tuple description
         parseTupleDescription(params, context);
-
+        if (context.getMethod().equals("batchAppend") || context.getMethod().equals("rowUpdate")) {
+            parseFragmentList(params, context);
+        }
         context.setGpSessionId(params.removeIntProperty("SESSION-ID"));
         context.setGpCommandCount(params.removeIntProperty("COMMAND-COUNT"));
         context.setUser(params.removeProperty("USER"));
         context.setPluginConf(pluginConf);
 
         // validate that the result has all required fields, and values are in valid ranges
+        // Check if we have a JSON configuration in the request body
+        if (requestBody != null && !requestBody.isEmpty()) {
+            context.setIcebergConfigJsonString(requestBody);
+            LOG.debug("Set Iceberg config JSON string from request body");
+        }
+
         context.validate();
 
         // Iterate over the remaining properties
@@ -219,6 +232,19 @@ public class HttpRequestParser implements RequestParser<MultiValueMap<String, St
             throw new IllegalArgumentException(String.format("%s must be a positive integer", propName));
         }
         return n;
+    }
+
+    private void parseFragmentList(RequestMap params, RequestContext context) {
+        int fileCount = params.removeIntProperty("FILE-COUNT");
+        for (int i = 0; i < fileCount; i++) {
+            String filePath = URLDecoder.decode(params.removeProperty("FILE-PATH" + i), "utf8");
+            Long fileSize = Long.parseLong(params.removeProperty("FILE-SIZE" + i)); 
+            Long rowCount = Long.parseLong(params.removeProperty("ROW-COUNT" + i));
+            String format = params.removeProperty("FILE-FORMAT" + i);
+            String content = params.removeProperty("FILE-CONTENT"+i);
+            LOG.info("Get file {}, {}, {}, {}, {}", filePath, fileSize, rowCount, format, content);
+            context.getFragments().add(new Fragment(filePath, new GpdbFragmentMetadata(fileSize, format, rowCount, content)));
+        }
     }
 
     /**

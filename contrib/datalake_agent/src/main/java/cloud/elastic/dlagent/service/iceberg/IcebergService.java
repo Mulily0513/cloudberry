@@ -1,0 +1,112 @@
+package cloud.elastic.dlagent.service.iceberg;
+
+import cloud.elastic.dlagent.plugins.iceberg.IcebergCatalog;
+import cloud.elastic.dlagent.api.model.RequestContext;
+import cloud.elastic.dlagent.service.ServiceResult;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.TableIdentifier;
+
+import java.util.Map;
+import java.util.List;
+
+/**
+ * Service interface for Iceberg operations
+ */
+public interface IcebergService {
+
+    /**
+     * Check if a table exists
+     */
+    Boolean checkTableExists(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Load a table from the catalog
+     */
+    Table loadTable(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Create a new table
+     */
+    Table createTable(String namespace, String tableName, Schema schema, String location, 
+                      Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Get table fragment
+     */
+    String getTableFragment(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Append data files to a table
+     */
+    Map<String, Object> appendToTable(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Update data files to a table
+     */
+    Map<String, Object> rowUpdate(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Drop a table
+     */
+    boolean dropTable(String namespace, String tableName, boolean purgeRequested, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+    * Create a catalog
+     */
+    boolean createCatalog(String catalogName, Map<String, String> catalogProperties,
+                          Map<String, Object> storageConfig, Map<String, String> properties) throws Exception;
+
+    /**
+     * Create a namespace in the specified catalog
+     */
+    boolean createNamespace(String catalogName, String namespaceName,
+                            Map<String, String> namespaceProperties, Map<String, String> properties) throws Exception;
+
+    /**
+     * List all catalogs
+     */
+    List<String> listCatalogs(Map<String, String> properties) throws Exception;
+
+    /**
+     * List all namespaces in the specified catalog
+     */
+    List<String> listNamespaces(String catalogName, Map<String, String> properties) throws Exception;
+
+    /**
+     * Get table statistics (record count, file size, etc.) from the current snapshot summary
+     */
+    String getTableStatistics(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * Plan file groups for vacuum/compaction
+     * Groups small files that can be merged together based on partition and target file size
+     */
+    String planFileGroups(String namespace, String tableName, Map<String, String> properties,
+                          RequestContext context, int minInputFiles, int targetFileSizeMb) throws Exception;
+
+    /**
+     * Commit file groups for vacuum/compaction
+     * Atomically replaces old files with new files using Iceberg RewriteFiles API
+     */
+    Map<String, Object> commitFileGroups(String namespace, String tableName,
+        Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * PRE_COMMIT append: normal AppendFiles commit that updates catalog
+     */
+    Map<String, Object> commitAppend(String namespace, String tableName,
+        Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * PRE_COMMIT update: normal RowDelta commit that updates catalog
+     */
+    Map<String, Object> commitUpdate(String namespace, String tableName,
+        Map<String, String> properties, RequestContext context) throws Exception;
+
+    /**
+     * VACUUM commit: RewriteFiles + commit to catalog
+     */
+    Map<String, Object> commitRewrite(String namespace, String tableName,
+        Map<String, String> properties, RequestContext context) throws Exception;
+}

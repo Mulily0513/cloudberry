@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 package cloud.elastic.dlagent.plugins.iceberg.utilities;
 
 import cloud.elastic.dlagent.api.error.DlRuntimeException;
@@ -31,13 +30,16 @@ import cloud.elastic.dlagent.api.utilities.EnumGpdbType;
 import cloud.elastic.dlagent.api.utilities.GpdbFragmentMetadata;
 import cloud.elastic.dlagent.api.utilities.Utilities;
 import cloud.elastic.dlagent.service.rest.FileListRequest;
+import cloud.elastic.dlagent.constants.IcebergConfigConstants;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileMetadata;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -53,6 +55,9 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.Collections;
 import java.util.stream.Collectors;
 
 /**
@@ -63,6 +68,79 @@ import java.util.stream.Collectors;
 public class IcebergUtilities {
 
     private static final Logger LOG = LoggerFactory.getLogger(IcebergUtilities.class);
+
+    /**
+     * Prefixes of runtime-configuration keys that must never appear in Iceberg
+     * {@code TableMetadata.properties} (and therefore never in metadata.json).
+     *
+     * <p>These are the JSON sections that {@code IcebergRestController.extractProperties}
+     * flattens into its mixed runtime-config map. Open-source Iceberg separates
+     * {@code Catalog.initialize(catalogProps)} from
+     * {@code Catalog.createTable(..., tableProps)}; we enforce the same by stripping
+     * any key that belongs to a runtime-config section before it reaches
+     * {@code TableMetadata}.
+     *
+     * <p>When a new section is added to the C&harr;Java JSON protocol, append its
+     * prefix here.
+     */
+    private static final List<String> INTERNAL_PROPERTY_PREFIXES = Arrays.asList(
+            "IcebergCatalogConfig.",
+            "IcebergVolumeConfig.",
+            "IcebergAdditionalConfig.",
+            "FileIOConfig.",
+            "gopherFileIOConfig.",
+            "gopher.",
+            "buildInCatalog."
+    );
+
+    /** Exact-match runtime-config keys (siblings of {@link #INTERNAL_PROPERTY_PREFIXES}). */
+    private static final Set<String> INTERNAL_EXACT_KEYS;
+    static {
+        Set<String> s = new HashSet<>();
+        s.add("config_files");
+        INTERNAL_EXACT_KEYS = Collections.unmodifiableSet(s);
+    }
+
+    /**
+     * True if the given key is one of our internal runtime-config keys and must never
+     * land in Iceberg {@code TableMetadata.properties}.
+     */
+    public static boolean isInternalConfigKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return false;
+        }
+        if (INTERNAL_EXACT_KEYS.contains(key)) {
+            return true;
+        }
+        for (String prefix : INTERNAL_PROPERTY_PREFIXES) {
+            if (key.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Return a new map containing only the user-facing table properties from
+     * {@code properties} &mdash; any key recognised as internal runtime config
+     * (see {@link #isInternalConfigKey}) is dropped.
+     *
+     * <p>Called at every {@code IcebergCatalog.createTable} boundary, at the HTTP
+     * response assembler, and at commit-time self-heal to guarantee metadata.json
+     * carries only open-source-Iceberg-legal TBLPROPERTIES.
+     */
+    public static Map<String, String> stripInternalProperties(Map<String, String> properties) {
+        if (properties == null || properties.isEmpty()) {
+            return new HashMap<>();
+        }
+        Map<String, String> filtered = new HashMap<>(properties.size());
+        for (Map.Entry<String, String> entry : properties.entrySet()) {
+            if (!isInternalConfigKey(entry.getKey())) {
+                filtered.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return filtered;
+    }
 
     /**
      * Checks if iceberg type is supported, and if so return its matching GPDB
@@ -179,6 +257,53 @@ public class IcebergUtilities {
 
         // Parse the (possibly modified) table name
         return TableIdentifier.parse(tableName);
+    }
+
+    private void processFileIOImple(Configuration configuration, Map<String, String> props) {
+        String implClass = configuration.get(IcebergConfigConstants.FILE_IO_CONFIG_IMPL_CLASS);
+        if (implClass == null || implClass.isEmpty()) {
+            return;
+        }
+
+        if (IcebergConfigConstants.S3_FILE_IO_CLASS_NAME.equals(implClass) || 
+            IcebergConfigConstants.ICEBERG_S3_FILE_IO_CLASS_NAME.equals(implClass)) {
+            configureS3FileIO(configuration, props);
+        } else {
+            configureHadoopFileIO(configuration, props);
+        }
+
+        passFileIOProperties(configuration, props);
+    }
+
+    private void configureS3FileIO(Configuration configuration, Map<String, String> props) {
+        List<String> configKeys = Arrays.asList(
+            IcebergConfigConstants.S3FILEIO_ACCESS_KEY_ID,
+            IcebergConfigConstants.S3FILEIO_SECRET_ACCESS_KEY,
+            IcebergConfigConstants.S3FILEIO_ENDPOINT,
+            IcebergConfigConstants.S3FILEIO_REGION,
+            IcebergConfigConstants.S3FILEIO_PATH_STYLE_ACCESS);
+
+        for (String key : configKeys) {
+            String val = configuration.get(key);
+            if (val != null) {
+                props.put(key, val);
+            }
+        }
+        props.put(CatalogProperties.FILE_IO_IMPL, IcebergConfigConstants.ICEBERG_FILE_IO_CLASS_NAME);
+    }
+
+    private void configureHadoopFileIO(Configuration configuration, Map<String, String> props) {
+        props.put(CatalogProperties.FILE_IO_IMPL, HadoopFileIO.class.getName());
+    }
+
+    private void passFileIOProperties(Configuration configuration, Map<String, String> props) {
+        String prefix = IcebergConfigConstants.FILE_IO_CONFIG_PROPERTIES_PREFIX + ".";
+        for (Map.Entry<String, String> entry : configuration) {
+            if (entry.getKey().startsWith(prefix)) {
+                String configKey = entry.getKey().substring(prefix.length());
+                props.put(configKey, entry.getValue());
+            }
+        }
     }
 
     /**
@@ -462,7 +587,7 @@ public class IcebergUtilities {
     }
 
     /**
-     * 
+     *
      */
     public Schema formSchemaFromTupleDes(RequestContext context) {
         List<NestedField> fields = new ArrayList<>();
@@ -545,6 +670,100 @@ public class IcebergUtilities {
                            .withFormat(format)
                            .withFileSizeInBytes(fileEntry.getFileSize() != null ? fileEntry.getFileSize() : 0L)
                            .withRecordCount(fileEntry.getRecordCount() != null ? fileEntry.getRecordCount() : 0L)
+                           .ofPositionDeletes()
+                           .build();
+    }
+
+    public void setupNativeLibGopherClientLibrary() {
+        try {
+            // Set LD_LIBRARY_PATH environment variable for native library dependencies
+            String ldLibraryPath = System.getenv("LD_LIBRARY_PATH");
+            String thirdPartyLibPath = "/workspace/dist/thirdparty/lib";
+            String newLdLibraryPath;
+
+            if (ldLibraryPath == null || ldLibraryPath.isEmpty()) {
+                newLdLibraryPath = thirdPartyLibPath;
+            } else {
+                newLdLibraryPath = ldLibraryPath + ":" + thirdPartyLibPath;
+            }
+
+            // Try to set LD_LIBRARY_PATH via reflection
+            try {
+                java.lang.reflect.Field field = System.getenv().getClass().getDeclaredField("m");
+                field.setAccessible(true);
+                java.util.Map<String, String> env = (java.util.Map<String, String>) field.get(System.getenv());
+                env.put("LD_LIBRARY_PATH", newLdLibraryPath);
+                System.out.println("Set LD_LIBRARY_PATH: " + newLdLibraryPath);
+            } catch (Exception e) {
+                System.out.println("Failed to set LD_LIBRARY_PATH: " + e.getMessage());
+            }
+
+            // Set java.library.path to include the directory containing libgopherClient.so
+            String libraryPath = System.getProperty("java.library.path");
+            String gopherLibPath = "/workspace/dist/thirdparty/lib";
+            String newLibraryPath;
+
+            if (libraryPath == null || libraryPath.isEmpty()) {
+                newLibraryPath = gopherLibPath;
+            } else {
+                newLibraryPath = libraryPath + ":" + gopherLibPath;
+            }
+
+            System.setProperty("java.library.path", newLibraryPath);
+            System.out.println("Set java.library.path: " + newLibraryPath);
+
+            // Try to load native library using System.loadLibrary first
+            try {
+                System.loadLibrary("gopherClient");
+                System.out.println("Successfully loaded gopherClient native library using System.loadLibrary");
+            } catch (UnsatisfiedLinkError e) {
+                System.out.println(
+                        "Failed to load gopherClient native library using System.loadLibrary: " + e.getMessage());
+                System.out.println("Trying to load from absolute path...");
+
+                // Try to load from absolute path
+                try {
+                    System.load("/workspace/dist/thirdparty/lib/libgopherClient.so");
+                    System.out.println("Successfully loaded gopherClient native library from absolute path");
+                } catch (UnsatisfiedLinkError e2) {
+                    System.out.println(
+                            "Failed to load gopherClient native library from absolute path: " + e2.getMessage());
+                    System.out.println("Trying alternative path...");
+
+                    // Try alternative path
+                    try {
+                        System.load("/workspace/share/Gopher/swig/libgopherClient.so");
+                        System.out.println("Successfully loaded gopherClient native library from alternative path");
+                    } catch (UnsatisfiedLinkError e3) {
+                        System.out.println(
+                                "Failed to load gopherClient native library from alternative path: " + e3.getMessage());
+                        throw new RuntimeException("Unable to load gopherClient native library from any path", e3);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Error setting native library path: " + e.getMessage());
+            throw new RuntimeException("Failed to setup native library", e);
+        }
+    }
+
+    public DataFile transFileFromGpdb(Fragment gpdbFile) {
+        GpdbFragmentMetadata metadata = (GpdbFragmentMetadata) gpdbFile.getMetadata();
+        return DataFiles.builder(PartitionSpec.unpartitioned())
+                        .withPath(gpdbFile.getSourceName())
+                        .withFormat(metadata.getFileFormat())
+                        .withFileSizeInBytes(metadata.getFileSize())
+                        .withRecordCount(metadata.getRowCount())
+                        .build();
+    }
+
+    public DeleteFile transPosDeleteFromGpdb(Fragment gpdbFile) {
+        GpdbFragmentMetadata metadata = (GpdbFragmentMetadata) gpdbFile.getMetadata();
+        return FileMetadata.deleteFileBuilder(PartitionSpec.unpartitioned())
+                           .withPath(gpdbFile.getSourceName())
+                           .withFormat(metadata.getFileFormat())
+                           .withFileSizeInBytes(metadata.getFileSize())
+                           .withRecordCount(metadata.getRowCount())
                            .ofPositionDeletes()
                            .build();
     }
