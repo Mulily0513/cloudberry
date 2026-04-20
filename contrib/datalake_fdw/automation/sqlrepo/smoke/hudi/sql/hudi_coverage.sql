@@ -109,7 +109,7 @@ SELECT MIN(id), MAX(id), COUNT(*), SUM(price) FROM hudi_mor_bulk;
 -- ============================================================
 DROP FOREIGN TABLE IF EXISTS hudi_cow_types;
 CREATE FOREIGN TABLE hudi_cow_types (
-    id int,
+    id bigint,
     str_col text,
     big_col bigint,
     dbl_col double precision,

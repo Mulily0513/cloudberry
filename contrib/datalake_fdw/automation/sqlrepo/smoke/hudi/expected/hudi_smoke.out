@@ -99,26 +99,25 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_mor_table;
  count 
 -------
-     6
+     5
 (1 row)
 
 SELECT * FROM hudi_mor_table ORDER BY id;
- id |   name   | price  |  ts  
-----+----------+--------+------
-  1 | Laptop   | 999.99 | 2000
-  2 | Mouse    |  29.99 | 2001
-  3 | Keyboard |  79.99 | 2002
-  4 | Monitor  | 399.99 | 2003
-  5 | Headset  | 149.99 | 2004
-    |          |        |     
-(6 rows)
+ id |    name    | price  |  ts  
+----+------------+--------+------
+  1 | Laptop     | 999.99 | 2000
+  2 | Mouse Pro  |  39.99 | 2010
+  3 | Keyboard   |  79.99 | 2002
+  4 | Monitor 4K | 499.99 | 2011
+  5 | Headset    | 149.99 | 2004
+(5 rows)
 
 SELECT * FROM hudi_mor_table WHERE price > 100.00 ORDER BY id;
- id |  name   | price  |  ts  
-----+---------+--------+------
-  1 | Laptop  | 999.99 | 2000
-  4 | Monitor | 399.99 | 2003
-  5 | Headset | 149.99 | 2004
+ id |    name    | price  |  ts  
+----+------------+--------+------
+  1 | Laptop     | 999.99 | 2000
+  4 | Monitor 4K | 499.99 | 2011
+  5 | Headset    | 149.99 | 2004
 (3 rows)
 
 -- ============================================================
@@ -144,25 +143,35 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_partition_table;
  count 
 -------
-     0
+     5
 (1 row)
 
 SELECT * FROM hudi_partition_table ORDER BY id;
- id | name | amount | region 
-----+------+--------+--------
-(0 rows)
+ id |  name   | amount | region 
+----+---------+--------+--------
+  1 | Order-1 |    100 | east
+  2 | Order-2 |    200 | east
+  3 | Order-3 |    150 | west
+  4 | Order-4 |    300 | west
+  5 | Order-5 |    250 | north
+(5 rows)
 
 SELECT * FROM hudi_partition_table WHERE region = 'east' ORDER BY id;
- id | name | amount | region 
-----+------+--------+--------
-(0 rows)
+ id |  name   | amount | region 
+----+---------+--------+--------
+  1 | Order-1 |    100 | east
+  2 | Order-2 |    200 | east
+(2 rows)
 
 SELECT region, COUNT(*) AS cnt, SUM(amount) AS total
 FROM hudi_partition_table
 GROUP BY region ORDER BY region;
  region | cnt | total 
 --------+-----+-------
-(0 rows)
+ east   |   2 |   300
+ north  |   1 |   250
+ west   |   2 |   450
+(3 rows)
 
 -- ============================================================
 -- Test 4: Hudi NULL value handling
@@ -170,7 +179,7 @@ GROUP BY region ORDER BY region;
 DROP FOREIGN TABLE IF EXISTS hudi_null_table;
 NOTICE:  foreign table "hudi_null_table" does not exist, skipping
 CREATE FOREIGN TABLE hudi_null_table (
-    id int,
+    id bigint,
     name text,
     val int,
     ts bigint

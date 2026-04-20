@@ -16,11 +16,11 @@ OPTIONS (
     hoodie.table.name = 'hudi_cow_table'
 )
 AS SELECT * FROM (
-    SELECT 1 as id, 'Alice' as name, CAST(100.00 AS DECIMAL(10,2)) as price, CAST(1000 AS BIGINT) as ts
-    UNION ALL SELECT 2, 'Bob', CAST(200.50 AS DECIMAL(10,2)), 1001
-    UNION ALL SELECT 3, 'Charlie', CAST(50.75 AS DECIMAL(10,2)), 1002
-    UNION ALL SELECT 4, 'David', CAST(300.00 AS DECIMAL(10,2)), 1003
-    UNION ALL SELECT 5, 'Eve', CAST(150.25 AS DECIMAL(10,2)), 1004
+    SELECT CAST(1 AS BIGINT) as id, 'Alice' as name, CAST(100.00 AS DOUBLE) as price, CAST(1000 AS BIGINT) as ts
+    UNION ALL SELECT 2, 'Bob', CAST(200.50 AS DOUBLE), 1001
+    UNION ALL SELECT 3, 'Charlie', CAST(50.75 AS DOUBLE), 1002
+    UNION ALL SELECT 4, 'David', CAST(300.00 AS DOUBLE), 1003
+    UNION ALL SELECT 5, 'Eve', CAST(150.25 AS DOUBLE), 1004
 ) t;
 
 -- ============================================================
@@ -36,18 +36,18 @@ OPTIONS (
     hoodie.table.name = 'hudi_mor_table'
 )
 AS SELECT * FROM (
-    SELECT 1 as id, 'Laptop' as name, CAST(999.99 AS DECIMAL(10,2)) as price, CAST(2000 AS BIGINT) as ts
-    UNION ALL SELECT 2, 'Mouse', CAST(29.99 AS DECIMAL(10,2)), 2001
-    UNION ALL SELECT 3, 'Keyboard', CAST(79.99 AS DECIMAL(10,2)), 2002
-    UNION ALL SELECT 4, 'Monitor', CAST(399.99 AS DECIMAL(10,2)), 2003
-    UNION ALL SELECT 5, 'Headset', CAST(149.99 AS DECIMAL(10,2)), 2004
+    SELECT CAST(1 AS BIGINT) as id, 'Laptop' as name, CAST(999.99 AS DOUBLE) as price, CAST(2000 AS BIGINT) as ts
+    UNION ALL SELECT 2, 'Mouse', CAST(29.99 AS DOUBLE), 2001
+    UNION ALL SELECT 3, 'Keyboard', CAST(79.99 AS DOUBLE), 2002
+    UNION ALL SELECT 4, 'Monitor', CAST(399.99 AS DOUBLE), 2003
+    UNION ALL SELECT 5, 'Headset', CAST(149.99 AS DOUBLE), 2004
 ) t;
 
 -- Insert update (creates delta log for MOR)
 INSERT INTO hudi_mor_table
 SELECT * FROM (
-    SELECT 2 as id, 'Mouse Pro' as name, CAST(39.99 AS DECIMAL(10,2)) as price, CAST(2010 AS BIGINT) as ts
-    UNION ALL SELECT 4, 'Monitor 4K', CAST(499.99 AS DECIMAL(10,2)), 2011
+    SELECT CAST(2 AS BIGINT) as id, 'Mouse Pro' as name, CAST(39.99 AS DOUBLE) as price, CAST(2010 AS BIGINT) as ts
+    UNION ALL SELECT 4, 'Monitor 4K', CAST(499.99 AS DOUBLE), 2011
 ) t;
 
 -- ============================================================
@@ -64,11 +64,11 @@ OPTIONS (
 )
 PARTITIONED BY (region)
 AS SELECT * FROM (
-    SELECT 1 as id, 'Order-1' as name, CAST(100.00 AS DECIMAL(10,2)) as amount, 'east' as region
-    UNION ALL SELECT 2, 'Order-2', CAST(200.00 AS DECIMAL(10,2)), 'east'
-    UNION ALL SELECT 3, 'Order-3', CAST(150.00 AS DECIMAL(10,2)), 'west'
-    UNION ALL SELECT 4, 'Order-4', CAST(300.00 AS DECIMAL(10,2)), 'west'
-    UNION ALL SELECT 5, 'Order-5', CAST(250.00 AS DECIMAL(10,2)), 'north'
+    SELECT CAST(1 AS BIGINT) as id, 'Order-1' as name, CAST(100.00 AS DOUBLE) as amount, 'east' as region
+    UNION ALL SELECT 2, 'Order-2', CAST(200.00 AS DOUBLE), 'east'
+    UNION ALL SELECT 3, 'Order-3', CAST(150.00 AS DOUBLE), 'west'
+    UNION ALL SELECT 4, 'Order-4', CAST(300.00 AS DOUBLE), 'west'
+    UNION ALL SELECT 5, 'Order-5', CAST(250.00 AS DOUBLE), 'north'
 ) t;
 
 -- ============================================================
@@ -84,7 +84,7 @@ OPTIONS (
     hoodie.table.name = 'hudi_null_table'
 )
 AS SELECT * FROM (
-    SELECT 1 as id, 'has_all' as name, 100 as val, CAST(3000 AS BIGINT) as ts
+    SELECT CAST(1 AS BIGINT) as id, 'has_all' as name, 100 as val, CAST(3000 AS BIGINT) as ts
     UNION ALL SELECT 2, NULL, 200, 3001
     UNION ALL SELECT 3, 'no_val', NULL, 3002
     UNION ALL SELECT 4, NULL, NULL, 3003

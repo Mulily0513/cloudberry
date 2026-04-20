@@ -53,34 +53,35 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_bt_multi;
  count 
 -------
-    11
+    10
 (1 row)
 
 SELECT * FROM hudi_bt_multi ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  1 | init_1  |    10 |  1
-  2 | init_2  |    20 |  2
-  3 | init_3  |    30 |  3
-  4 | init_4  |    40 |  4
-  5 | init_5  |    50 |  5
-  6 | init_6  |    60 |  6
-  7 | init_7  |    70 |  7
-  8 | init_8  |    80 |  8
-  9 | init_9  |    90 |  9
- 10 | init_10 |   100 | 10
-    |         |       |   
-(11 rows)
+ id |   name    | price | ts  
+----+-----------+-------+-----
+  1 | update3_1 |   111 | 300
+  2 | update2_2 |    22 | 200
+  3 | update1_3 |    33 | 101
+  4 | update2_4 |    44 | 201
+  5 | update1_5 |    55 | 102
+  6 | update2_6 |    66 | 202
+  7 | update3_7 |    77 | 301
+  8 | update3_8 |    88 | 302
+  9 | update3_9 |    99 | 303
+ 10 | init_10   |   100 |  10
+(10 rows)
 
 SELECT * FROM hudi_bt_multi WHERE price > 50.0 ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  6 | init_6  |    60 |  6
-  7 | init_7  |    70 |  7
-  8 | init_8  |    80 |  8
-  9 | init_9  |    90 |  9
- 10 | init_10 |   100 | 10
-(5 rows)
+ id |   name    | price | ts  
+----+-----------+-------+-----
+  1 | update3_1 |   111 | 300
+  5 | update1_5 |    55 | 102
+  6 | update2_6 |    66 | 202
+  7 | update3_7 |    77 | 301
+  8 | update3_8 |    88 | 302
+  9 | update3_9 |    99 | 303
+ 10 | init_10   |   100 |  10
+(7 rows)
 
 -- ============================================================
 -- Test 2: MOR bulk with btree merger
@@ -105,28 +106,28 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_bt_bulk;
  count 
 -------
-   101
+   100
 (1 row)
 
 SELECT * FROM hudi_bt_bulk WHERE id <= 10 ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  1 | name_1  |   1.5 |  1
-  2 | name_2  |     3 |  2
-  3 | name_3  |   4.5 |  3
-  4 | name_4  |     6 |  4
-  5 | name_5  |   7.5 |  5
-  6 | name_6  |     9 |  6
-  7 | name_7  |  10.5 |  7
-  8 | name_8  |    12 |  8
-  9 | name_9  |  13.5 |  9
- 10 | name_10 |    15 | 10
+ id |    name    | price |  ts  
+----+------------+-------+------
+  1 | name_1     |   1.5 |    1
+  2 | updated_2  |       | 1002
+  3 | name_3     |   4.5 |    3
+  4 | updated_4  |       | 1004
+  5 | name_5     |   7.5 |    5
+  6 | updated_6  |       | 1006
+  7 | name_7     |  10.5 |    7
+  8 | updated_8  |       | 1008
+  9 | name_9     |  13.5 |    9
+ 10 | updated_10 |       | 1010
 (10 rows)
 
 SELECT COUNT(*) FROM hudi_bt_bulk WHERE name LIKE 'updated_%';
  count 
 -------
-     0
+    50
 (1 row)
 
 -- ============================================================
@@ -153,18 +154,26 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_bt_part;
  count 
 -------
-     0
+     5
 (1 row)
 
 SELECT * FROM hudi_bt_part ORDER BY id;
- id | name | price | ts | region 
-----+------+-------+----+--------
-(0 rows)
+ id |   name    | price | ts  | region 
+----+-----------+-------+-----+--------
+  1 | updated_1 |   150 | 100 | east
+  2 | item_2    |   200 |   2 | east
+  3 | updated_3 |   350 | 101 | west
+  4 | item_4    |   400 |   4 | west
+  5 | updated_5 |   550 | 102 | north
+(5 rows)
 
 SELECT region, COUNT(*) FROM hudi_bt_part GROUP BY region ORDER BY region;
  region | count 
 --------+-------
-(0 rows)
+ east   |     2
+ north  |     1
+ west   |     2
+(3 rows)
 
 -- ============================================================
 -- Cleanup

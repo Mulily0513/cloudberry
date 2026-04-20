@@ -56,51 +56,52 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_mor_multi_delta;
  count 
 -------
-    11
+    10
 (1 row)
 
 -- Verify merged results (latest version wins by ts)
 SELECT * FROM hudi_mor_multi_delta ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  1 | init_1  |    10 |  1
-  2 | init_2  |    20 |  2
-  3 | init_3  |    30 |  3
-  4 | init_4  |    40 |  4
-  5 | init_5  |    50 |  5
-  6 | init_6  |    60 |  6
-  7 | init_7  |    70 |  7
-  8 | init_8  |    80 |  8
-  9 | init_9  |    90 |  9
- 10 | init_10 |   100 | 10
-    |         |       |   
-(11 rows)
+ id |   name    | price | ts  
+----+-----------+-------+-----
+  1 | update3_1 |   111 | 300
+  2 | update2_2 |    22 | 200
+  3 | update1_3 |    33 | 101
+  4 | update2_4 |    44 | 201
+  5 | update1_5 |    55 | 102
+  6 | update2_6 |    66 | 202
+  7 | update3_7 |    77 | 301
+  8 | update3_8 |    88 | 302
+  9 | update3_9 |    99 | 303
+ 10 | init_10   |   100 |  10
+(10 rows)
 
 -- Filter pushdown on merged data
 SELECT * FROM hudi_mor_multi_delta WHERE id <= 3 ORDER BY id;
- id |  name  | price | ts 
-----+--------+-------+----
-  1 | init_1 |    10 |  1
-  2 | init_2 |    20 |  2
-  3 | init_3 |    30 |  3
+ id |   name    | price | ts  
+----+-----------+-------+-----
+  1 | update3_1 |   111 | 300
+  2 | update2_2 |    22 | 200
+  3 | update1_3 |    33 | 101
 (3 rows)
 
 SELECT * FROM hudi_mor_multi_delta WHERE price > 50.00 ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  6 | init_6  |    60 |  6
-  7 | init_7  |    70 |  7
-  8 | init_8  |    80 |  8
-  9 | init_9  |    90 |  9
- 10 | init_10 |   100 | 10
-(5 rows)
+ id |   name    | price | ts  
+----+-----------+-------+-----
+  1 | update3_1 |   111 | 300
+  5 | update1_5 |    55 | 102
+  6 | update2_6 |    66 | 202
+  7 | update3_7 |    77 | 301
+  8 | update3_8 |    88 | 302
+  9 | update3_9 |    99 | 303
+ 10 | init_10   |   100 |  10
+(7 rows)
 
 -- Aggregate on merged data
 SELECT COUNT(*) AS cnt, SUM(price) AS total, AVG(price) AS avg_price
 FROM hudi_mor_multi_delta;
  cnt | total | avg_price 
 -----+-------+-----------
-  11 |   550 |        55
+  10 |   695 |      69.5
 (1 row)
 
 -- ============================================================
@@ -127,43 +128,43 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_mor_bulk;
  count 
 -------
-   101
+   100
 (1 row)
 
 -- Verify updates were merged (even IDs should be 'updated_N')
 SELECT * FROM hudi_mor_bulk WHERE id <= 10 ORDER BY id;
- id |  name   | price | ts 
-----+---------+-------+----
-  1 | name_1  |   1.5 |  1
-  2 | name_2  |     3 |  2
-  3 | name_3  |   4.5 |  3
-  4 | name_4  |     6 |  4
-  5 | name_5  |   7.5 |  5
-  6 | name_6  |     9 |  6
-  7 | name_7  |  10.5 |  7
-  8 | name_8  |    12 |  8
-  9 | name_9  |  13.5 |  9
- 10 | name_10 |    15 | 10
+ id |    name    | price |  ts  
+----+------------+-------+------
+  1 | name_1     |   1.5 |    1
+  2 | updated_2  |       | 1002
+  3 | name_3     |   4.5 |    3
+  4 | updated_4  |       | 1004
+  5 | name_5     |   7.5 |    5
+  6 | updated_6  |       | 1006
+  7 | name_7     |  10.5 |    7
+  8 | updated_8  |       | 1008
+  9 | name_9     |  13.5 |    9
+ 10 | updated_10 |       | 1010
 (10 rows)
 
 -- Check updated vs original
 SELECT COUNT(*) FROM hudi_mor_bulk WHERE name LIKE 'updated_%';
  count 
 -------
-     0
+    50
 (1 row)
 
 SELECT COUNT(*) FROM hudi_mor_bulk WHERE name LIKE 'name_%';
  count 
 -------
-   100
+    50
 (1 row)
 
 -- Aggregate
 SELECT MIN(id), MAX(id), COUNT(*), SUM(price) FROM hudi_mor_bulk;
  min | max | count | sum  
 -----+-----+-------+------
-   1 | 100 |   101 | 7575
+   1 | 100 |   100 | 3750
 (1 row)
 
 -- ============================================================
@@ -173,7 +174,7 @@ SELECT MIN(id), MAX(id), COUNT(*), SUM(price) FROM hudi_mor_bulk;
 DROP FOREIGN TABLE IF EXISTS hudi_cow_types;
 NOTICE:  foreign table "hudi_cow_types" does not exist, skipping
 CREATE FOREIGN TABLE hudi_cow_types (
-    id int,
+    id bigint,
     str_col text,
     big_col bigint,
     dbl_col double precision,
@@ -192,11 +193,23 @@ OPTIONS (
     format 'hudi'
 );
 SELECT * FROM hudi_cow_types ORDER BY id;
-ERROR:  dlproxy server error : {"error":{"stack":"cloud.elastic.dlagent.api.error.DlRuntimeException: Invalid definition for column ts_col: expected GPDB type TIMESTAMP, actual GPDB type BIGINT\n\tat cloud.elastic.dlagent.service.controller.DlErrorReporter.invokeWithErrorHandling(DlErrorReporter.java:65)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.readData(ReadServiceImpl.java:61)\n\tat cloud.elastic.dlagent.service.rest.DlReadResource.lambda$produceResponse$1(DlReadResource.java:122)\n\tat org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBodyReturnValueHandler$StreamingResponseBodyTask.call(StreamingResponseBodyReturnValueHandler.java:111)\n\tat org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBodyReturnValueHandler$StreamingResponseBodyTask.call(StreamingResponseBodyReturnValueHandler.java:98)\n\tat org.springframework.web.context.request.async.WebAsyncManager.lambda$startCallableProcessing$4(WebAsyncManager.java:337)\n\tat java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)\n\tat java.util.concurrent.FutureTask.run(FutureTask.java:266)\n\tat cloud.elastic.dlagent.service.spring.DlContextMdcLogEnhancerDecorator.lambda$decorate$0(DlContextMdcLogEnhancerDecorator.java:46)\n\tat java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)\n\tat java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)\n\tat java.lang.Thread.run(Thread.java:750)\nCaused by: cloud.elastic.dlagent.api.error.UnsupportedTypeException: Invalid definition for column ts_col: expected GPDB type TIMESTAMP, actual GPDB type BIGINT\n\tat cloud.elastic.dlagent.plugins.hudi.utilities.HudiUtilities.validateTypeCompatible(HudiUtilities.java:150)\n\tat cloud.elastic.dlagent.plugins.hudi.utilities.HudiUtilities.verifySchema(HudiUtilities.java:209)\n\tat cloud.elastic.dlagent.plugins.hudi.HudiMetadataFetcher.getFragments(HudiMetadataFetcher.java:111)\n\tat cloud.elastic.dlagent.service.bridge.ReadBridge.getFragments(ReadBridge.java:76)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.call(ReadServiceImpl.java:72)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.processRequest(BaseServiceImpl.java:174)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.writeStream(BaseServiceImpl.java:147)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.lambda$null$0(ReadServiceImpl.java:61)\n\tat java.security.AccessController.doPrivileged(Native Method)\n\tat javax.security.auth.Subject.doAs(Subject.java:360)\n\tat org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1930)\n\tat cloud.elastic.dlagent.service.security.BaseSecurityService.doAs(BaseSecurityService.java:104)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.processData(BaseServiceImpl.java:103)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.lambda$readData$1(ReadServiceImpl.java:61)\n\tat cloud.elastic.dlagent.service.controller.DlErrorReporter.invokeWithErrorHandling(DlErrorReporter.java:45)\n\t... 11 more\n","code":500,"message":"Internal Server Error","type":"InternalServerError"}}
+ id |   str_col    |  big_col   | dbl_col | bool_col |  date_col  |   ts_col   | ts 
+----+--------------+------------+---------+----------+------------+------------+----
+  1 | text_val     |  123456789 |    3.14 | t        | 2024-06-15 | 1718448600 |  1
+  2 | another_text | -987654321 |  -2.718 | f        | 1970-01-01 |          0 |  2
+  3 |              |            |         |          |            |            |  3
+(3 rows)
+
 SELECT id, str_col IS NULL AS str_null, big_col IS NULL AS big_null,
        bool_col, date_col
 FROM hudi_cow_types ORDER BY id;
-ERROR:  dlproxy server error : {"error":{"stack":"cloud.elastic.dlagent.api.error.DlRuntimeException: Invalid definition for column ts_col: expected GPDB type TIMESTAMP, actual GPDB type BIGINT\n\tat cloud.elastic.dlagent.service.controller.DlErrorReporter.invokeWithErrorHandling(DlErrorReporter.java:65)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.readData(ReadServiceImpl.java:61)\n\tat cloud.elastic.dlagent.service.rest.DlReadResource.lambda$produceResponse$1(DlReadResource.java:122)\n\tat org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBodyReturnValueHandler$StreamingResponseBodyTask.call(StreamingResponseBodyReturnValueHandler.java:111)\n\tat org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBodyReturnValueHandler$StreamingResponseBodyTask.call(StreamingResponseBodyReturnValueHandler.java:98)\n\tat org.springframework.web.context.request.async.WebAsyncManager.lambda$startCallableProcessing$4(WebAsyncManager.java:337)\n\tat java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)\n\tat java.util.concurrent.FutureTask.run(FutureTask.java:266)\n\tat cloud.elastic.dlagent.service.spring.DlContextMdcLogEnhancerDecorator.lambda$decorate$0(DlContextMdcLogEnhancerDecorator.java:46)\n\tat java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)\n\tat java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)\n\tat java.lang.Thread.run(Thread.java:750)\nCaused by: cloud.elastic.dlagent.api.error.UnsupportedTypeException: Invalid definition for column ts_col: expected GPDB type TIMESTAMP, actual GPDB type BIGINT\n\tat cloud.elastic.dlagent.plugins.hudi.utilities.HudiUtilities.validateTypeCompatible(HudiUtilities.java:150)\n\tat cloud.elastic.dlagent.plugins.hudi.utilities.HudiUtilities.verifySchema(HudiUtilities.java:209)\n\tat cloud.elastic.dlagent.plugins.hudi.HudiMetadataFetcher.getFragments(HudiMetadataFetcher.java:111)\n\tat cloud.elastic.dlagent.service.bridge.ReadBridge.getFragments(ReadBridge.java:76)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.call(ReadServiceImpl.java:72)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.processRequest(BaseServiceImpl.java:174)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.writeStream(BaseServiceImpl.java:147)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.lambda$null$0(ReadServiceImpl.java:61)\n\tat java.security.AccessController.doPrivileged(Native Method)\n\tat javax.security.auth.Subject.doAs(Subject.java:360)\n\tat org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1930)\n\tat cloud.elastic.dlagent.service.security.BaseSecurityService.doAs(BaseSecurityService.java:104)\n\tat cloud.elastic.dlagent.service.controller.BaseServiceImpl.processData(BaseServiceImpl.java:103)\n\tat cloud.elastic.dlagent.service.controller.ReadServiceImpl.lambda$readData$1(ReadServiceImpl.java:61)\n\tat cloud.elastic.dlagent.service.controller.DlErrorReporter.invokeWithErrorHandling(DlErrorReporter.java:45)\n\t... 11 more\n","code":500,"message":"Internal Server Error","type":"InternalServerError"}}
+ id | str_null | big_null | bool_col |  date_col  
+----+----------+----------+----------+------------
+  1 | f        | f        | t        | 2024-06-15
+  2 | f        | f        | f        | 1970-01-01
+  3 | t        | t        |          | 
+(3 rows)
+
 -- ============================================================
 -- Test 4: MOR partitioned with per-partition deltas
 -- Exercises: partition-aware fragment scanning, delta per file group
@@ -222,24 +235,33 @@ OPTIONS (
 SELECT COUNT(*) FROM hudi_mor_part_delta;
  count 
 -------
-     0
+     5
 (1 row)
 
 SELECT * FROM hudi_mor_part_delta ORDER BY id;
- id | name | price | ts | region 
-----+------+-------+----+--------
-(0 rows)
+ id |   name    | price | ts  | region 
+----+-----------+-------+-----+--------
+  1 | updated_1 |   150 | 100 | east
+  2 | item_2    |   200 |   2 | east
+  3 | updated_3 |   350 | 101 | west
+  4 | item_4    |   400 |   4 | west
+  5 | updated_5 |   550 | 102 | north
+(5 rows)
 
 -- Filter by partition column
 SELECT * FROM hudi_mor_part_delta WHERE region = 'east' ORDER BY id;
- id | name | price | ts | region 
-----+------+-------+----+--------
-(0 rows)
+ id |   name    | price | ts  | region 
+----+-----------+-------+-----+--------
+  1 | updated_1 |   150 | 100 | east
+  2 | item_2    |   200 |   2 | east
+(2 rows)
 
 SELECT * FROM hudi_mor_part_delta WHERE region = 'west' ORDER BY id;
- id | name | price | ts | region 
-----+------+-------+----+--------
-(0 rows)
+ id |   name    | price | ts  | region 
+----+-----------+-------+-----+--------
+  3 | updated_3 |   350 | 101 | west
+  4 | item_4    |   400 |   4 | west
+(2 rows)
 
 -- Cross-partition aggregate
 SELECT region, COUNT(*) AS cnt, SUM(price) AS total
@@ -247,7 +269,10 @@ FROM hudi_mor_part_delta
 GROUP BY region ORDER BY region;
  region | cnt | total 
 --------+-----+-------
-(0 rows)
+ east   |   2 |   350
+ north  |   1 |   550
+ west   |   2 |   750
+(3 rows)
 
 -- ============================================================
 -- Cleanup

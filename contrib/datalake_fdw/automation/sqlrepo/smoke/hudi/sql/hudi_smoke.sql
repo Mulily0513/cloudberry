@@ -110,7 +110,7 @@ GROUP BY region ORDER BY region;
 -- ============================================================
 DROP FOREIGN TABLE IF EXISTS hudi_null_table;
 CREATE FOREIGN TABLE hudi_null_table (
-    id int,
+    id bigint,
     name text,
     val int,
     ts bigint
