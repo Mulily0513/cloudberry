@@ -58,7 +58,7 @@ SELECT id, name FROM hb_mor ORDER BY id;
 -- ============================================================
 SELECT test_log('Test 5: NULL table read');
 
-CREATE FOREIGN TABLE hb_nulls (id int, name text, val int, ts bigint)
+CREATE FOREIGN TABLE hb_nulls (id bigint, name text, val int, ts bigint)
 SERVER hudi_ft_server
 OPTIONS (filePath 'default.hudi_null_table', catalog_type 'hive', server_name 'hive_cluster',
          hdfs_cluster_name 'paa_cluster', table_identifier 'default.hudi_null_table', format 'hudi');

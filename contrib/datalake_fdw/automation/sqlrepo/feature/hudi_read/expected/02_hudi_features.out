@@ -73,14 +73,19 @@ SERVER hudi_ff_server
 OPTIONS (filePath 'default.hudi_partition_table', catalog_type 'hive', server_name 'hive_cluster',
          hdfs_cluster_name 'paa_cluster', table_identifier 'default.hudi_partition_table', format 'hudi');
 SELECT * FROM hf_part ORDER BY id LIMIT 10;
- id | name | amount | region 
-----+------+--------+--------
-(0 rows)
+ id |  name   | amount | region 
+----+---------+--------+--------
+  1 | Order-1 |    100 | east
+  2 | Order-2 |    200 | east
+  3 | Order-3 |    150 | west
+  4 | Order-4 |    300 | west
+  5 | Order-5 |    250 | north
+(5 rows)
 
 SELECT COUNT(*) AS part_count FROM hf_part;
  part_count 
 ------------
-          0
+          5
 (1 row)
 
 -- ============================================================
@@ -94,9 +99,11 @@ NOTICE:  [TEST] Test 2: Partition filter (WHERE region)
 (1 row)
 
 SELECT * FROM hf_part WHERE region = 'east' ORDER BY id;
- id | name | amount | region 
-----+------+--------+--------
-(0 rows)
+ id |  name   | amount | region 
+----+---------+--------+--------
+  1 | Order-1 |    100 | east
+  2 | Order-2 |    200 | east
+(2 rows)
 
 -- ============================================================
 -- Test 3: GROUP BY partition column + aggregation
@@ -114,7 +121,10 @@ GROUP BY region
 ORDER BY region;
  region | cnt | total 
 --------+-----+-------
-(0 rows)
+ east   |   2 |   300
+ north  |   1 |   250
+ west   |   2 |   450
+(3 rows)
 
 -- ============================================================
 -- Test 4: COW table WHERE filter
