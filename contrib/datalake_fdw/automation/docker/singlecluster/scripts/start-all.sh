@@ -77,6 +77,37 @@ write_hadoop_configs() {
     <name>fs.s3a.connection.ssl.enabled</name>
     <value>false</value>
   </property>
+  <!-- Map the standard "s3" URI scheme to the same S3A backend so SQL using
+       LOCATION 's3://...' is accepted on the Hive side without rewriting it
+       to 's3a://...'.  Without this Hive throws UnsupportedFileSystemException. -->
+  <property>
+    <name>fs.s3.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+  </property>
+  <property>
+    <name>fs.AbstractFileSystem.s3.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3A</value>
+  </property>
+  <property>
+    <name>fs.s3.endpoint</name>
+    <value>${S3_ENDPOINT}</value>
+  </property>
+  <property>
+    <name>fs.s3.access.key</name>
+    <value>${S3_ACCESS_KEY}</value>
+  </property>
+  <property>
+    <name>fs.s3.secret.key</name>
+    <value>${S3_SECRET_KEY}</value>
+  </property>
+  <property>
+    <name>fs.s3.path.style.access</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>fs.s3.connection.ssl.enabled</name>
+    <value>false</value>
+  </property>
   <property>
     <name>hadoop.proxyuser.root.hosts</name>
     <value>*</value>
@@ -154,15 +185,15 @@ write_hive_configs() {
   </property>
   <property>
     <name>hive.support.concurrency</name>
-    <value>true</value>
+    <value>false</value>
   </property>
   <property>
     <name>hive.txn.manager</name>
-    <value>org.apache.hadoop.hive.ql.lockmgr.DbTxnManager</value>
+    <value>org.apache.hadoop.hive.ql.lockmgr.DummyTxnManager</value>
   </property>
   <property>
     <name>hive.compactor.initiator.on</name>
-    <value>true</value>
+    <value>false</value>
   </property>
   <property>
     <name>hive.compactor.worker.threads</name>
@@ -289,6 +320,12 @@ main() {
   start_hdfs
   start_minio
 
+  log_stage "write hive-env.sh (larger heap)"
+  cat > "${HIVE_HOME}/conf/hive-env.sh" <<"HIVE_ENV"
+export HADOOP_HEAPSIZE=2048
+export HADOOP_CLIENT_OPTS="-Xmx2048m -Xms512m ${HADOOP_CLIENT_OPTS}"
+HIVE_ENV
+  chmod +x "${HIVE_HOME}/conf/hive-env.sh"
   init_hive_metastore
   start_hive_services
   start_spark

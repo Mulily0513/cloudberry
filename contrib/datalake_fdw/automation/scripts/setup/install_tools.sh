@@ -37,7 +37,9 @@ DOWNLOAD_CACHE="${DOWNLOAD_CACHE_DIR:-${AUTOMATION_DIR}/docker/singlecluster/dow
 HADOOP_VERSION="${HADOOP_VERSION:-3.0.0}"
 HIVE_VERSION="${HIVE_VERSION:-3.0.0}"
 SPARK_VERSION="${SPARK_VERSION:-3.3.3}"
-HUDI_VERSION="${HUDI_VERSION:-0.11.1}"
+HUDI_VERSION="${HUDI_VERSION:-0.13.1}"
+# Filename differs from the 0.11.x line: spark3.3-bundle (not spark3-bundle).
+HUDI_JAR_NAME="${HUDI_JAR_NAME:-hudi-spark3.3-bundle_2.12-${HUDI_VERSION}.jar}"
 
 # ============================================================================
 # Helpers
@@ -318,11 +320,14 @@ install_spark() {
         log_info "Spark already extracted: ${spark_dir}"
     fi
 
-    # Copy Hudi bundle JAR into Spark jars/
-    local hudi_jar="hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar"
-    if [ -f "${DOWNLOAD_CACHE}/${hudi_jar}" ] && [ ! -f "${spark_dir}/jars/${hudi_jar}" ]; then
-        log_info "  Copying Hudi bundle: ${hudi_jar}"
-        cp "${DOWNLOAD_CACHE}/${hudi_jar}" "${spark_dir}/jars/"
+    # Copy Hudi bundle JAR into Spark jars/.
+    # Purge any stale bundles (e.g. older 0.11.x line) so the Spark classloader
+    # does not pick up two conflicting versions and trip
+    # NoSuchMethodError: ParserUtils$.withOrigin on Spark 3.3.
+    find "${spark_dir}/jars" -maxdepth 1 -name 'hudi-spark*-bundle_*.jar' ! -name "${HUDI_JAR_NAME}" -print -delete 2>/dev/null || true
+    if [ -f "${DOWNLOAD_CACHE}/${HUDI_JAR_NAME}" ] && [ ! -f "${spark_dir}/jars/${HUDI_JAR_NAME}" ]; then
+        log_info "  Copying Hudi bundle: ${HUDI_JAR_NAME}"
+        cp "${DOWNLOAD_CACHE}/${HUDI_JAR_NAME}" "${spark_dir}/jars/"
     fi
 
     # Copy Iceberg runtime JAR into Spark jars/ (if available)
