@@ -13366,6 +13366,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	int			nconfigitems = 0;
 	const char *keyword;
 	int			i;
+	bool		need_search_path = false;
 
 	/*
 	* GPDB_14_MERGE_FIXME: additional columns in GPDB
@@ -13658,8 +13659,6 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 												argmodes, argnames);
 		funcfullsig = funcsig;
 	}
-	funcsig_tag = format_function_signature(fout, finfo, false);
-
 	if (proconfig && *proconfig)
 	{
 		if (!parsePGArray(proconfig, &configitems, &nconfigitems))
@@ -13671,14 +13670,19 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 		nconfigitems = 0;
 	}
 
-	funcsig_tag = format_function_signature(fout, finfo, false);
-
-	if (prokind[0] == PROKIND_PROCEDURE)
-		keyword = "PROCEDURE";
-	else
+	/*
+	 * For SQL and PL/pgSQL functions, we need to set search_path at session
+	 * level during restore unless the function already has an explicit SET
+	 * search_path in proconfig.  Determine that before emitting the CREATE.
+	 */
+	if (strcmp(lanname, "sql") == 0 || strcmp(lanname, "plpgsql") == 0)
 	{
-		configitems = NULL;
-		nconfigitems = 0;
+		need_search_path = true;
+		for (i = 0; i < nconfigitems; i++)
+		{
+			if (strncmp(configitems[i], "search_path=", 12) == 0)
+				need_search_path = false;
+		}
 	}
 
 	if (funcargs)
@@ -13706,6 +13710,22 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 
 	appendPQExpBuffer(delqry, "DROP %s %s;\n",
 					  keyword, qual_funcsig);
+
+	/*
+	 * For SQL and PL/pgSQL functions without an explicit SET search_path
+	 * in proconfig, temporarily set search_path at session level before
+	 * CREATE FUNCTION so that unqualified references in the function body
+	 * resolve correctly during restore.  We reset it afterwards so the
+	 * function definition itself is not permanently altered.
+	 *
+	 * C and internal functions don't need this since they invoke compiled
+	 * code directly without SQL name resolution.
+	 */
+	if (need_search_path)
+	{
+		appendPQExpBuffer(q, "SET search_path = %s, pg_catalog;\n",
+						  fmtId(finfo->dobj.namespace->dobj.name));
+	}
 
 	appendPQExpBuffer(q, "CREATE %s %s.%s",
 					  keyword,
@@ -13900,6 +13920,12 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 		appendPQExpBuffer(q, "\n    WITH (describe = %s)", callbackfunc);
 
 	appendPQExpBuffer(q, ";\n");
+
+	/* Reset session search_path if we set it above */
+	if (need_search_path)
+	{
+		appendPQExpBufferStr(q, "RESET search_path;\n");
+	}
 
 	append_depends_on_extension(fout, q, &finfo->dobj,
 								"pg_catalog.pg_proc", keyword,
