@@ -80,18 +80,20 @@ NOTICE:  [TEST] Test 1: Initial INSERT
 CREATE ICEBERG TABLE acid_test (
     id bigint,
     name text,
-    value numeric,
+    value numeric(15,2),
     status text
 );
 INSERT INTO acid_test VALUES
     (1, 'Alice', 100, 'active'),
     (2, 'Bob', 200, 'active'),
     (3, 'Charlie', 300, 'active');
-ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg0 172.20.0.2:7002 pid=234704)
 SELECT * FROM acid_test ORDER BY id;
- id | name | value | status 
-----+------+-------+--------
-(0 rows)
+ id |  name   | value  | status 
+----+---------+--------+--------
+  1 | Alice   | 100.00 | active
+  2 | Bob     | 200.00 | active
+  3 | Charlie | 300.00 | active
+(3 rows)
 
 -- Test 2: UPDATE operation
 SELECT test_log('Test 2: UPDATE operation');
@@ -102,13 +104,14 @@ NOTICE:  [TEST] Test 2: UPDATE operation
 (1 row)
 
 UPDATE acid_test SET value = value * 1.1 WHERE id = 1;
-ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg0 172.20.0.2:7002 pid=234704)
 UPDATE acid_test SET status = 'inactive' WHERE id = 2;
-ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
 SELECT * FROM acid_test ORDER BY id;
- id | name | value | status 
-----+------+-------+--------
-(0 rows)
+ id |  name   | value  |  status  
+----+---------+--------+----------
+  1 | Alice   | 110.00 | active
+  2 | Bob     | 200.00 | inactive
+  3 | Charlie | 300.00 | active
+(3 rows)
 
 -- Test 3: DELETE operation
 SELECT test_log('Test 3: DELETE operation');
@@ -120,9 +123,11 @@ NOTICE:  [TEST] Test 3: DELETE operation
 
 DELETE FROM acid_test WHERE id = 3;
 SELECT * FROM acid_test ORDER BY id;
- id | name | value | status 
-----+------+-------+--------
-(0 rows)
+ id | name  | value  |  status  
+----+-------+--------+----------
+  1 | Alice | 110.00 | active
+  2 | Bob   | 200.00 | inactive
+(2 rows)
 
 -- Test 4: INSERT after DELETE (reuse deleted ID)
 SELECT test_log('Test 4: INSERT after DELETE');
@@ -133,11 +138,13 @@ NOTICE:  [TEST] Test 4: INSERT after DELETE
 (1 row)
 
 INSERT INTO acid_test VALUES (3, 'David', 400, 'active');
-ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
 SELECT * FROM acid_test ORDER BY id;
- id | name | value | status 
-----+------+-------+--------
-(0 rows)
+ id | name  | value  |  status  
+----+-------+--------+----------
+  1 | Alice | 110.00 | active
+  2 | Bob   | 200.00 | inactive
+  3 | David | 400.00 | active
+(3 rows)
 
 -- Test 5: Complex UPDATE with subquery
 SELECT test_log('Test 5: Complex UPDATE');
@@ -148,11 +155,13 @@ NOTICE:  [TEST] Test 5: Complex UPDATE
 (1 row)
 
 UPDATE acid_test SET value = value + 50 WHERE status = 'active';
-ERROR:  The precision of numeric in foreign tables with parquet format should be specified explicitly.  (seg1 172.20.0.2:7003 pid=234705)
 SELECT * FROM acid_test ORDER BY id;
- id | name | value | status 
-----+------+-------+--------
-(0 rows)
+ id | name  | value  |  status  
+----+-------+--------+----------
+  1 | Alice | 160.00 | active
+  2 | Bob   | 200.00 | inactive
+  3 | David | 450.00 | active
+(3 rows)
 
 -- Test 6: Verify final state
 SELECT test_log('Test 6: Verify final state');
@@ -165,7 +174,7 @@ NOTICE:  [TEST] Test 6: Verify final state
 SELECT COUNT(*) as total_rows, SUM(value) as total_value FROM acid_test;
  total_rows | total_value 
 ------------+-------------
-          0 |            
+          3 |      810.00
 (1 row)
 
 -- Cleanup

@@ -150,7 +150,7 @@ SELECT public.sync_hive_table('hive_cluster', 'default', 'test_text', 'paa_clust
 SELECT * FROM feature_test.sync_text ORDER BY 1 LIMIT 10;
  id | name  
 ----+-------
-  1 | .
+  1 | 
   2 | hello
 (2 rows)
 
