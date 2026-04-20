@@ -74,8 +74,7 @@ $(arrow_build_dir)/arrow/Makefile: $(arrow_cpp_dir)/CMakeLists.txt
 		-DARROW_WITH_SNAPPY=ON \
 		-DARROW_WITH_ZSTD=ON \
 		-DARROW_WITH_BROTLI=ON \
-		-DARROW_WITH_BZ2=ON \
-		-DARROW_USE_NATIVE_FLOAT128=OFF
+		-DARROW_WITH_BZ2=ON
 
 config-arrow: $(arrow_build_dir)/arrow/Makefile
 
