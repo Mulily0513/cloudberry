@@ -359,6 +359,8 @@ public class IcebergUtilities {
      * <p>Uses HadoopFileIO with original S3 configuration (pre-Gopher implementation).
      */
     private Map<String, String> composeOriginalCatalogProperties(Configuration configuration) {
+        //maybe throw is better
+        //throw new DlRuntimeException("Iceberg requires Gopher mode (gopher.enabled=true).");
         Map<String, String> props = new HashMap<>();
         List<String> configKeys = new ArrayList<>(Arrays.asList(
                 CatalogProperties.FILE_IO_IMPL, CatalogProperties.IO_MANIFEST_CACHE_ENABLED,

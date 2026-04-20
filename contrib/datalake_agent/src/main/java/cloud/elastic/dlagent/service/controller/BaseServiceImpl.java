@@ -87,6 +87,16 @@ public abstract class BaseServiceImpl<T> extends DlErrorReporter<T> {
         // initialize iceberg configuration
         configurationFactory.initIcebergConfigFormJson(context);
 
+        // Gopher filesystem is an Iceberg-specific access path. For non-Iceberg
+        // profiles (hive, hudi, ...) override the process-wide gopher.enabled=true
+        // (set in application.properties by datalake_proxy) so Hadoop FS access
+        // falls back to the standard filesystem implementations instead of
+        // org.cbdb.iceberg.gopher.fs.GopherFileSystem.
+        String profile = context.getProfile();
+        if (profile == null || !profile.toLowerCase().contains("iceberg")) {
+            context.addOption("gopher.enabled", "false");
+        }
+
         // initialize the configuration for this request
         Configuration configuration = configurationFactory.
                 initConfiguration(context.getCatalogType(),
