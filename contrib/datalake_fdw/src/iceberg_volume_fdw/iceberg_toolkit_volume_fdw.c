@@ -240,10 +240,31 @@ static IcebergToolkitScanState* initIcebergScan(IcebergCatalogOperation operatio
             iceberg_format_error_response(&result, "scan", nameSpace, tableName, catalogState);
         }
         agentcli_cJSON* appendJson = agentcli_cJSON_Parse(catalogState->response.responseBody);
-        agentcli_cJSON* meta_location = agentcli_cJSON_GetObjectItem(appendJson, "metadata-location");
-        if (agentcli_cJSON_IsString(meta_location))
+        /*
+         * Prefer "table-location" (the Iceberg table root URI).  parseVolumeUri()
+         * in iceberg_volume_fdw.c appends "/data" to this value to derive the
+         * data-files directory, so it must be the table root (parent of
+         * metadata/ and data/), NOT the metadata.json file path.  Using the
+         * leaf file path here caused parquet data files to be written under a
+         * "<uuid>.metadata.json/data/" prefix on S3/MinIO, corrupting the
+         * layout and breaking subsequent loadTable().
+         */
+        agentcli_cJSON* table_location = agentcli_cJSON_GetObjectItem(appendJson, "table-location");
+        if (agentcli_cJSON_IsString(table_location))
         {
-            scanState->location = pstrdup(meta_location->valuestring);
+            scanState->location = pstrdup(table_location->valuestring);
+        }
+        else
+        {
+            agentcli_cJSON* meta_location = agentcli_cJSON_GetObjectItem(appendJson, "metadata-location");
+            if (agentcli_cJSON_IsString(meta_location))
+            {
+                char *loc = pstrdup(meta_location->valuestring);
+                char *meta_dir = strstr(loc, "/metadata/");
+                if (meta_dir != NULL)
+                    *meta_dir = '\0';
+                scanState->location = loc;
+            }
         }
     }
 
