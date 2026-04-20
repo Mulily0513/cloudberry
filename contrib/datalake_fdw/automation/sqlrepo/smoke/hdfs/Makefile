@@ -18,7 +18,19 @@ REGRESS = 01_connection 02_text_basic 03_parquet_basic 04_orc_basic \
 #   docker cp <prepare_sql> lakehouse:/tmp/hdfs_smoke.sql
 #   docker exec lakehouse spark-sql --master local[2] -f /tmp/hdfs_smoke.sql
 
+HDFS_CMD            = hdfs dfs
+HDFS_PREPARE_SQL    = $(AUTOMATION_DIR)/prepare/prepare_hdfs/hdfs_smoke.sql
+
 installcheck:
+	@echo "=== Reset HDFS /test/basic (drops both stale write-data and preload) ==="
+	@$(HDFS_CMD) -rm -r -f -skipTrash /test/basic 2>/dev/null || true
+	@echo "=== Re-prepare HDFS test data via beeline ==="
+	@if [ -f "$(HDFS_PREPARE_SQL)" ]; then \
+		beeline -u "jdbc:hive2://lakehouse:10000/default" -n hive --silent=true \
+			-f "$(HDFS_PREPARE_SQL)" 2>&1 | grep -vE '^(SLF4J|WARNING:|INFO|Connecting|Closing)' | tail -10; \
+	else \
+		echo "WARNING: HDFS prepare SQL not found at $(HDFS_PREPARE_SQL)"; \
+	fi
 	$(pg_regress_installcheck) $(REGRESS)
 
 generate-expected:

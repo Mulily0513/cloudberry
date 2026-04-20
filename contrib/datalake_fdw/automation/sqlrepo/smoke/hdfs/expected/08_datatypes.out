@@ -26,20 +26,25 @@ LOCATION('gphdfs://test/basic/datatypes/preload_parquet hdfs_cluster_name=paa_cl
 FORMAT 'parquet';
 NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
 SELECT * FROM test_preload_datatypes ORDER BY id;
- id | tiny_val | small_val | int_val | big_val | float_val | double_val | dec_val | str_val | bool_val | date_val | ts_val 
-----+----------+-----------+---------+---------+-----------+------------+---------+---------+----------+----------+--------
-(0 rows)
+ id | tiny_val | small_val |  int_val   |       big_val       | float_val |   double_val   | dec_val  | str_val  | bool_val |  date_val  |          ts_val          
+----+----------+-----------+------------+---------------------+-----------+----------------+----------+----------+----------+------------+--------------------------
+  1 |        1 |       100 |      10000 |          1000000000 |       1.5 |    1.123456789 |    99.99 | hello    | t        | 01-01-2024 | Mon Jan 01 12:00:00 2024
+  2 |       -1 |      -100 |     -10000 |         -1000000000 |      -1.5 |   -1.123456789 |   -99.99 | world    | f        | 01-01-1970 | Thu Jan 01 00:00:00 1970
+  3 |        0 |         0 |          0 |                   0 |         0 |              0 |     0.00 |          | t        | 02-29-2000 | Tue Feb 29 12:30:45 2000
+  4 |      127 |     32767 | 2147483647 | 9223372036854775807 |      3.14 | 3.141592653589 | 12345.67 | max_vals | f        | 12-31-2099 | Thu Dec 31 23:59:59 2099
+  5 |          |           |            |                     |           |                |          |          |          |            | 
+(5 rows)
 
 SELECT COUNT(*) FROM test_preload_datatypes;
  count 
 -------
-     0
+     5
 (1 row)
 
 SELECT COUNT(*) AS null_rows FROM test_preload_datatypes WHERE int_val IS NULL;
  null_rows 
 -----------
-         0
+         1
 (1 row)
 
 DROP EXTERNAL TABLE test_preload_datatypes;

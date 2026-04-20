@@ -22,9 +22,13 @@ LOCATION('gphdfs://test/basic/edge/preload_orc hdfs_cluster_name=paa_cluster')
 FORMAT 'orc';
 NOTICE:  external table syntax will be deprecated in the future HashData version, please use foreign table instead.
 SELECT * FROM test_preload_edge ORDER BY id;
- id | empty_val | null_val | zero_int | zero_float | dec_precise | date_boundary | ts_boundary 
-----+-----------+----------+----------+------------+-------------+---------------+-------------
-(0 rows)
+ id | empty_val  | null_val  |  zero_int   | zero_float |     dec_precise      | date_boundary |       ts_boundary        
+----+------------+-----------+-------------+------------+----------------------+---------------+--------------------------
+  1 |            |           |           0 |          0 |             0.000001 | 01-01-1970    | Thu Jan 01 00:00:00 1970
+  2 |            |           | -2147483648 |          0 | -999999999999.999999 | 12-31-2099    | Thu Dec 31 23:59:59 2099
+  3 | not_empty  | not_null  |  2147483647 |  1.23e+100 |  999999999999.999999 | 02-29-2000    | Tue Feb 29 00:00:00 2000
+  4 |   spaces   |   leading |           1 |  -1.23e-10 |             0.000000 | 06-15-2024    | Sat Jun 15 12:30:45 2024
+(4 rows)
 
 SELECT id,
        empty_val IS NULL AS empty_is_null,
@@ -32,12 +36,16 @@ SELECT id,
 FROM test_preload_edge ORDER BY id;
  id | empty_is_null | null_is_null 
 ----+---------------+--------------
-(0 rows)
+  1 | f             | t
+  2 | t             | t
+  3 | f             | f
+  4 | f             | f
+(4 rows)
 
 SELECT COUNT(*) FROM test_preload_edge;
  count 
 -------
-     0
+     4
 (1 row)
 
 DROP EXTERNAL TABLE test_preload_edge;
