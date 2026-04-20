@@ -73,7 +73,7 @@ EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'pq fewer cols: %', regexp_replace(SQLERRM, '/fdw-test/err/[^ ]*', '/...file...');
 END;
 $$;
-NOTICE:  pq fewer cols: Datalake foreign table Error, mpp columns 1 is less than parquet /...file... columns 3. (parquetFileReader.cpp:111)  (seg0 slice1 172.20.0.2:7002 pid=627709)
+NOTICE:  pq fewer cols: Datalake foreign table Error, mpp columns 1 is less than parquet /...file... columns 3. (parquetFileReader.cpp:111)  (seg2 slice1 172.18.0.2:7004 pid=1742133)
 DROP FOREIGN TABLE IF EXISTS fdw_err_pq_fewer;
 NOTICE:  foreign table "fdw_err_pq_fewer" does not exist, skipping
 DO $$
@@ -111,7 +111,7 @@ NOTICE:  avro fewer cols: Schema mismatch! Avro file name: /...file... External 
 | time                     | int/long       | time (milli/micro)
 | timestamp                | long           | timestamp (milli/micro)
 | numeric                  | bytes          | decimal
-| UUID                     | string         | UUID (avroRead.cpp:287)  (seg1 slice1 172.20.0.2:7003 pid=627710)
+| UUID                     | string         | UUID (avroRead.cpp:287)  (seg1 slice1 172.18.0.2:7003 pid=1742132)
 DROP FOREIGN TABLE IF EXISTS fdw_err_avro_fewer;
 NOTICE:  foreign table "fdw_err_avro_fewer" does not exist, skipping
 -- ============================================================
@@ -183,9 +183,20 @@ EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'orc text-as-int: %', regexp_replace(regexp_replace(SQLERRM, '/fdw-test/err/[^ ]*', '/...file...'), '\(seg\d.*', '');
 END;
 $$;
-WARNING:  writer gang of current global transaction is lost
-ERROR:  DTX RollbackAndReleaseCurrentSubTransaction dispatch failed
-CONTEXT:  PL/pgSQL function inline_code_block line 3 during exception cleanup
+NOTICE:  orc text-as-int: Type Mismatch: data in 'name' is defined as 'string' in ORC file, but in datalake foreign table as 'integer<int, int4>'. 
+           Type Mapping Supported
+ External Data Type  |  Orc Data Type 
+ --------------------------------------------------------------------
+ bool                |  boolean, bigint, int, smallint, tinyint, date
+ int,int2,int4,int8  |  boolean, bigint, int, smallint, tinyint, date
+ date                |  boolean, bigint, int, smallint, tinyint, date
+ float4,float8       |  float,   double
+ interval            |  string,  varchar
+ time                |  string,  varchar
+ timestamp           |  timestamp
+ numeric             |  decimal
+ char(n),varchar(n)  |  binary,  char, varchar, string
+ bytea,text          |  binary,  char, varchar, string (orcFileReader.cpp:319)
 DROP FOREIGN TABLE fdw_err_orc_type;
 -- Avro type mismatch
 CREATE FOREIGN TABLE fdw_err_avro_type (id int, name int, val decimal(10,2))
