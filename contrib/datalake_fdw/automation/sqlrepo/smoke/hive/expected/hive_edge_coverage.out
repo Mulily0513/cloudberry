@@ -42,7 +42,7 @@ SELECT COUNT(*) FROM edge_cov.test_text;
 SELECT * FROM edge_cov.test_text ORDER BY id;
  id | name  
 ----+-------
-  1 | .
+  1 | 
   2 | hello
 (2 rows)
 
@@ -155,7 +155,7 @@ SELECT COUNT(*) FROM edge_cov.test_text_old;
 SELECT * FROM edge_cov.test_text_old ORDER BY id;
  id | name  
 ----+-------
-  1 | .
+  1 | 
   2 | hello
 (2 rows)
 

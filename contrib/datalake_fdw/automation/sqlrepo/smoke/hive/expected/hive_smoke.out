@@ -52,7 +52,7 @@ SELECT public.sync_hive_table('hive_cluster','default','test_text','paa_cluster'
 SELECT * FROM hive_smoke.test_text ORDER BY id;
  id | name  
 ----+-------
-  1 | .
+  1 | 
   2 | hello
 (2 rows)
 

@@ -77,3 +77,85 @@ INSERT INTO test_scientific VALUES (1, 1.23E-10, 1.23E100);
 DROP TABLE IF EXISTS test_datetime;
 CREATE TABLE test_datetime (id int, old_date date, ts timestamp) STORED AS ORC;
 INSERT INTO test_datetime VALUES (1, '1970-01-01', '1970-01-01 00:00:00');
+
+-- ============================================================
+-- Compressed TEXTFILE tables for hive_text_compressed test.
+-- Each table holds 50 rows: id INT, name STRING, val DOUBLE
+--   snappy : val = id * 1.5
+--   deflate: val = id * 2.5
+--   gzip   : val = id * 3.5
+-- ============================================================
+
+-- Helper staging table with 50 rows of integer ids.  Hive does not have a
+-- generate_series(); we emit the sequence via posexplode over a 50-element
+-- string array (split of 49 spaces).
+DROP TABLE IF EXISTS hive_smoke_seq50;
+CREATE TABLE hive_smoke_seq50 (n int) STORED AS ORC;
+INSERT INTO hive_smoke_seq50
+SELECT pos + 1 AS n
+FROM (SELECT split(space(49), ' ') AS arr) t
+LATERAL VIEW posexplode(arr) pe AS pos, dummy;
+
+-- Snappy-compressed text
+DROP TABLE IF EXISTS test_text_snappy;
+CREATE TABLE test_text_snappy (id int, name string, val double) STORED AS TEXTFILE;
+SET hive.exec.compress.output = true;
+SET mapreduce.output.fileoutputformat.compress = true;
+SET mapreduce.output.fileoutputformat.compress.codec = org.apache.hadoop.io.compress.SnappyCodec;
+SET mapreduce.output.fileoutputformat.compress.type = BLOCK;
+INSERT INTO test_text_snappy
+SELECT n, concat('snappy_row_', cast(n as string)), cast(n * 1.5 as double)
+FROM hive_smoke_seq50;
+
+-- Deflate-compressed text
+DROP TABLE IF EXISTS test_text_deflate;
+CREATE TABLE test_text_deflate (id int, name string, val double) STORED AS TEXTFILE;
+SET mapreduce.output.fileoutputformat.compress.codec = org.apache.hadoop.io.compress.DefaultCodec;
+INSERT INTO test_text_deflate
+SELECT n, concat('deflate_row_', cast(n as string)), cast(n * 2.5 as double)
+FROM hive_smoke_seq50;
+
+-- Gzip-compressed text
+DROP TABLE IF EXISTS test_text_gzip;
+CREATE TABLE test_text_gzip (id int, name string, val double) STORED AS TEXTFILE;
+SET mapreduce.output.fileoutputformat.compress.codec = org.apache.hadoop.io.compress.GzipCodec;
+INSERT INTO test_text_gzip
+SELECT n, concat('gzip_row_', cast(n as string)), cast(n * 3.5 as double)
+FROM hive_smoke_seq50;
+
+SET hive.exec.compress.output = false;
+SET mapreduce.output.fileoutputformat.compress = false;
+
+-- Pipe-delimited text (uncompressed) — 30 rows
+DROP TABLE IF EXISTS test_text_pipe;
+CREATE TABLE test_text_pipe (id int, name string, val double)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '|'
+STORED AS TEXTFILE;
+INSERT INTO test_text_pipe
+SELECT n, concat('pipe_row_', cast(n as string)), cast(n * 0.5 as double)
+FROM hive_smoke_seq50
+WHERE n <= 30;
+
+-- Large table — 500 rows of fixed-width strings (length 200).
+-- Build the 500-row sequence by cross-joining a 50-row staging with a 10-row
+-- "tens" set and computing id = tens*50 + n.
+DROP TABLE IF EXISTS hive_smoke_seq10;
+CREATE TABLE hive_smoke_seq10 (n int) STORED AS ORC;
+INSERT INTO hive_smoke_seq10
+SELECT pos
+FROM (SELECT split(space(9), ' ') AS arr) t
+LATERAL VIEW posexplode(arr) pe AS pos, dummy;
+
+DROP TABLE IF EXISTS test_text_large;
+CREATE TABLE test_text_large (id int, data string) STORED AS TEXTFILE;
+INSERT INTO test_text_large
+SELECT
+  t.n + s.n * 50 AS id,
+  -- 202-character payload: "row_<id>_" + repeated 'x' to pad to 202 chars.
+  rpad(concat('row_', cast(t.n + s.n * 50 as string), '_'), 202, 'x') AS data
+FROM hive_smoke_seq50 t
+CROSS JOIN hive_smoke_seq10 s;
+
+-- Drop staging tables
+DROP TABLE IF EXISTS hive_smoke_seq50;
+DROP TABLE IF EXISTS hive_smoke_seq10;

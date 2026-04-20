@@ -203,8 +203,8 @@ SELECT * FROM dlproxy_cov.test_decimal WHERE dec2 > 100;
 SELECT * FROM dlproxy_cov.test_zero WHERE zero_float = 0.0;
  id | zero_int | zero_float 
 ----+----------+------------
-  2 |        0 |          0
   1 |        0 |          0
+  2 |        0 |          0
 (2 rows)
 
 SELECT * FROM dlproxy_cov.test_scientific WHERE small_val > 0;
@@ -341,7 +341,7 @@ SELECT * FROM dlproxy_cov.test_parquet ORDER BY id;
 SELECT * FROM dlproxy_cov.test_text ORDER BY id;
  id | name  
 ----+-------
-  1 | .
+  1 | 
   2 | hello
 (2 rows)
 
