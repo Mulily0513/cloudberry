@@ -100,8 +100,8 @@ const ArrowAggFmgr arrow_agg_fmgr_builtins[] = {
         { "max", F_MAX_NUMERIC, "max", "max", "max"},
         { "sum", F_SUM_INT2, "sum", "sum", "sum"},
         { "sum", F_SUM_INT4, "sum", "sum", "sum"},
-        { "sum", F_SUM_INT8, "sum_64", "sum", "sum_64"},
-        { "sum", F_SUM_NUMERIC, "sum", "sum", "sum"},
+        { "sum", F_SUM_INT8, "avg_trans", "sum_final", "sum_64"},
+        { "sum", F_SUM_NUMERIC, "avg_trans", "sum_final", "sum"},
         { "count", F_COUNT_ANY, "count", "sum", "count"},
         { "count", F_COUNT_, "count", "sum", "count"},
         { "avg", F_AVG_INT8, "avg_trans", "avg_final", "mean_numeric"},
@@ -128,6 +128,7 @@ const AggFuncTable arrow_agg_func_tables[] = {
 	{ "max", "hash_max", NULL, NULL, build_empty},
 	{ "avg_trans", "hash_avg_trans", "avg_trans", "avg_trans", build_empty},
 	{ "avg_final", "hash_avg_final", "avg_final", "avg_final", build_empty},
+	{ "sum_final", "hash_sum_final", "sum_final", "sum_final", build_empty},
 	/* windowagg func */
 	{ "windowagg_rank", NULL, NULL, NULL, build_empty},
 	{ "windowagg_row_number", NULL, NULL, NULL, build_empty},

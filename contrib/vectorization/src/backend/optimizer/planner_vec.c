@@ -1014,13 +1014,8 @@ agg_trans_mutator(Node *node, void *context)
 				return node;
 			switch (aggref->aggfnoid)
 			{
-				/* change result bytea type to numeric/decimal */
-				case F_SUM_NUMERIC:
 				case F_SUM_INT8:
-				{
-					aggref->aggtype = NUMERICOID;
-					break;
-				}
+				case F_SUM_NUMERIC:
 				case F_AVG_INT8:
 				case F_AVG_NUMERIC:
 				{
