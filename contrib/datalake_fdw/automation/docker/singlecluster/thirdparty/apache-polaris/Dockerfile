@@ -4,8 +4,11 @@ FROM ubuntu:22.04
 # inferred from the host arch when building with legacy `docker build`.
 ARG TARGETARCH
 
+# Company-internal OBS mirror; override via --build-arg if the mirror host moves.
+# Kept in sync with singlecluster/Dockerfile and download_cache/download.sh.
+ARG DOWNLOAD_BASE_URL=https://hashdata-download.obs.cn-north-4.myhuaweicloud.com/lightning-ci/packages
 ARG POLARIS_VERSION=1.3.0-incubating
-ARG POLARIS_TGZ=https://downloads.apache.org/incubator/polaris/${POLARIS_VERSION}/polaris-bin-${POLARIS_VERSION}.tgz
+ARG POLARIS_TGZ=${DOWNLOAD_BASE_URL}/polaris-bin-${POLARIS_VERSION}.tgz
 ARG POLARIS_DIR=polaris-bin-${POLARIS_VERSION}
 
 WORKDIR /opt
