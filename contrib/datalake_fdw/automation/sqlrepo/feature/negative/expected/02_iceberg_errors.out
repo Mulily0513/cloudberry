@@ -90,7 +90,9 @@ DO $$
 BEGIN
     INSERT INTO ne_types VALUES ('not_a_number', 'also_not');
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    -- Truncate to primary message; dlagent stack traces contain
+    -- sun.reflect.GeneratedMethodAccessor<N> numbers that differ per JVM run.
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
 END $$;
 NOTICE:  Expected error: invalid input syntax for type bigint: "not_a_number"
 -- ============================================================
@@ -132,7 +134,7 @@ BEGIN
     INTO result;
     RAISE NOTICE 'Unexpected success';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
 END $$;
 NOTICE:  Expected error: internal error, metadataLocation is required for builtin catalog
 -- ============================================================
@@ -163,7 +165,7 @@ BEGIN
     DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;
     DROP SERVER IF EXISTS ne_bad_vol_server;
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
     DROP TABLE IF EXISTS ne_bad_vol_table;
     DROP VOLUME IF EXISTS ne_bad_volume;
     DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;
@@ -171,85 +173,6 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 NOTICE:  server "ne_bad_vol_server" does not exist, skipping
 NOTICE:  Expected error: Failed to create Iceberg table: HTTP Status: 400, CURL Code: 0
-java.lang.IllegalArgumentException: bucket is null/empty
-	at org.apache.hadoop.util.Preconditions.checkArgument(Preconditions.java:185)
-	at org.apache.hadoop.fs.s3a.S3AUtils.propagateBucketOptions(S3AUtils.java:1101)
-	at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:544)
-	at org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3601)
-	at org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:171)
-	at org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3702)
-	at org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3653)
-	at org.apache.hadoop.fs.FileSystem.get(FileSystem.java:555)
-	at org.apache.hadoop.fs.Path.getFileSystem(Path.java:366)
-	at org.apache.iceberg.hadoop.Util.getFs(Util.java:56)
-	at org.apache.iceberg.hadoop.HadoopOutputFile.fromPath(HadoopOutputFile.java:53)
-	at org.apache.iceberg.hadoop.HadoopFileIO.newOutputFile(HadoopFileIO.java:100)
-	at org.apache.iceberg.BaseMetastoreTableOperations.writeNewMetadata(BaseMetastoreTableOperations.java:165)
-	at org.apache.iceberg.BaseMetastoreTableOperations.writeNewMetadataIfRequired(BaseMetastoreTableOperations.java:160)
-	at org.apache.iceberg.buildin.DlIcebergBuildInTableOperations.doCommit(DlIcebergBuildInTableOperations.java:71)
-	at org.apache.iceberg.BaseMetastoreTableOperations.commit(BaseMetastoreTableOperations.java:135)
-	at org.apache.iceberg.BaseMetastoreCatalog$BaseMetastoreCatalogTableBuilder.create(BaseMetastoreCatalog.java:199)
-	at org.apache.iceberg.catalog.Catalog.createTable(Catalog.java:75)
-	at cloud.elastic.dlagent.plugins.iceberg.IcebergBuildInCatalog.createTable(IcebergBuildInCatalog.java:98)
-	at cloud.elastic.dlagent.service.iceberg.IcebergServiceImpl.createTable(IcebergServiceImpl.java:117)
-	at cloud.elastic.dlagent.service.rest.IcebergRestController.createTable(IcebergRestController.java:464)
-	at sun.reflect.GeneratedMethodAccessor56.invoke(Unknown Source)
-	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-	at java.lang.reflect.Method.invoke(Method.java:498)
-	at org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:205)
-	at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:150)
-	at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:117)
-	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandlerMethod(RequestMappingHandlerAdapter.java:895)
-	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:808)
-	at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:87)
-	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1072)
-	at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:965)
-	at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:1006)
-	at org.springframework.web.servlet.FrameworkServlet.doPost(FrameworkServlet.java:909)
-	at javax.servlet.http.HttpServlet.service(HttpServlet.java:665)
-	at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:883)
-	at javax.servlet.http.HttpServlet.service(HttpServlet.java:750)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:209)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:51)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at cloud.elastic.dlagent.service.spring.DlContextMdcLogEnhancerFilter.doFilterInternal(DlContextMdcLogEnhancerFilter.java:59)
-	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.springframework.web.filter.RequestContextFilter.doFilterInternal(RequestContextFilter.java:100)
-	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.springframework.web.filter.FormContentFilter.doFilterInternal(FormContentFilter.java:93)
-	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.springframework.boot.actuate.metrics.web.servlet.WebMvcMetricsFilter.doFilterInternal(WebMvcMetricsFilter.java:96)
-	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.springframework.web.filter.CharacterEncodingFilter.doFilterInternal(CharacterEncodingFilter.java:201)
-	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:117)
-	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:178)
-	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:153)
-	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:168)
-	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
-	at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:481)
-	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:130)
-	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:93)
-	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
-	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:343)
-	at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:390)
-	at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:63)
-	at org.apache.coyote.AbstractProtocol$ConnectionHandler.process(AbstractProtocol.java:926)
-	at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1790)
-	at org.apache.tomcat.util.net.SocketProcessorBase.run(SocketProcessorBase.java:52)
-	at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1191)
-	at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:659)
-	at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
-	at java.lang.Thread.run(Thread.java:750)
 NOTICE:  table "ne_bad_vol_table" does not exist, skipping
 NOTICE:  foreign volume "ne_bad_volume" does not exist, skipping
 NOTICE:  server "ne_bad_vol_server" does not exist, skipping

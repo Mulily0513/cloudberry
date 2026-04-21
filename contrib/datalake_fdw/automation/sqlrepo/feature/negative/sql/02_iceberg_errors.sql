@@ -39,7 +39,9 @@ DO $$
 BEGIN
     INSERT INTO ne_types VALUES ('not_a_number', 'also_not');
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    -- Truncate to primary message; dlagent stack traces contain
+    -- sun.reflect.GeneratedMethodAccessor<N> numbers that differ per JVM run.
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
 END $$;
 
 -- ============================================================
@@ -67,7 +69,7 @@ BEGIN
     INTO result;
     RAISE NOTICE 'Unexpected success';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
 END $$;
 
 -- ============================================================
@@ -93,7 +95,7 @@ BEGIN
     DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;
     DROP SERVER IF EXISTS ne_bad_vol_server;
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Expected error: %', SQLERRM;
+    RAISE NOTICE 'Expected error: %', split_part(SQLERRM, E'\n', 1);
     DROP TABLE IF EXISTS ne_bad_vol_table;
     DROP VOLUME IF EXISTS ne_bad_volume;
     DROP USER MAPPING IF EXISTS FOR current_user SERVER ne_bad_vol_server;

@@ -36,8 +36,13 @@ setup_dirs() {
 
 copy_jars() {
   log_stage "copy jars into Spark/Hive"
-  cp /opt/jars/* "${SPARK_HOME}/jars/"
-  cp /opt/jars/* "${HIVE_HOME}/lib/"
+  # Some lakehouse-allinone builds ship with certain jars already staged.
+  # Use install instead of cp so the overwrite works whether the dest is
+  # missing, existing, or a symlink — no "File exists" surprises.
+  for jar in /opt/jars/*; do
+    install -m 0644 "${jar}" "${SPARK_HOME}/jars/$(basename "${jar}")"
+    install -m 0644 "${jar}" "${HIVE_HOME}/lib/$(basename "${jar}")"
+  done
 }
 
 write_hadoop_configs() {

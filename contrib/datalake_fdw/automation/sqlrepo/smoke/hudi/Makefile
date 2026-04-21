@@ -31,7 +31,10 @@ SPARK_CONF = \
 	--conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider \
 	--conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
 	--conf spark.sql.extensions=org.apache.spark.sql.hudi.HoodieSparkSessionExtension \
-	--conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.hudi.catalog.HoodieCatalog
+	--conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.hudi.catalog.HoodieCatalog \
+	--conf spark.hadoop.dfs.client.block.write.replace-datanode-on-failure.policy=NEVER \
+	--conf spark.hadoop.dfs.client.block.write.replace-datanode-on-failure.enable=false \
+	--conf spark.hadoop.dfs.replication=1
 
 REGRESS = hudi_smoke hudi_coverage hudi_btree_merger
 PGPORT ?= 7000
