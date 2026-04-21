@@ -41,6 +41,14 @@
 #include "utils/hsearch.h"
 #include "mb/pg_wchar.h"
 
+#include "utils/builtins.h"
+#include "utils/portal.h"
+#include "utils/snapmgr.h"
+#include "cdb/cdbdisp.h"
+#include "cdb/cdbdispatchresult.h"
+#include "executor/execdesc.h"
+#include "tcop/pquery.h"
+
 #include "../datalake_def.h"
 #include "include/pg_iceberg_am.h"
 #include "include/pg_iceberg_catalog.h"
@@ -55,17 +63,6 @@
 #include "../common/random_segment.h"
 
 extern int external_table_limit_segment_num;
-
-typedef struct IcebergAnalyzeState
-{
-	HeapTuple		   *rows;
-	int					targrows;
-	int					numrows;
-	double				samplerows;
-	double				rowstoskip;
-	ReservoirStateData	rstate;
-	MemoryContext		anl_cxt;
-} IcebergAnalyzeState;
 
 static FdwRoutine *
 get_volume_fdw_routine(void)
@@ -179,11 +176,8 @@ pg_iceberg_scan_begin_extractcolumns(Relation rel,
 	}
 
 	table_info = pg_iceberg_get_table_info(RelationGetRelid(rel));
-	if (ps && ps->plan && IsA(ps->plan, SeqScan))
-	{
-		SeqScan *scan = (SeqScan *) ps->plan;
-		am_private = scan->am_private;
-	}
+	if (ps && ps->plan && IsA(ps->plan, CustomScan))
+		am_private = ((CustomScan *) ps->plan)->custom_private;
 
 	scan->scanState = iceberg_create_foreign_scan_state(scan, ps,
 														table_info->volume_server_name,
@@ -231,7 +225,7 @@ pg_iceberg_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableS
 
 /* --- Planner Helpers --- */
 
-static List *
+List *
 pg_iceberg_build_scan_am_private(Relation rel, struct PlanState *ps, int random_segment_num)
 {
 	List			   *am_private = NIL;
@@ -388,13 +382,6 @@ pg_iceberg_relation_size(Relation rel, ForkNumber forkNumber)
 	return total_size;
 }
 
-List *
-pg_iceberg_scan_get_am_private(Relation rel, struct PlanState *ps)
-{
-	Assert(Gp_role == GP_ROLE_DISPATCH);
-	return pg_iceberg_build_scan_am_private(rel, ps, external_table_limit_segment_num);
-}
-
 char *
 pg_iceberg_resolve_modify_location(Relation rel, CmdType operation)
 {
@@ -416,163 +403,30 @@ pg_iceberg_resolve_modify_location(Relation rel, CmdType operation)
 	return location;
 }
 
-List *
-pg_iceberg_analyze_get_dispatch_tasks(Relation rel, bool inh, int targrows)
-{
-	Assert(Gp_role == GP_ROLE_DISPATCH);
-
-	/*
-	 * ANALYZE should read all segments to avoid introducing extra bias from
-	 * random segment filtering.
-	 */
-	return pg_iceberg_build_scan_am_private(rel, NULL, 0);
-}
-
-static void
-pg_iceberg_analyze_row_processor(TupleTableSlot *slot, IcebergAnalyzeState *astate)
-{
-	int				pos;
-	MemoryContext	oldcontext;
-
-	astate->samplerows += 1;
-
-	if (astate->numrows < astate->targrows)
-	{
-		pos = astate->numrows++;
-	}
-	else
-	{
-		if (astate->rowstoskip < 0)
-		{
-			astate->rowstoskip = reservoir_get_next_S(&astate->rstate,
-													  astate->samplerows,
-													  astate->targrows);
-		}
-
-		if (astate->rowstoskip <= 0)
-		{
-			pos = (int) (astate->targrows *
-						 sampler_random_fract(astate->rstate.randstate));
-			Assert(pos >= 0 && pos < astate->targrows);
-			heap_freetuple(astate->rows[pos]);
-		}
-		else
-		{
-			pos = -1;
-		}
-
-		astate->rowstoskip -= 1;
-	}
-
-	if (pos >= 0)
-	{
-		oldcontext = MemoryContextSwitchTo(astate->anl_cxt);
-		astate->rows[pos] = ExecCopySlotHeapTuple(slot);
-		MemoryContextSwitchTo(oldcontext);
-	}
-}
-
-static TableScanDesc
-pg_iceberg_begin_analyze_scan(Relation rel,
-							  List *analyze_am_private,
-							  SeqScanState **out_scan_state,
-							  SeqScan **out_scan_plan,
-							  TupleTableSlot **out_scan_slot)
-{
-	SeqScan *scan_plan;
-	SeqScanState *scan_state;
-	TableScanDesc scan_desc;
-
-	scan_plan = makeNode(SeqScan);
-	scan_plan->am_private = analyze_am_private;
-
-	scan_state = makeNode(SeqScanState);
-	scan_state->ss.ps.plan = (Plan *) scan_plan;
-	scan_state->ss.ps.scandesc = RelationGetDescr(rel);
-	scan_state->ss.ss_ScanTupleSlot = table_slot_create(rel, NULL);
-
-	scan_desc = pg_iceberg_scan_begin_extractcolumns(rel,
-													 GetLatestSnapshot(),
-													 0,
-													 NULL,
-													 NULL,
-													 (PlanState *) scan_state,
-													 0);
-
-	if (out_scan_state)
-		*out_scan_state = scan_state;
-	if (out_scan_plan)
-		*out_scan_plan = scan_plan;
-	if (out_scan_slot)
-		*out_scan_slot = scan_state->ss.ss_ScanTupleSlot;
-
-	return scan_desc;
-}
-
+/*
+ * Iceberg ANALYZE does not run per-row sampling.  The planner obtains its
+ * cardinality estimates from pg_iceberg_estimate_rel_size(), which reads
+ * recordCount / bytesInDataFile directly from the Iceberg catalog on the
+ * QD, so detailed pg_statistic entries for individual columns are not
+ * collected here.
+ *
+ * Returning 0 samples keeps the ANALYZE command a no-op for Iceberg tables
+ * (both on QD and on any QE the kernel dispatcher still visits) while
+ * leaving pg_class.relpages populated via relation_total_bytes_for_analyze_on_qd.
+ */
 int
 pg_iceberg_acquire_sample_rows(Relation relation, int elevel,
 							   HeapTuple *rows, int targrows,
 							   double *totalrows, double *totaldeadrows)
 {
-	IcebergAnalyzeState astate;
-	List *dispatch_private = anl_get_dispatch_private();
-	List *analyze_scan_private = NIL;
-	TableScanDesc scan_desc = NULL;
-	SeqScanState *scan_state = NULL;
-	SeqScan *scan_plan = NULL;
-	TupleTableSlot *scan_slot = NULL;
-
-	Assert(targrows > 0);
-
-	astate.rows = rows;
-	astate.targrows = targrows;
-	astate.numrows = 0;
-	astate.samplerows = 0;
-	astate.rowstoskip = -1;
-	astate.anl_cxt = CurrentMemoryContext;
-	reservoir_init_selection_state(&astate.rstate, targrows);
-
-	if (dispatch_private == NIL)
-	{
-		/*
-		 * In the distributed ANALYZE path, private tasks must be provided by QD
-		 * dispatch. An empty payload indicates a dispatch chain issue.
-		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("missing ANALYZE dispatch tasks for iceberg relation \"%s\"",
-						RelationGetRelationName(relation))));
-	}
-	analyze_scan_private = dispatch_private;
-
-	scan_desc = pg_iceberg_begin_analyze_scan(relation,
-											  analyze_scan_private,
-											  &scan_state,
-											  &scan_plan,
-											  &scan_slot);
-
-	while (pg_iceberg_getnextslot(scan_desc, ForwardScanDirection, scan_slot))
-	{
-		CHECK_FOR_INTERRUPTS();
-		pg_iceberg_analyze_row_processor(scan_slot, &astate);
-		ExecClearTuple(scan_slot);
-	}
-
-	pg_iceberg_endscan(scan_desc);
-	ExecDropSingleTupleTableSlot(scan_slot);
-	pfree(scan_state);
-	pfree(scan_plan);
-
-	*totaldeadrows = 0.0;
-	*totalrows = astate.samplerows;
+	*totalrows = 0;
+	*totaldeadrows = 0;
 
 	ereport(elevel,
-			(errmsg("\"%s\": table contains %.0f rows, %d rows in sample",
-					RelationGetRelationName(relation),
-					astate.samplerows,
-					astate.numrows)));
+			(errmsg("\"%s\": iceberg ANALYZE skips per-row sampling; stats come from metadata",
+					RelationGetRelationName(relation))));
 
-	return astate.numrows;
+	return 0;
 }
 
 /* --- DML Implementation --- */
@@ -689,18 +543,23 @@ pg_iceberg_rewrite_build_qe_result(const char *added_result_json,
 static TableScanDesc
 pg_iceberg_begin_vacuum_scan(Relation rel,
 							 List *vacuum_am_private,
-							 SeqScanState **out_scan_state,
-							 SeqScan **out_scan_plan,
+							 CustomScanState **out_scan_state,
+							 CustomScan **out_scan_plan,
 							 TupleTableSlot **out_scan_slot)
 {
-	SeqScan *scan_plan;
-	SeqScanState *scan_state;
-	TableScanDesc scan_desc;
+	CustomScan	   *scan_plan;
+	CustomScanState *scan_state;
+	TableScanDesc	scan_desc;
 
-	scan_plan = makeNode(SeqScan);
-	scan_plan->am_private = vacuum_am_private;
+	/*
+	 * Build a minimal local CustomScan/CustomScanState pair purely to carry
+	 * the vacuum rewrite dispatch payload into
+	 * pg_iceberg_scan_begin_extractcolumns through ps->plan->custom_private.
+	 */
+	scan_plan = makeNode(CustomScan);
+	scan_plan->custom_private = vacuum_am_private;
 
-	scan_state = makeNode(SeqScanState);
+	scan_state = makeNode(CustomScanState);
 	scan_state->ss.ps.plan = (Plan *) scan_plan;
 	scan_state->ss.ps.scandesc = RelationGetDescr(rel);
 	scan_state->ss.ss_ScanTupleSlot = table_slot_create(rel, NULL);
@@ -759,10 +618,10 @@ pg_iceberg_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAcce
 char *
 pg_iceberg_execute_rewrite(Relation rel, List *vacuum_am_private)
 {
-	TableScanDesc scan_desc = NULL;
-	SeqScanState *scan_state = NULL;
-	SeqScan *scan_plan = NULL;
-	TupleTableSlot *scan_slot = NULL;
+	TableScanDesc	 scan_desc = NULL;
+	CustomScanState *scan_state = NULL;
+	CustomScan		*scan_plan = NULL;
+	TupleTableSlot	*scan_slot = NULL;
 	IcebergModifyDesc *insert_desc;
 	char *added_result_json;
 	char *rewritten_fragments_json;

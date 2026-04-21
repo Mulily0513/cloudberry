@@ -4,6 +4,7 @@
 #include "access/relation.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_lake_table.h"
+#include "commands/laketablecmds.h"
 #include "nodes/parsenodes.h"
 #include "tcop/utility.h"
 #include "utils/rel.h"
@@ -58,11 +59,18 @@ iceberg_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 	else if (access == OAT_DROP && classId == RelationRelationId)
 	{
 		rel = relation_open(objectId, AccessShareLock);
-		
+
 		if ((rel->rd_rel->relkind == RELKIND_RELATION ||
 			rel->rd_rel->relkind == RELKIND_MATVIEW) &&
 			(subId == 0) && is_iceberg_rel(rel))
 		{
+			/*
+			 * pg_lake_table is a per-node catalog: clean on both QD and QE.
+			 * Replaces the former hardcoded RemoveLakeTableEntry() call in
+			 * heap_drop_with_catalog().
+			 */
+			RemoveLakeTableEntry(objectId);
+
 			if (Gp_role == GP_ROLE_DISPATCH)
 			{
 				/*
@@ -81,7 +89,7 @@ iceberg_object_access_hook(ObjectAccessType access, Oid classId, Oid objectId,
 				pg_iceberg_remove_metadata(objectId);
 			}
 		}
-		
+
 		relation_close(rel, AccessShareLock);
 	}
 

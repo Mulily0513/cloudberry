@@ -84,9 +84,9 @@ extern void pg_iceberg_estimate_rel_size(Relation rel, int32 *attr_widths,
 										 double *tuples, double *allvisfrac);
 extern uint64 pg_iceberg_relation_size(Relation rel, ForkNumber forkNumber);
 
-extern List *pg_iceberg_scan_get_am_private(Relation rel, struct PlanState *ps);
+extern List *pg_iceberg_build_scan_am_private(Relation rel, struct PlanState *ps,
+											   int random_segment_num);
 extern char *pg_iceberg_resolve_modify_location(Relation rel, CmdType operation);
-extern List *pg_iceberg_analyze_get_dispatch_tasks(Relation rel, bool inh, int targrows);
 extern int pg_iceberg_acquire_sample_rows(Relation relation, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);

@@ -97,7 +97,6 @@ gp_acquire_sample_rows(PG_FUNCTION_ARGS)
 	Oid			relOid = PG_GETARG_OID(0);
 	int32		targrows = PG_GETARG_INT32(1);
 	bool        inherited = PG_GETARG_BOOL(2);
-	List	   *dispatch_private = NIL;
 	TupleDesc	relDesc;
 	TupleDesc	outDesc;
 	int			live_natts;
@@ -126,14 +125,6 @@ gp_acquire_sample_rows(PG_FUNCTION_ARGS)
 		ctx->targrows = targrows;
 		ctx->inherited = inherited;
 
-		if (PG_NARGS() >= 4 && !PG_ARGISNULL(3))
-		{
-			char *serialized_private = text_to_cstring(PG_GETARG_TEXT_PP(3));
-
-			dispatch_private = (List *) stringToNode(serialized_private);
-			pfree(serialized_private);
-		}
-
 		if (!pg_class_ownercheck(relOid, GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE,
 						   get_rel_name(relOid));
@@ -154,7 +145,6 @@ gp_acquire_sample_rows(PG_FUNCTION_ARGS)
 		params.log_min_duration = -1;
 		params.index_cleanup = VACOPTVALUE_AUTO;
 		params.truncate = VACOPTVALUE_AUTO;
-		params.vacuum_private = dispatch_private;
 
 		this_rangevar = makeRangeVar(get_namespace_name(onerel->rd_rel->relnamespace),
 									 pstrdup(RelationGetRelationName(onerel)),

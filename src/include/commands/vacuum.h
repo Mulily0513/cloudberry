@@ -425,7 +425,6 @@ extern bool vacuumStatement_IsTemporary(Relation onerel);
 extern void analyze_rel(Oid relid, RangeVar *relation,
 						VacuumParams *params, List *va_cols, bool in_outer_xact,
 						BufferAccessStrategy bstrategy, gp_acquire_sample_rows_context *ctx);
-extern List *anl_get_dispatch_private(void);
 
 /* in commands/vacuumlazy.c */
 extern void lazy_vacuum_rel_heap(Relation onerel,

@@ -760,6 +760,16 @@ typedef struct TableAmRoutine
 												 double *totalrows,
 												 double *totaldeadrows);
 
+	/*
+	 * Return the authoritative total size, in bytes, of the relation when
+	 * ANALYZE is running on the QD.  Non-NULL means the AM's size is
+	 * maintained centrally (e.g. in a QD-only catalog) and must be obtained
+	 * locally on the QD; dispatching pg_relation_size() to QEs would either
+	 * fail (QE lacks access to the catalog) or return wrong totals.  NULL
+	 * means use the default path that sums per-segment pg_relation_size().
+	 */
+	int64		(*relation_total_bytes_for_analyze_on_qd) (Relation rel);
+
 	/* see table_index_build_range_scan for reference about parameters */
 	double		(*index_build_range_scan) (Relation table_rel,
 										   Relation index_rel,
@@ -991,20 +1001,6 @@ typedef struct TableAmRoutine
 	 * Returns a List* that will be assigned to SeqScan->am_private.
 	 */
 	List *(*scan_get_am_private) (Relation rel, struct PlanState *ps);
-
-	/*
-	 * relation_analyze_get_dispatch_tasks:
-	 *
-	 * Called on the QD before dispatching ANALYZE sampling to QEs. Returns a
-	 * List that will be serialized and sent to each QE. The AM can encode
-	 * per-segment scan task metadata similarly to SeqScan->am_private.
-	 *
-	 * Optional callback; NULL means ANALYZE uses the legacy dispatcher path
-	 * without AM-specific private task payload.
-	 */
-	List *(*relation_analyze_get_dispatch_tasks) (Relation rel,
-												  bool inh,
-												  int targrows);
 
 	/*
 	 * relation_vacuum_get_dispatch_tasks:
@@ -2397,38 +2393,6 @@ table_scan_sample_next_tuple(TableScanDesc scan,
 		elog(ERROR, "unexpected table_scan_sample_next_tuple call during logical decoding");
 	return scan->rs_rd->rd_tableam->scan_sample_next_tuple(scan, scanstate,
 														   slot);
-}
-
-/*
- * Get AM-specific data (e.g. file splits) to be attached to the SeqScan
- * plan node on QD and dispatched to QE.
- *
- * Returns a List* that will be assigned to SeqScan->am_private.
- * If the AM does not implement this callback, returns NIL.
- */
-static inline List *
-table_scan_get_am_private(Relation rel, struct PlanState *ps)
-{
-	if (rel->rd_tableam->scan_get_am_private)
-		return rel->rd_tableam->scan_get_am_private(rel, ps);
-
-	return NIL;
-}
-
-/*
- * Get AM-specific ANALYZE dispatch tasks to distribute to QEs.
- *
- * Returns NIL if the AM does not implement this callback.
- */
-static inline List *
-table_relation_analyze_get_dispatch_tasks(Relation rel, bool inh, int targrows)
-{
-	if (rel->rd_tableam->relation_analyze_get_dispatch_tasks)
-		return rel->rd_tableam->relation_analyze_get_dispatch_tasks(rel,
-																	inh,
-																	targrows);
-
-	return NIL;
 }
 
 /* ----------------------------------------------------------------------------
