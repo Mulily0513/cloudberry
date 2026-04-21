@@ -255,6 +255,12 @@ EOF
 start_postgres() {
   log_stage "start PostgreSQL"
   PG_VERSION=$(ls /etc/postgresql | head -n1)
+  # The image's postgres package autostarts on container boot and leaves a
+  # postmaster.pid behind. Stop cleanly (best-effort), wipe any stale lock,
+  # then start — otherwise pg_ctlcluster exits 1 with "lock file … already
+  # exists" and the whole entrypoint aborts.
+  pg_ctlcluster "${PG_VERSION}" main stop --force 2>/dev/null || true
+  rm -f "/var/lib/postgresql/${PG_VERSION}/main/postmaster.pid"
   pg_ctlcluster "${PG_VERSION}" main start
   PG_HBA="/etc/postgresql/${PG_VERSION}/main/pg_hba.conf"
   PG_CONF="/etc/postgresql/${PG_VERSION}/main/postgresql.conf"
