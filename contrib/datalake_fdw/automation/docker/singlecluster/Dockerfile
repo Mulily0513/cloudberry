@@ -4,6 +4,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 # TARGETARCH is auto-populated by Docker Buildx (amd64 / arm64); default to host arch
 # when building with legacy docker build.
 ARG TARGETARCH
+# Company-internal OBS mirror; override via --build-arg if the mirror host moves.
+ARG DOWNLOAD_BASE_URL=https://hashdata-download.obs.cn-north-4.myhuaweicloud.com/lightning-ci/packages
 
 ENV HADOOP_VERSION=3.0.0 \
     HIVE_VERSION=3.0.0 \
@@ -29,10 +31,10 @@ ENV PATH=$PATH:$JAVA_HOME/bin:/opt/hadoop/bin:/opt/hive/bin:/opt/spark/bin
 RUN --mount=type=bind,source=download_cache,target=/tmp/cache \
     ARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     if [ -f /tmp/cache/minio ]; then echo "[cache] minio"; cp /tmp/cache/minio /usr/local/bin/minio; \
-    else curl -fSL "https://dl.min.io/server/minio/release/linux-${ARCH}/minio" -o /usr/local/bin/minio; fi \
+    else curl -fSL "${DOWNLOAD_BASE_URL}/linux-${ARCH}/minio" -o /usr/local/bin/minio; fi \
  && chmod +x /usr/local/bin/minio \
  && if [ -f /tmp/cache/mc ]; then echo "[cache] mc"; cp /tmp/cache/mc /usr/local/bin/mc; \
-    else curl -fSL "https://dl.min.io/client/mc/release/linux-${ARCH}/mc" -o /usr/local/bin/mc; fi \
+    else curl -fSL "${DOWNLOAD_BASE_URL}/linux-${ARCH}/mc" -o /usr/local/bin/mc; fi \
  && chmod +x /usr/local/bin/mc
 
 # Hadoop
@@ -41,7 +43,7 @@ RUN --mount=type=bind,source=download_cache,target=/tmp/cache \
       echo "[cache] hadoop-${HADOOP_VERSION}.tar.gz"; \
       tar -xzf /tmp/cache/hadoop-${HADOOP_VERSION}.tar.gz -C /opt; \
     else \
-      curl -fSL https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz \
+      curl -fSL ${DOWNLOAD_BASE_URL}/hadoop-${HADOOP_VERSION}.tar.gz \
         | tar -xz -C /opt; \
     fi \
  && ln -s /opt/hadoop-${HADOOP_VERSION} ${HADOOP_HOME}
@@ -52,7 +54,7 @@ RUN --mount=type=bind,source=download_cache,target=/tmp/cache \
       echo "[cache] apache-hive-${HIVE_VERSION}-bin.tar.gz"; \
       tar -xzf /tmp/cache/apache-hive-${HIVE_VERSION}-bin.tar.gz -C /opt; \
     else \
-      curl -fSL https://archive.apache.org/dist/hive/hive-${HIVE_VERSION}/apache-hive-${HIVE_VERSION}-bin.tar.gz \
+      curl -fSL ${DOWNLOAD_BASE_URL}/apache-hive-${HIVE_VERSION}-bin.tar.gz \
         | tar -xz -C /opt; \
     fi \
  && ln -s /opt/apache-hive-${HIVE_VERSION}-bin ${HIVE_HOME}
@@ -63,7 +65,7 @@ RUN --mount=type=bind,source=download_cache,target=/tmp/cache \
       echo "[cache] spark-${SPARK_VERSION}-bin-hadoop3.tgz"; \
       tar -xzf /tmp/cache/spark-${SPARK_VERSION}-bin-hadoop3.tgz -C /opt; \
     else \
-      curl -fSL https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz \
+      curl -fSL ${DOWNLOAD_BASE_URL}/spark-${SPARK_VERSION}-bin-hadoop3.tgz \
         | tar -xz -C /opt; \
     fi \
  && ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop3 ${SPARK_HOME}
@@ -73,16 +75,16 @@ RUN --mount=type=bind,source=download_cache,target=/tmp/cache \
     mkdir -p /opt/jars && cd /opt/jars \
  && { [ -f /tmp/cache/hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar ] \
       && echo "[cache] hudi jar" && cp /tmp/cache/hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar . \
-      || curl -fSLO https://maven.aliyun.com/repository/central/org/apache/hudi/hudi-spark3-bundle_2.12/${HUDI_VERSION}/hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar; } \
+      || curl -fSLO ${DOWNLOAD_BASE_URL}/hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar; } \
  && { [ -f /tmp/cache/iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar ] \
       && echo "[cache] iceberg jar" && cp /tmp/cache/iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar . \
-      || curl -fSLO https://maven.aliyun.com/repository/central/org/apache/iceberg/iceberg-spark-runtime-3.3_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar; } \
+      || curl -fSLO ${DOWNLOAD_BASE_URL}/iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar; } \
  && { [ -f /tmp/cache/hadoop-aws-${HADOOP_VERSION}.jar ] \
       && echo "[cache] hadoop-aws jar" && cp /tmp/cache/hadoop-aws-${HADOOP_VERSION}.jar . \
-      || curl -fSLO https://maven.aliyun.com/repository/central/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar; } \
+      || curl -fSLO ${DOWNLOAD_BASE_URL}/hadoop-aws-${HADOOP_VERSION}.jar; } \
  && { [ -f /tmp/cache/aws-java-sdk-bundle-1.11.1026.jar ] \
       && echo "[cache] aws-sdk jar" && cp /tmp/cache/aws-java-sdk-bundle-1.11.1026.jar . \
-      || curl -fSLO https://maven.aliyun.com/repository/central/com/amazonaws/aws-java-sdk-bundle/1.11.1026/aws-java-sdk-bundle-1.11.1026.jar; }
+      || curl -fSLO ${DOWNLOAD_BASE_URL}/aws-java-sdk-bundle-1.11.1026.jar; }
 
 # Startup scripts
 COPY scripts/start-all.sh /opt/start-all.sh
