@@ -278,6 +278,9 @@ enum EOptTraceFlag
 	// disable parallel window alternatives
 	EopttraceDisableParallelWindow = 103060,
 
+	// Disable streaming hash agg in ORCA-generated local partial aggregations
+	EopttraceDisableStreamingHashAgg = 103061,
+
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////
 	//////////////////////////////////////////////////////

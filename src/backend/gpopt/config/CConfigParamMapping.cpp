@@ -369,6 +369,11 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 false,	 // m_negate_param
 	 GPOS_WSZ_LIT("Always use of PartitionTopK physical operator in ORCA.")},
 
+	{EopttraceDisableStreamingHashAgg, &optimizer_use_streaming_hashagg,
+	 true,	// m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Disable streaming hash agg in ORCA-generated local partial aggregations.")},
+
 };
 
 //---------------------------------------------------------------------------
