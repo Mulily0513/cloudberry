@@ -69,6 +69,7 @@
 
 #include "am_iceberg/include/pg_iceberg_guc.h"
 #include "am_iceberg/include/pg_iceberg_ddl.h"
+#include "am_iceberg/include/pg_iceberg_extensible.h"
 
 
 PG_MODULE_MAGIC;
@@ -399,6 +400,7 @@ _PG_init(void)
 							NULL);
 
 	pg_iceberg_init_gucs();
+	pg_iceberg_register_extensible_nodes();
 
 	datalake_prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = datalake_ProcessUtility;
@@ -435,6 +437,18 @@ datalake_ProcessUtility(PlannedStmt *pstmt,
 		{
 			CreateForeignCatalogStmt *createCatalogStmt = (CreateForeignCatalogStmt *) pstmt->utilityStmt;
 			handle_create_foreign_catalog(createCatalogStmt);
+			break;
+		}
+		case T_ExtensibleNode:
+		{
+			/*
+			 * Iceberg ships AM-private payloads (e.g. VACUUM rewrite tasks)
+			 * to QEs as ExtensibleNodes through CdbDispatchUtilityStatement.
+			 * Recognise and execute them here; standard_ProcessUtility has
+			 * no T_ExtensibleNode case and would error out.
+			 */
+			if (pg_iceberg_handle_extensible_utility(pstmt->utilityStmt))
+				return;
 			break;
 		}
 		default:

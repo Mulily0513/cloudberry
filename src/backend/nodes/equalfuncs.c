@@ -1924,7 +1924,6 @@ _equalVacuumStmt(const VacuumStmt *a, const VacuumStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(rels);
 	COMPARE_SCALAR_FIELD(is_vacuumcmd);
-	COMPARE_NODE_FIELD(vacuum_private);
 
 	return true;
 }

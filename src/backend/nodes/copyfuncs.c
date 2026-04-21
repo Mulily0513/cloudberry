@@ -4961,7 +4961,6 @@ _copyVacuumStmt(const VacuumStmt *from)
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(rels);
 	COPY_SCALAR_FIELD(is_vacuumcmd);
-	COPY_NODE_FIELD(vacuum_private);
 
 	return newnode;
 }

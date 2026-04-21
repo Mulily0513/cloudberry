@@ -649,19 +649,6 @@ iceberg_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessS
 	pg_iceberg_relation_vacuum(rel, params, bstrategy);
 }
 
-static List *
-iceberg_relation_vacuum_get_dispatch_tasks(Relation rel, struct VacuumParams *params)
-{
-	return pg_iceberg_relation_vacuum_get_dispatch_tasks(rel, params);
-}
-
-static void
-iceberg_relation_vacuum_combine_dispatch_results(Relation rel,
-												 List *all_dispatch_results)
-{
-	pg_iceberg_relation_vacuum_combine_dispatch_results(rel, all_dispatch_results);
-}
-
 static int
 iceberg_relation_acquire_sample_rows(Relation rel, int elevel,
 									 HeapTuple *rows, int targrows,
@@ -805,8 +792,6 @@ static const TableAmRoutine iceberg_am_methods = {
 	.relation_copy_data = iceberg_relation_copy_data,
 	.relation_copy_for_cluster = iceberg_relation_copy_for_cluster,
 	.relation_vacuum = iceberg_relation_vacuum,
-	.relation_vacuum_get_dispatch_tasks = iceberg_relation_vacuum_get_dispatch_tasks,
-	.relation_vacuum_combine_dispatch_results = iceberg_relation_vacuum_combine_dispatch_results,
 	.scan_analyze_next_block = iceberg_scan_analyze_next_block,
 	.scan_analyze_next_tuple = iceberg_scan_analyze_next_tuple,
 	.relation_acquire_sample_rows = iceberg_relation_acquire_sample_rows,

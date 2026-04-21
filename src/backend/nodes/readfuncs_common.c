@@ -1828,7 +1828,6 @@ _readVacuumStmt(void)
 	READ_NODE_FIELD(options);
 	READ_NODE_FIELD(rels);
 	READ_BOOL_FIELD(is_vacuumcmd);
-	READ_NODE_FIELD(vacuum_private);
 
 	READ_DONE();
 }

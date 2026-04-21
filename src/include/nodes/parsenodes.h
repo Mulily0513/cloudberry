@@ -4131,8 +4131,6 @@ typedef struct VacuumStmt
 	List	   *options;		/* list of DefElem nodes */
 	List	   *rels;			/* list of VacuumRelation, or NIL for all */
 	bool		is_vacuumcmd;	/* true for VACUUM, false for ANALYZE */
-	List	   *vacuum_private;	/* AM-specific task or result list for
-								 * distributed VACUUM private dispatch */
 } VacuumStmt;
 
 /*

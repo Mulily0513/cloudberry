@@ -390,7 +390,6 @@ extern void vac_send_relstats_to_qd(Relation relation,
 						BlockNumber num_pages,
 						double num_tuples,
 						BlockNumber num_all_visible_pages);
-extern void vac_send_private_to_qd(Relation relation, List *private_results);
 extern void vac_update_relstats(Relation relation,
 								BlockNumber num_pages,
 								double num_tuples,

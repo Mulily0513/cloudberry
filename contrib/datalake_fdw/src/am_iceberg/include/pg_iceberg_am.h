@@ -111,8 +111,6 @@ extern void pg_iceberg_relation_vacuum(Relation rel, struct VacuumParams *params
 									   BufferAccessStrategy bstrategy);
 extern List *pg_iceberg_relation_vacuum_get_dispatch_tasks(Relation rel,
 														   struct VacuumParams *params);
-extern void pg_iceberg_relation_vacuum_combine_dispatch_results(Relation rel,
-																List *all_dispatch_results);
 
 /* Helper to get modify descriptor (moved to handler but exposed for internal AM use if needed) */
 extern IcebergModifyDesc *get_or_create_modify_descriptor(Relation rel, CmdType operation);

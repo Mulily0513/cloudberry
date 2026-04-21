@@ -16,7 +16,9 @@
 
 #include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/oid_dispatch.h"
 #include "commands/vacuum.h"
+#include "libpq/libpq-int.h"
 #include "utils/guc.h"
 #include "utils/guc_tables.h"
 #include "utils/sampling.h"
@@ -45,6 +47,7 @@
 #include "utils/portal.h"
 #include "utils/snapmgr.h"
 #include "cdb/cdbdisp.h"
+#include "cdb/cdbdisp_query.h"
 #include "cdb/cdbdispatchresult.h"
 #include "executor/execdesc.h"
 #include "tcop/pquery.h"
@@ -53,6 +56,7 @@
 #include "include/pg_iceberg_am.h"
 #include "include/pg_iceberg_catalog.h"
 #include "include/pg_iceberg_catalog_helper.h"
+#include "include/pg_iceberg_extensible.h"
 #include "include/pg_iceberg_metadata.h"
 #include "include/pg_iceberg_metadata_tracker.h"
 #include "include/pg_iceberg_guc.h"
@@ -585,29 +589,65 @@ pg_iceberg_begin_vacuum_scan(Relation rel,
 /*
  * pg_iceberg_relation_vacuum:
  *
- * Perform VACUUM on an Iceberg relation.
+ * Tableam relation_vacuum entry point for Iceberg.  All QD↔QE coordination
+ * lives entirely in the plugin to keep the kernel free of AM-specific
+ * VACUUM machinery:
+ *
+ *   - On QD, build the rewrite task list, ship it to QEs as an
+ *     ExtensibleNode via CdbDispatchUtilityStatement(), then collect each
+ *     QE's per-relation result from CdbPgResults extras and feed them to
+ *     pg_iceberg_commit_rewrite().
+ *   - On QE, this function is a no-op; the rewrite is driven by
+ *     pg_iceberg_handle_extensible_utility() invoked from
+ *     datalake_ProcessUtility when the dispatched ExtensibleNode arrives.
  */
 void
-pg_iceberg_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy)
+pg_iceberg_relation_vacuum(Relation rel, struct VacuumParams *params,
+						   BufferAccessStrategy bstrategy)
 {
-	List *results = NIL;
-	char *result_json;
+	PgIcebergVacuumDispatchNode *dispatch_node;
+	CdbPgResults	cdb_pgresults = {NULL, 0, 0};
+	List		   *all_results = NIL;
+	int				i;
 
-	if (Gp_role != GP_ROLE_EXECUTE)
+	if (Gp_role != GP_ROLE_DISPATCH)
 		return;
 
-	if (params == NULL || params->vacuum_private == NIL)
-		return;
+	dispatch_node = (PgIcebergVacuumDispatchNode *)
+		newNode(sizeof(PgIcebergVacuumDispatchNode), T_ExtensibleNode);
+	dispatch_node->node.extnodename = PG_ICEBERG_VACUUM_DISPATCH_NODE;
+	dispatch_node->relId = RelationGetRelid(rel);
+	dispatch_node->tasks =
+		pg_iceberg_relation_vacuum_get_dispatch_tasks(rel, params);
 
-	/*
-	 * Execute one rewrite pipeline per QE.
-	 * Row reader keeps the existing scan-side segment dispatch semantics.
-	 */
-	result_json = pg_iceberg_execute_rewrite(rel, params->vacuum_private);
-	if (result_json != NULL)
-		results = lappend(results, makeString(result_json));
+	PG_TRY();
+	{
+		CdbDispatchUtilityStatement((Node *) dispatch_node,
+									DF_CANCEL_ON_ERROR | DF_WITH_SNAPSHOT,
+									GetAssignedOidsForDispatch(),
+									&cdb_pgresults);
 
-	vac_send_private_to_qd(rel, results);
+		for (i = 0; i < cdb_pgresults.numResults; i++)
+		{
+			struct pg_result *pgresult = cdb_pgresults.pg_results[i];
+			List	   *qe_results;
+
+			if (pgresult->extras == NULL ||
+				pgresult->extraType != PGExtraTypeVacuumPrivate)
+				continue;
+
+			qe_results = (List *) stringToNode((char *) pgresult->extras);
+			all_results = lappend(all_results, qe_results);
+		}
+
+		if (all_results != NIL)
+			pg_iceberg_commit_rewrite(rel, all_results);
+	}
+	PG_FINALLY();
+	{
+		cdbdisp_clearCdbPgResults(&cdb_pgresults);
+	}
+	PG_END_TRY();
 }
 
 /*
@@ -766,14 +806,3 @@ pg_iceberg_relation_vacuum_get_dispatch_tasks(Relation rel, struct VacuumParams 
 	return tasks;
 }
 
-/*
- * pg_iceberg_relation_vacuum_combine_dispatch_results:
- *
- * Aggregates vacuum results from all dispatched executors.
- */
-void
-pg_iceberg_relation_vacuum_combine_dispatch_results(Relation rel,
-													List *all_dispatch_results)
-{
-	pg_iceberg_commit_rewrite(rel, all_dispatch_results);
-}

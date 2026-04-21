@@ -1002,32 +1002,6 @@ typedef struct TableAmRoutine
 	 */
 	List *(*scan_get_am_private) (Relation rel, struct PlanState *ps);
 
-	/*
-	 * relation_vacuum_get_dispatch_tasks:
-	 *
-	 * Called on the QD before dispatching VACUUM to QEs.  Returns a List
-	 * (suggested element type: String or DefElem) that will be serialized
-	 * into VacuumStmt->vacuum_private and broadcast to all QEs.  Each QE
-	 * receives the full list and is expected to filter tasks by
-	 * GpIdentity.segindex.
-	 *
-	 * Optional callback; NULL means no dispatch tasks to distribute.
-	 */
-	List *(*relation_vacuum_get_dispatch_tasks) (Relation rel,
-												 struct VacuumParams *params);
-
-	/*
-	 * relation_vacuum_combine_dispatch_results:
-	 *
-	 * Called on the QD after all QE results have been received.
-	 * all_dispatch_results is a nested List: each element is the result
-	 * List returned by a single QE via vac_send_private_to_qd().
-	 *
-	 * Optional callback; NULL means no post-aggregation work is needed.
-	 */
-	void (*relation_vacuum_combine_dispatch_results) (Relation rel,
-													  List *all_dispatch_results);
-
 } TableAmRoutine;
 
 
@@ -1965,35 +1939,6 @@ table_relation_vacuum(Relation rel, struct VacuumParams *params,
 					  BufferAccessStrategy bstrategy)
 {
 	rel->rd_tableam->relation_vacuum(rel, params, bstrategy);
-}
-
-/*
- * Get AM-specific VACUUM dispatch tasks to distribute to QEs.
- *
- * Returns NIL if the AM does not implement this callback.
- */
-static inline List *
-table_relation_vacuum_get_dispatch_tasks(Relation rel,
-										 struct VacuumParams *params)
-{
-	if (rel->rd_tableam->relation_vacuum_get_dispatch_tasks)
-		return rel->rd_tableam->relation_vacuum_get_dispatch_tasks(rel, params);
-
-	return NIL;
-}
-
-/*
- * Combine AM-specific VACUUM results collected from QEs.
- *
- * If the AM does not implement this callback, this is a no-op.
- */
-static inline void
-table_relation_vacuum_combine_dispatch_results(Relation rel,
-											   List *all_dispatch_results)
-{
-	if (rel->rd_tableam->relation_vacuum_combine_dispatch_results)
-		rel->rd_tableam->relation_vacuum_combine_dispatch_results(rel,
-																  all_dispatch_results);
 }
 
 /*
