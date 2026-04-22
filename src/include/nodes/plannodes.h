@@ -561,10 +561,7 @@ typedef struct Scan
  *		sequential scan node
  * ----------------
  */
-typedef struct SeqScan
-{
-	Scan		scan;
-} SeqScan;
+typedef Scan SeqScan;
 
 /* ----------------
  *		table sample scan node

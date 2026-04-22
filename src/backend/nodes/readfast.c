@@ -949,7 +949,7 @@ _readSequence(void)
 static void
 readSeqScanFields(SeqScan *local_node)
 {
-	ReadCommonScan(&local_node->scan);
+	ReadCommonScan(local_node);
 }
 
 static DynamicSeqScan *

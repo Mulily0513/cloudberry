@@ -3650,7 +3650,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
-	copy_generic_path_info(&scan_plan->scan.plan, best_path);
+	copy_generic_path_info(&scan_plan->plan, best_path);
 
 	return scan_plan;
 }
@@ -6682,13 +6682,13 @@ make_seqscan(List *qptlist,
 			 Index scanrelid)
 {
 	SeqScan    *node = makeNode(SeqScan);
-	Plan	   *plan = &node->scan.plan;
+	Plan	   *plan = &node->plan;
 
 	plan->targetlist = qptlist;
 	plan->qual = qpqual;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
-	node->scan.scanrelid = scanrelid;
+	node->scanrelid = scanrelid;
 
 	return node;
 }

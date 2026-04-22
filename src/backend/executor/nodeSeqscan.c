@@ -168,7 +168,7 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	 * get the relation object id from the relid'th entry in the range table,
 	 * open that relation and acquire appropriate lock on it.
 	 */
-	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
+	currentRelation = ExecOpenScanRelation(estate, node->scanrelid, eflags);
 
 	return ExecInitSeqScanForPartition(node, estate, currentRelation);
 }
@@ -221,7 +221,7 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 	 * initialize child expressions
 	 */
 	scanstate->ss.ps.qual =
-		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
+		ExecInitQual(node->plan.qual, (PlanState *) scanstate);
 
 	/*
 	 * check scan slot with bloom filters in seqscan node or not.
