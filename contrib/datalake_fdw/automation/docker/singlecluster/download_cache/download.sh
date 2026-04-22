@@ -105,6 +105,9 @@ download "polaris-bin-${POLARIS_VERSION}.tgz" \
 download "hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar" \
   "${DOWNLOAD_BASE_URL}/hudi-spark3-bundle_2.12-${HUDI_VERSION}.jar"
 
+download "hudi-spark3.3-bundle_2.12-${HUDI_VERSION}.jar" \
+  "${DOWNLOAD_BASE_URL}/hudi-spark3.3-bundle_2.12-${HUDI_VERSION}.jar"
+
 download "iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar" \
   "${DOWNLOAD_BASE_URL}/iceberg-spark-runtime-3.3_2.12-${ICEBERG_VERSION}.jar"
 
