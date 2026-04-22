@@ -7,10 +7,11 @@ AUTOMATION_DIR = $(shell cd ../../.. && pwd)
 S3_PREPARE_SQL = $(AUTOMATION_DIR)/prepare/prepare_s3/s3_smoke.sql
 S3_VERIFY_SQL = $(AUTOMATION_DIR)/prepare/prepare_s3/s3_verify_cb_write.sql
 
-# Hive/Hadoop environment for beeline
-export HIVE_HOME ?= /workspace/share/hive
-export HADOOP_HOME ?= /workspace/share/hadoop
-BEELINE = $(HIVE_HOME)/bin/beeline
+# Hive/Hadoop environment for beeline.  The automation framework downloads
+# a beeline wrapper into tools/bin as part of `make install-tools`; prefer
+# that so the smoke suite does not depend on a system-wide Hive install
+# under /workspace/share.
+BEELINE ?= $(AUTOMATION_DIR)/tools/bin/beeline
 BEELINE_URL = jdbc:hive2://lakehouse:10000/default
 
 # MinIO endpoint (path-style, non-TLS)

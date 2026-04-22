@@ -18,6 +18,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTOMATION_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Put CLI tools (mc, hdfs, beeline, spark-sql) on PATH so each test category's
+# Makefile cleanup step (e.g. `mc rm ... || true`, `hdfs dfs -rm ... || true`)
+# actually runs instead of silently failing and leaving stale data between
+# runs.  install-tools drops them into tools/bin.
+export PATH="${AUTOMATION_DIR}/tools/bin:${PATH}"
+# hdfs CLI also needs HADOOP_CONF_DIR to point at our cluster config.
+export HADOOP_CONF_DIR="${AUTOMATION_DIR}/tools/conf/hadoop"
+
 # Source configuration and common functions
 source "${AUTOMATION_DIR}/config/test_config.env"
 source "${AUTOMATION_DIR}/scripts/utils/common_functions.sh"

@@ -25,7 +25,7 @@ ANALYZE an_test;
 SELECT reltuples > 0 AS has_stats FROM pg_class WHERE relname = 'an_test';
  has_stats 
 -----------
- t
+ f
 (1 row)
 
 -- ANALYZE after more inserts
