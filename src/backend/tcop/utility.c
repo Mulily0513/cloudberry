@@ -4118,6 +4118,10 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_DROP_WAREHOUSE;
 			break;
 
+		case T_ExtensibleNode:
+			tag = CMDTAG_VACUUM;
+			break;
+
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));
@@ -4701,6 +4705,11 @@ GetCommandLogLevel(Node *parsetree)
 		case T_AlterQueueStmt:
 		case T_DropQueueStmt:
 			lev = LOGSTMT_DDL;
+			break;
+
+		case T_ExtensibleNode:
+			/* see matching case in CreateCommandTag */
+			lev = LOGSTMT_ALL;
 			break;
 
 		default:
