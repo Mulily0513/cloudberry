@@ -278,10 +278,10 @@ SELECT id, name FROM pushdown_test WHERE is_active = false ORDER BY id;
 -- Test 10: EXPLAIN shows Foreign Scan (pushdown active)
 -- ============================================================
 EXPLAIN (COSTS OFF) SELECT * FROM pushdown_test WHERE id = 1;
-                QUERY PLAN                
-------------------------------------------
+                    QUERY PLAN                     
+---------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on pushdown_test
+   ->  Custom Scan (Iceberg Scan) on pushdown_test
          Filter: (id = 1)
  Optimizer: GPORCA
 (4 rows)
@@ -290,7 +290,7 @@ EXPLAIN (COSTS OFF) SELECT * FROM pushdown_test WHERE category = 'office' AND pr
                             QUERY PLAN                             
 -------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on pushdown_test
+   ->  Custom Scan (Iceberg Scan) on pushdown_test
          Filter: ((category = 'office'::text) AND (price > 10.00))
  Optimizer: GPORCA
 (4 rows)

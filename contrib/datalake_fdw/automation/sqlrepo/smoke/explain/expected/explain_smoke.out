@@ -49,10 +49,10 @@ INSERT INTO explain_test VALUES
 -- Test 1: Basic EXPLAIN shows Foreign Scan
 -- ============================================================
 EXPLAIN (COSTS OFF) SELECT * FROM explain_test;
-                QUERY PLAN                
-------------------------------------------
+                    QUERY PLAN                    
+--------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on explain_test
+   ->  Custom Scan (Iceberg Scan) on explain_test
  Optimizer: GPORCA
 (3 rows)
 
@@ -60,28 +60,28 @@ EXPLAIN (COSTS OFF) SELECT * FROM explain_test;
 -- Test 2: EXPLAIN with WHERE shows filter info
 -- ============================================================
 EXPLAIN (COSTS OFF) SELECT * FROM explain_test WHERE id = 1;
-                QUERY PLAN                
-------------------------------------------
+                    QUERY PLAN                    
+--------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on explain_test
+   ->  Custom Scan (Iceberg Scan) on explain_test
          Filter: (id = 1)
  Optimizer: GPORCA
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM explain_test WHERE category = 'A';
-                QUERY PLAN                
-------------------------------------------
+                    QUERY PLAN                    
+--------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on explain_test
+   ->  Custom Scan (Iceberg Scan) on explain_test
          Filter: (category = 'A'::text)
  Optimizer: GPORCA
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM explain_test WHERE price > 200.00;
-                QUERY PLAN                
-------------------------------------------
+                    QUERY PLAN                    
+--------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on explain_test
+   ->  Custom Scan (Iceberg Scan) on explain_test
          Filter: (price > 200.00)
  Optimizer: GPORCA
 (4 rows)
@@ -90,8 +90,8 @@ EXPLAIN (COSTS OFF) SELECT * FROM explain_test WHERE price > 200.00;
 -- Test 3: EXPLAIN with aggregation
 -- ============================================================
 EXPLAIN (COSTS OFF) SELECT category, COUNT(*) FROM explain_test GROUP BY category;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                             QUERY PLAN                             
+--------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  GroupAggregate
          Group Key: category
@@ -99,7 +99,7 @@ EXPLAIN (COSTS OFF) SELECT category, COUNT(*) FROM explain_test GROUP BY categor
                Sort Key: category
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
                      Hash Key: category
-                     ->  Seq Scan on explain_test
+                     ->  Custom Scan (Iceberg Scan) on explain_test
  Optimizer: GPORCA
 (9 rows)
 
@@ -113,14 +113,14 @@ INSERT INTO explain_local VALUES ('A', 'Alpha Cat'), ('B', 'Beta Cat');
 EXPLAIN (COSTS OFF)
 SELECT e.name, l.label
 FROM explain_test e JOIN explain_local l ON e.category = l.cat;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                           QUERY PLAN                           
+----------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (e.category = l.cat)
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
                Hash Key: e.category
-               ->  Seq Scan on explain_test e
+               ->  Custom Scan (Iceberg Scan) on explain_test e
          ->  Hash
                ->  Seq Scan on explain_local l
  Optimizer: GPORCA
@@ -132,10 +132,10 @@ DROP TABLE explain_local;
 -- ============================================================
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
 SELECT * FROM explain_test WHERE id > 2;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3) (actual rows=3 loops=1)
-   ->  Seq Scan on explain_test (actual rows=3 loops=1)
+   ->  Custom Scan (Iceberg Scan) on explain_test (actual rows=3 loops=1)
          Filter: (id > 2)
          Rows Removed by Filter: 2
  Optimizer: GPORCA
@@ -145,11 +145,11 @@ SELECT * FROM explain_test WHERE id > 2;
 -- Test 6: EXPLAIN with VERBOSE (shows column details)
 -- ============================================================
 EXPLAIN (VERBOSE, COSTS OFF) SELECT id, name FROM explain_test WHERE id = 1;
-                QUERY PLAN                
-------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: id, name
-   ->  Seq Scan on public.explain_test
+   ->  Custom Scan (Iceberg Scan) on public.explain_test
          Output: id, name
          Filter: (explain_test.id = 1)
  Optimizer: GPORCA

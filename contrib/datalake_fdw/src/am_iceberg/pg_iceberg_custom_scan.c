@@ -1,0 +1,457 @@
+/*-------------------------------------------------------------------------
+ *
+ * pg_iceberg_custom_scan.c
+ *	  CustomScan provider for Iceberg tables.
+ *
+ *	  Replaces the kernel-level SeqScan.am_private channel with a plugin-
+ *	  owned CustomScan node.  Splits / catalog metadata computed on the QD
+ *	  are stashed into CustomScan.custom_private, which is serialized by
+ *	  the core out/read infrastructure and dispatched to every QE via the
+ *	  normal PlannedStmt path.  The QE-side BeginCustomScan reuses the
+ *	  existing Iceberg scan initializer.
+ *
+ *	  A planner_hook runs after standard_planner/ORCA, walks the resulting
+ *	  PlannedStmt, and rewrites SeqScan nodes whose target relation uses
+ *	  the "iceberg" table AM into Iceberg CustomScan nodes.  This keeps the
+ *	  rewrite orthogonal to ORCA vs PG planner selection.
+ *
+ * IDENTIFICATION
+ *	  contrib/datalake_fdw/src/am_iceberg/pg_iceberg_custom_scan.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/htup_details.h"
+#include "access/table.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_class.h"
+#include "cdb/cdbvars.h"
+#include "commands/explain.h"
+#include "executor/executor.h"
+#include "executor/nodeCustom.h"
+#include "nodes/execnodes.h"
+#include "nodes/extensible.h"
+#include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "nodes/pg_list.h"
+#include "nodes/plannodes.h"
+#include "optimizer/planner.h"
+#include "parser/parsetree.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/syscache.h"
+
+#include "include/pg_iceberg_am.h"
+#include "include/pg_iceberg_custom_scan.h"
+
+#define ICEBERG_CUSTOM_SCAN_NAME	"Iceberg Scan"
+
+extern int external_table_limit_segment_num;
+
+
+/* ------------------------------------------------------------------------
+ * Executor-time state
+ * ------------------------------------------------------------------------
+ */
+typedef struct IcebergCustomScanState
+{
+	CustomScanState	 css;			/* must be first */
+	TableScanDesc	 scanDesc;
+} IcebergCustomScanState;
+
+
+/* ------------------------------------------------------------------------
+ * Forward declarations
+ * ------------------------------------------------------------------------
+ */
+static Node *IcebergCreateCustomScanState(CustomScan *cscan);
+static void IcebergBeginCustomScan(CustomScanState *node, EState *estate,
+								   int eflags);
+static TupleTableSlot *IcebergExecCustomScan(CustomScanState *node);
+static void IcebergEndCustomScan(CustomScanState *node);
+static void IcebergReScanCustomScan(CustomScanState *node);
+static void IcebergExplainCustomScan(CustomScanState *node, List *ancestors,
+									 ExplainState *es);
+
+static CustomScanMethods IcebergCustomScanMethods = {
+	ICEBERG_CUSTOM_SCAN_NAME,
+	IcebergCreateCustomScanState,
+};
+
+static CustomExecMethods IcebergCustomExecMethods = {
+	.CustomName			= ICEBERG_CUSTOM_SCAN_NAME,
+	.BeginCustomScan	= IcebergBeginCustomScan,
+	.ExecCustomScan		= IcebergExecCustomScan,
+	.EndCustomScan		= IcebergEndCustomScan,
+	.ReScanCustomScan	= IcebergReScanCustomScan,
+	.ExplainCustomScan	= IcebergExplainCustomScan,
+};
+
+
+/* ------------------------------------------------------------------------
+ * Iceberg AM OID cache
+ *
+ * The "iceberg" access method OID is stable across a session; cache it
+ * on first lookup.  DROP/CREATE ACCESS METHOD within a running session
+ * is not a supported workflow, so we do not install an invalidation
+ * callback.
+ * ------------------------------------------------------------------------
+ */
+static Oid iceberg_am_oid_cache = InvalidOid;
+
+static Oid
+get_relation_relam(Oid relid)
+{
+	HeapTuple	tup;
+	Oid			relam;
+
+	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tup))
+		return InvalidOid;
+
+	relam = ((Form_pg_class) GETSTRUCT(tup))->relam;
+	ReleaseSysCache(tup);
+	return relam;
+}
+
+static bool
+is_iceberg_relation(Oid relid)
+{
+	Oid			relam;
+
+	if (!OidIsValid(relid))
+		return false;
+
+	if (!OidIsValid(iceberg_am_oid_cache))
+	{
+		iceberg_am_oid_cache = GetSysCacheOid1(AMNAME, Anum_pg_am_oid,
+											   CStringGetDatum("iceberg"));
+		if (!OidIsValid(iceberg_am_oid_cache))
+			return false;
+	}
+
+	relam = get_relation_relam(relid);
+	return OidIsValid(relam) && relam == iceberg_am_oid_cache;
+}
+
+
+/* ------------------------------------------------------------------------
+ * Walker: replace Iceberg SeqScan with CustomScan
+ * ------------------------------------------------------------------------
+ */
+static Plan *replace_iceberg_seqscan(Plan *plan, List *rtable);
+
+static void
+replace_iceberg_seqscan_list(List *plans, List *rtable)
+{
+	ListCell   *lc;
+
+	foreach(lc, plans)
+		lfirst(lc) = replace_iceberg_seqscan((Plan *) lfirst(lc), rtable);
+}
+
+static Plan *
+make_iceberg_custom_scan(SeqScan *seq)
+{
+	CustomScan *cscan = makeNode(CustomScan);
+
+	/*
+	 * Struct-copy the Plan header (targetlist, qual, lefttree, costs, flow,
+	 * directDispatch, parallel flags, …) then fix up node tag and CustomScan-
+	 * specific fields.
+	 */
+	cscan->scan.plan = seq->scan.plan;
+	cscan->scan.plan.type = T_CustomScan;
+	cscan->scan.scanrelid = seq->scan.scanrelid;
+
+	cscan->flags			= 0;
+	cscan->custom_plans		= NIL;
+	cscan->custom_exprs		= NIL;
+	/*
+	 * custom_private (the Iceberg file split list) is populated per-execution
+	 * on the QD inside IcebergBeginCustomScan, mirroring the original kernel
+	 * behaviour where nodeSeqscan.c called table_scan_get_am_private() in
+	 * ExecInitSeqScan.  Leaving it NIL at plan time keeps cached PlannedStmts
+	 * (prepared statements, plpgsql plans) free of stale splits.
+	 */
+	cscan->custom_private	= NIL;
+	cscan->custom_scan_tlist = NIL;		/* scan tuple = relation tupdesc */
+	cscan->custom_relids	= bms_make_singleton(seq->scan.scanrelid);
+	cscan->methods			= &IcebergCustomScanMethods;
+
+	return (Plan *) cscan;
+}
+
+static Plan *
+replace_iceberg_seqscan(Plan *plan, List *rtable)
+{
+	if (plan == NULL)
+		return NULL;
+
+	if (IsA(plan, SeqScan))
+	{
+		SeqScan		   *seq = (SeqScan *) plan;
+		RangeTblEntry  *rte;
+
+		if (seq->scan.scanrelid > 0 &&
+			seq->scan.scanrelid <= list_length(rtable))
+		{
+			rte = rt_fetch(seq->scan.scanrelid, rtable);
+			if (rte->rtekind == RTE_RELATION &&
+				is_iceberg_relation(rte->relid))
+				return make_iceberg_custom_scan(seq);
+		}
+	}
+
+	/* Recurse common plan tree structure. */
+	plan->lefttree = replace_iceberg_seqscan(plan->lefttree, rtable);
+	plan->righttree = replace_iceberg_seqscan(plan->righttree, rtable);
+
+	if (IsA(plan, Append))
+		replace_iceberg_seqscan_list(((Append *) plan)->appendplans, rtable);
+	else if (IsA(plan, MergeAppend))
+		replace_iceberg_seqscan_list(((MergeAppend *) plan)->mergeplans, rtable);
+	else if (IsA(plan, BitmapAnd))
+		replace_iceberg_seqscan_list(((BitmapAnd *) plan)->bitmapplans, rtable);
+	else if (IsA(plan, BitmapOr))
+		replace_iceberg_seqscan_list(((BitmapOr *) plan)->bitmapplans, rtable);
+	else if (IsA(plan, SubqueryScan))
+	{
+		SubqueryScan *sub = (SubqueryScan *) plan;
+
+		sub->subplan = replace_iceberg_seqscan(sub->subplan, rtable);
+	}
+	/*
+	 * ModifyTable in this GPDB branch carries its single child subplan in
+	 * plan->lefttree; no additional handling needed beyond the generic
+	 * lefttree/righttree recursion above.
+	 */
+
+	return plan;
+}
+
+
+/* ------------------------------------------------------------------------
+ * planner_hook
+ *
+ * standard_planner (or a previous hook) is called first.  The returned
+ * PlannedStmt is then walked and any SeqScan targeting an Iceberg table
+ * is rewritten in-place as an Iceberg CustomScan.  The rewrite is
+ * independent of whether the plan was produced by PG planner or ORCA.
+ * ------------------------------------------------------------------------
+ */
+static planner_hook_type prev_planner_hook = NULL;
+
+static PlannedStmt *
+iceberg_planner_hook(Query *parse,
+					 const char *query_string,
+					 int cursorOptions,
+					 ParamListInfo boundParams,
+					 OptimizerOptions *optimizer_options)
+{
+	PlannedStmt	   *stmt;
+	ListCell	   *lc;
+
+	if (prev_planner_hook != NULL)
+		stmt = prev_planner_hook(parse, query_string, cursorOptions,
+								 boundParams, optimizer_options);
+	else
+		stmt = standard_planner(parse, query_string, cursorOptions,
+								boundParams, optimizer_options);
+
+	/*
+	 * Rewrite only on the QD: QE receives an already-planned PlannedStmt
+	 * and never re-enters the planner.
+	 */
+	if (Gp_role != GP_ROLE_DISPATCH)
+		return stmt;
+
+	stmt->planTree = replace_iceberg_seqscan(stmt->planTree, stmt->rtable);
+
+	foreach(lc, stmt->subplans)
+	{
+		Plan	   *sub = (Plan *) lfirst(lc);
+
+		lfirst(lc) = replace_iceberg_seqscan(sub, stmt->rtable);
+	}
+
+	return stmt;
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomScanMethods.CreateCustomScanState
+ * ------------------------------------------------------------------------
+ */
+static Node *
+IcebergCreateCustomScanState(CustomScan *cscan)
+{
+	IcebergCustomScanState *iss;
+
+	iss = (IcebergCustomScanState *) newNode(sizeof(IcebergCustomScanState),
+											 T_CustomScanState);
+	iss->css.methods = &IcebergCustomExecMethods;
+	iss->scanDesc = NULL;
+
+	return (Node *) iss;
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomExecMethods.BeginCustomScan
+ *
+ * Two jobs:
+ *
+ *   1. On the QD, (re)compute the Iceberg split list and stash it into the
+ *      plan node's custom_private *before* CdbDispatchPlan serialises the
+ *      PlannedStmt to the QE slices.  This mirrors the original kernel
+ *      behaviour of table_scan_get_am_private() in nodeSeqscan.c, which ran
+ *      on every ExecInitSeqScan and thus gave prepared statements fresh
+ *      splits on every EXECUTE.  If we populated custom_private at
+ *      planner_hook time instead, cached PlannedStmts would ship stale
+ *      splits on the second and later EXECUTEs.
+ *
+ *   2. Defer the FDW scan open (pg_iceberg_scan_begin_extractcolumns) until
+ *      the first tuple fetch in ExecCustomScan.  ExecInitCustomScan runs on
+ *      the QD even for CustomScan nodes that belong to a remote (QE) slice
+ *      (see execMain.c:InitPlan with eliminateAliens=false on QD), so an
+ *      eager open here would needlessly open Iceberg readers on the QD for
+ *      every segment-bound scan.
+ * ------------------------------------------------------------------------
+ */
+static void
+IcebergBeginCustomScan(CustomScanState *node, EState *estate, int eflags)
+{
+	IcebergCustomScanState *iss = (IcebergCustomScanState *) node;
+	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
+	Relation	rel = node->ss.ss_currentRelation;
+
+	if (Gp_role == GP_ROLE_DISPATCH)
+		cscan->custom_private =
+			pg_iceberg_build_scan_am_private(rel, NULL,
+											 external_table_limit_segment_num);
+
+	/* GPDB: the iceberg_volume_fdw layer reads ps.scandesc. */
+	node->ss.ps.scandesc = RelationGetDescr(rel);
+
+	iss->scanDesc = NULL;
+}
+
+static void
+iceberg_ensure_scan_open(IcebergCustomScanState *iss)
+{
+	CustomScanState *node = &iss->css;
+	Relation	rel;
+	EState	   *estate;
+	uint32		flags;
+
+	if (iss->scanDesc != NULL)
+		return;
+
+	rel = node->ss.ss_currentRelation;
+	estate = node->ss.ps.state;
+	flags = SO_TYPE_SEQSCAN | SO_ALLOW_STRAT | SO_ALLOW_SYNC |
+			SO_ALLOW_PAGEMODE;
+
+	iss->scanDesc = pg_iceberg_scan_begin_extractcolumns(rel,
+														 estate->es_snapshot,
+														 0, NULL, NULL,
+														 &node->ss.ps,
+														 flags);
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomExecMethods.ExecCustomScan
+ * ------------------------------------------------------------------------
+ */
+static TupleTableSlot *
+IcebergAccessScan(CustomScanState *node)
+{
+	IcebergCustomScanState *iss = (IcebergCustomScanState *) node;
+	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+
+	iceberg_ensure_scan_open(iss);
+
+	if (pg_iceberg_getnextslot(iss->scanDesc, ForwardScanDirection, slot))
+		return slot;
+
+	return NULL;
+}
+
+static bool
+IcebergRecheckScan(CustomScanState *node, TupleTableSlot *slot)
+{
+	return true;
+}
+
+static TupleTableSlot *
+IcebergExecCustomScan(CustomScanState *node)
+{
+	return ExecScan(&node->ss,
+					(ExecScanAccessMtd) IcebergAccessScan,
+					(ExecScanRecheckMtd) IcebergRecheckScan);
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomExecMethods.EndCustomScan
+ * ------------------------------------------------------------------------
+ */
+static void
+IcebergEndCustomScan(CustomScanState *node)
+{
+	IcebergCustomScanState *iss = (IcebergCustomScanState *) node;
+
+	if (iss->scanDesc != NULL)
+	{
+		pg_iceberg_endscan(iss->scanDesc);
+		iss->scanDesc = NULL;
+	}
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomExecMethods.ReScanCustomScan
+ * ------------------------------------------------------------------------
+ */
+static void
+IcebergReScanCustomScan(CustomScanState *node)
+{
+	IcebergCustomScanState *iss = (IcebergCustomScanState *) node;
+
+	if (iss->scanDesc != NULL)
+		pg_iceberg_rescan(iss->scanDesc, NULL, false, false, false, false);
+}
+
+
+/* ------------------------------------------------------------------------
+ * CustomExecMethods.ExplainCustomScan
+ * ------------------------------------------------------------------------
+ */
+static void
+IcebergExplainCustomScan(CustomScanState *node, List *ancestors,
+						 ExplainState *es)
+{
+	/*
+	 * The core EXPLAIN machinery already prints the scanned relation
+	 * name and the output targetlist for CustomScan nodes.  Nothing
+	 * Iceberg-specific to add at this stage.
+	 */
+}
+
+
+/* ------------------------------------------------------------------------
+ * Install entry point (called once from _PG_init)
+ * ------------------------------------------------------------------------
+ */
+void
+pg_iceberg_install_custom_scan(void)
+{
+	RegisterCustomScanMethods(&IcebergCustomScanMethods);
+
+	prev_planner_hook = planner_hook;
+	planner_hook = iceberg_planner_hook;
+}

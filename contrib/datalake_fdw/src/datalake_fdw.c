@@ -70,6 +70,7 @@
 #include "am_iceberg/include/pg_iceberg_guc.h"
 #include "am_iceberg/include/pg_iceberg_ddl.h"
 #include "am_iceberg/include/pg_iceberg_extensible.h"
+#include "am_iceberg/include/pg_iceberg_custom_scan.h"
 
 
 PG_MODULE_MAGIC;
@@ -401,6 +402,7 @@ _PG_init(void)
 
 	pg_iceberg_init_gucs();
 	pg_iceberg_register_extensible_nodes();
+	pg_iceberg_install_custom_scan();
 
 	datalake_prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = datalake_ProcessUtility;

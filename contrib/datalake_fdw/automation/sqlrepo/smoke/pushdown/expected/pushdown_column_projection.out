@@ -116,28 +116,28 @@ SELECT price, quantity FROM proj_test WHERE is_active = true ORDER BY price;
 -- Test 5: EXPLAIN shows column projection
 -- ============================================================
 EXPLAIN (COSTS OFF) SELECT id FROM proj_test WHERE id = 1;
-                QUERY PLAN                
-------------------------------------------
+                  QUERY PLAN                   
+-----------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on proj_test
+   ->  Custom Scan (Iceberg Scan) on proj_test
          Filter: (id = 1)
  Optimizer: GPORCA
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT id, name FROM proj_test WHERE price > 100;
-                QUERY PLAN                
-------------------------------------------
+                  QUERY PLAN                   
+-----------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on proj_test
+   ->  Custom Scan (Iceberg Scan) on proj_test
          Filter: (price > '100'::numeric)
  Optimizer: GPORCA
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM proj_test;
-                QUERY PLAN                
-------------------------------------------
+                  QUERY PLAN                   
+-----------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on proj_test
+   ->  Custom Scan (Iceberg Scan) on proj_test
  Optimizer: GPORCA
 (3 rows)
 
