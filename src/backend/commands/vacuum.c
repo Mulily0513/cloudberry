@@ -336,18 +336,6 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 
 	params.auto_stats = auto_stats;
 
-	/*
-	 * VacuumParams lives on the stack and is populated field-by-field
-	 * (no MemSet), so vacuum_private must be explicitly initialised:
-	 * analyze_rel() reads it downstream and leaving stack garbage would
-	 * crash ANALYZE on AMs that consume the dispatch-private carrier
-	 * (e.g. Iceberg).  The ANALYZE-via-SRF path in analyzefuncs.c
-	 * (gp_acquire_sample_rows_ext) zeroes params with MemSet and
-	 * populates this field itself; the VACUUM dispatch path no longer
-	 * carries it.
-	 */
-	params.vacuum_private = NIL;
-
 	/* Now go through the common routine */
 	vacuum(vacstmt->rels, &params, NULL, isTopLevel);
 }

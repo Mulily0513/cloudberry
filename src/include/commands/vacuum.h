@@ -307,8 +307,6 @@ typedef struct VacuumParams
 	 */
 	int			nworkers;
 	bool auto_stats;      /* invoked via automatic statistic collection */
-	List	   *vacuum_private;	/* AM-specific task list for distributed
-								 * VACUUM private dispatch (QE execution) */
 } VacuumParams;
 
 typedef struct
