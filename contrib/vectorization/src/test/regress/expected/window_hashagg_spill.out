@@ -3,6 +3,7 @@
 -- spills to disk when work_mem is insufficient to hold all partition data.
 -- Enable vectorization and WindowHashAgg plan generation
 SET vector.enable_vectorization = on;
+SET optimizer = on;
 SET optimizer_force_window_hash_agg = on;
 -- Use PAX storage (required for vectorization)
 SET default_table_access_method = pax;
@@ -44,7 +45,7 @@ FROM (
 ) sub
 GROUP BY partition_col
 ORDER BY partition_col;
- partition_col | cnt | sum_min | sum_max
+ partition_col | cnt | sum_min | sum_max 
 ---------------+-----+---------+---------
              0 | 500 |    6500 |  496500
              1 | 500 |       0 |  490000
@@ -89,7 +90,7 @@ FROM (
 ) sub
 GROUP BY partition_col
 ORDER BY partition_col;
- partition_col | cnt | sum_min | sum_max
+ partition_col | cnt | sum_min | sum_max 
 ---------------+-----+---------+---------
              0 | 500 |    6500 |  496500
              1 | 500 |       0 |  490000
@@ -124,7 +125,7 @@ FROM (
         row_number() OVER (PARTITION BY partition_col ORDER BY order_col) AS rn
     FROM winagg_spill_t1
 ) sub;
- count | min | max
+ count | min | max 
 -------+-----+-----
  10000 |   1 | 500
 (1 row)
@@ -148,7 +149,7 @@ FROM (
     GROUP BY partition_col
 ) sub
 ORDER BY partition_col;
- partition_col | max_rank
+ partition_col | max_rank 
 ---------------+----------
              0 |      500
              1 |      500
@@ -190,7 +191,7 @@ FROM (
 ) sub
 ORDER BY order_col
 LIMIT 10;
- partition_col | order_col | value | cum_sum
+ partition_col | order_col | value | cum_sum 
 ---------------+-----------+-------+---------
              0 |         1 |   153 |     153
              0 |         2 |   293 |     446
@@ -220,7 +221,7 @@ FROM (
         rank() OVER (PARTITION BY partition_col ORDER BY value) AS rnk
     FROM winagg_spill_t1
 ) sub;
- total_rows | num_partitions | first_rows | top3_per_partition
+ total_rows | num_partitions | first_rows | top3_per_partition 
 ------------+----------------+------------+--------------------
       10000 |             20 |         20 |                200
 (1 row)
@@ -232,4 +233,5 @@ RESET work_mem;
 DROP TABLE winagg_spill_t1;
 RESET optimizer_force_window_hash_agg;
 RESET default_table_access_method;
+RESET optimizer;
 RESET vector.enable_vectorization;

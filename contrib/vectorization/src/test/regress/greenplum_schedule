@@ -200,3 +200,7 @@ test: create_extension_fail
 
 # vectorized cross-slice ShareInputScan (producer notify / reader wait, squelch, ExecEnd guards)
 test: shared_scan_vec
+
+# vectorized WindowHashAgg spill (incl. concurrent path)
+test: window_hashagg_spill
+test: window_hashagg_spill_parallel

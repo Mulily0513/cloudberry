@@ -4,6 +4,7 @@
 
 -- Enable vectorization and WindowHashAgg plan generation
 SET vector.enable_vectorization = on;
+SET optimizer = on;
 SET optimizer_force_window_hash_agg = on;
 
 -- Use PAX storage (required for vectorization)
@@ -167,4 +168,5 @@ DROP TABLE winagg_spill_t1;
 
 RESET optimizer_force_window_hash_agg;
 RESET default_table_access_method;
+RESET optimizer;
 RESET vector.enable_vectorization;
