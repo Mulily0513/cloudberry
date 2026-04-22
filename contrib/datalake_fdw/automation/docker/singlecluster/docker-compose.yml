@@ -36,6 +36,14 @@ services:
       - ./data/logs:/var/log/lakehouse
       - ./:/workspace
       - ./scripts/start-all.sh:/opt/start-all.sh
+    # The Dockerfile sets ENTRYPOINT=["/opt/start-all.sh"]. Without an explicit
+    # empty entrypoint here, compose's `command` becomes ARGV to that script,
+    # so start-all.sh auto-runs at container boot — and then
+    # `datalake-smoke-env-wait` kicks off a second instance via `docker exec`,
+    # racing on CREATE USER hive and deadlocking the startup. Clear the
+    # entrypoint so the container truly idles and only the exec'd invocation
+    # starts services.
+    entrypoint: []
     command: ["tail","-f","/dev/null"]
     networks:
       - share-enterprise-ci
