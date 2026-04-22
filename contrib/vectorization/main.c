@@ -250,15 +250,15 @@ _PG_init(void)
                             GUC_GPDB_NEED_SYNC,
                             NULL, NULL, NULL);
 
-    DefineCustomIntVariable("vector.winagg_spill_work_mem",
-                            "Memory budget for window hash aggregate spill. "
-                            "0 means use work_mem.",
+    DefineCustomIntVariable("vector.winagg_spill_memory_mb",
+                            "Memory budget in MB for window aggregate spill. "
+                            "0 means disabled (no spill).",
                             NULL,
-                            &winagg_spill_work_mem,
-                            0,
-                            0, MAX_KILOBYTES,
+                            &winagg_spill_memory_mb,
+                            512,
+                            0, INT_MAX,
                             PGC_USERSET,
-                            GUC_UNIT_KB | GUC_GPDB_NEED_SYNC,
+                            GUC_GPDB_NEED_SYNC,
                             NULL, NULL, NULL);
 
     DefineCustomIntVariable("vector.topk_bound_threshold",
