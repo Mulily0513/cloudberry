@@ -3532,143 +3532,6 @@ BuildAggregatation(List *aggInfos, GArrowExecuteNode *input, PlanBuildContext *p
 	return garrow_move_ptr(aggregate);
 }
 
-/*
- * Spill file callback wrappers for vectorized WindowAgg.
- *
- * Arrow's SpillFile expects sequential read/write callbacks without explicit
- * offsets, but PG's FileRead/FileWrite require explicit offsets. We track
- * file positions in a dynamically-grown array indexed by VFD File number.
- * VFD numbers can be arbitrarily large, so we grow the array on demand.
- */
-static int64 *vec_spill_file_pos = NULL;
-static int    vec_spill_file_pos_size = 0;
-
-/*
- * Ensure the position tracking array is large enough for the given VFD.
- * Allocates in TopMemoryContext so it persists across queries.
- */
-static void
-vec_spill_ensure_pos(int fd)
-{
-	if (fd < vec_spill_file_pos_size)
-		return;
-
-	{
-		int		new_size = Max(fd + 1, vec_spill_file_pos_size * 2);
-		int64  *new_arr;
-
-		if (new_size < 64)
-			new_size = 64;
-
-		new_arr = (int64 *) MemoryContextAllocZero(TopMemoryContext,
-												   new_size * sizeof(int64));
-		if (vec_spill_file_pos != NULL)
-		{
-			memcpy(new_arr, vec_spill_file_pos,
-				   vec_spill_file_pos_size * sizeof(int64));
-			pfree(vec_spill_file_pos);
-		}
-		vec_spill_file_pos = new_arr;
-		vec_spill_file_pos_size = new_size;
-	}
-}
-
-static int32_t
-vec_spill_create(const char *file_name, char create,
-				 char delonclose, char interXact)
-{
-	File	fd;
-
-	/*
-	 * The create and delonclose parameters from Arrow's callback signature
-	 * are intentionally unused.  All Arrow callers pass create=1 (always
-	 * create a new file); OpenTemporaryFile always creates with implicit
-	 * delete-on-close semantics, which matches the expected lifecycle.
-	 */
-	fd = OpenTemporaryFile((bool) interXact, file_name);
-	if (fd <= 0)
-		return -1;
-
-	vec_spill_ensure_pos((int) fd);
-	vec_spill_file_pos[fd] = 0;
-
-	return (int32_t) fd;
-}
-
-static void
-vec_spill_close(int32_t file)
-{
-	if (file >= 0 && file < vec_spill_file_pos_size)
-		vec_spill_file_pos[file] = 0;
-
-	FileClose((File) file);
-}
-
-static int32_t
-vec_spill_write(int32_t file, char *buffer, int32_t amount)
-{
-	int		written;
-	off_t	pos;
-
-	Assert(file >= 0 && file < vec_spill_file_pos_size);
-
-	pos = (off_t) vec_spill_file_pos[file];
-	written = FileWrite((File) file, buffer, amount, pos,
-						WAIT_EVENT_DATA_FILE_WRITE);
-	if (written > 0)
-		vec_spill_file_pos[file] += written;
-
-	return (int32_t) written;
-}
-
-static int32_t
-vec_spill_read(int32_t file, char *buffer, int32_t amount)
-{
-	int		nread;
-	off_t	pos;
-
-	Assert(file >= 0 && file < vec_spill_file_pos_size);
-
-	pos = (off_t) vec_spill_file_pos[file];
-	nread = FileRead((File) file, buffer, amount, pos,
-					 WAIT_EVENT_DATA_FILE_READ);
-	if (nread > 0)
-		vec_spill_file_pos[file] += nread;
-
-	return (int32_t) nread;
-}
-
-static int64_t
-vec_spill_seek(int32_t file, int64_t offset, int32_t whence)
-{
-	Assert(file >= 0 && file < vec_spill_file_pos_size);
-
-	switch (whence)
-	{
-		case SEEK_SET:
-			vec_spill_file_pos[file] = offset;
-			break;
-		case SEEK_CUR:
-			vec_spill_file_pos[file] += offset;
-			break;
-		case SEEK_END:
-		{
-			off_t	size = FileSize((File) file);
-
-			if (size == (off_t) -1)
-				return -1;
-			vec_spill_file_pos[file] = size + offset;
-			break;
-		}
-		default:
-			return -1;
-	}
-
-	if (vec_spill_file_pos[file] < 0)
-		return -1;
-
-	return (int64_t) vec_spill_file_pos[file];
-}
 
 static GArrowAggregateNodeOptions *
 build_aggregatation_options(GList *aggregations, PlanBuildContext *pcontext)
@@ -3689,25 +3552,67 @@ build_aggregatation_options(GList *aggregations, PlanBuildContext *pcontext)
 	}
 	else if (IsA(pcontext->planstate, WindowHashAggState))
 	{
-		GArrowMergeSortFileOps spill_ops;
+		if (winagg_spill_memory_mb <= 0)
+		{
+			/*
+			 * Spill disabled by GUC — use the plain parallel-window variant
+			 * (same call WindowAggState uses, no spill_file_base / no mkdir)
+			 * so the spill plumbing never sees a zero budget.
+			 */
+			options =
+				garrow_general_aggregate_node_options_new(aggregations,
+														pcontext->keys,
+														pcontext->nkey,
+														garrow_aggregate_get_parallel_window_mode(),
+														pcontext->orderby_sortoption,
+														&error);
+		}
+		else
+		{
+			char spill_dir[MAXPGPATH];
+			char spill_file_base[MAXPGPATH];
 
-		spill_ops.create = vec_spill_create;
-		spill_ops.close  = vec_spill_close;
-		spill_ops.write  = vec_spill_write;
-		spill_ops.read   = vec_spill_read;
-		spill_ops.seek   = vec_spill_seek;
+			/*
+			 * Build absolute path for SpillableBatchStore / Path B merge-sort.
+			 * Files land in $DataDir/base/pgsql_tmp/ with prefix
+			 * pgsql_tmp_vec_spill_{PID}_{plan_node_id}_ so on_proc_exit's
+			 * CleanupArrowSpillFiles (and GP's post-crash RemovePgTempFiles
+			 * sweep) pick them up. We deliberately do NOT wire any file_ops
+			 * here: arrow substitutes its own POSIX-backed
+			 * DefaultExternalSortFileOps() when the callback set is empty,
+			 * matching the SortOptions pattern.
+			 *
+			 * pgsql_tmp is created lazily by OpenTemporaryFile, so on a fresh
+			 * cluster (no prior temp file activity) the directory may not
+			 * exist yet. Arrow's file_ops has a best-effort mkdir fallback,
+			 * but do it explicitly here so permission / disk-full issues
+			 * surface with a proper PG error message instead of a generic
+			 * ENOENT from open().
+			 */
+			snprintf(spill_dir, sizeof(spill_dir), "%s/base/%s",
+					 DataDir, PG_TEMP_FILES_DIR);
+			if (MakePGDirectory(spill_dir) < 0 && errno != EEXIST)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create temporary file directory \"%s\": %m",
+								spill_dir)));
+			snprintf(spill_file_base, sizeof(spill_file_base),
+					 "%s/%s_%s_%d_%d", spill_dir,
+					 PG_TEMP_FILE_PREFIX, VEC_SPILL_FILE_PREFIX,
+					 MyProcPid, pcontext->planstate->plan->plan_node_id);
 
-		options =
-			garrow_general_aggregate_node_options_new_with_spill(
-													aggregations,
-													pcontext->keys,
-													pcontext->nkey,
-													garrow_aggregate_get_parallel_window_mode(),
-													pcontext->orderby_sortoption,
-													&spill_ops,
-													"winagg_spill",
-													(gint64) (winagg_spill_work_mem > 0 ? winagg_spill_work_mem : work_mem) * 1024L,
-													&error);
+			options =
+				garrow_general_aggregate_node_options_new_with_spill(
+														aggregations,
+														pcontext->keys,
+														pcontext->nkey,
+														garrow_aggregate_get_parallel_window_mode(),
+														pcontext->orderby_sortoption,
+														NULL,
+														spill_file_base,
+														(gint64) winagg_spill_memory_mb * 1024L * 1024L,
+														&error);
+		}
 	}
 	else if (pcontext->aggstrategy == AGG_SORTED)
 		options = garrow_ordered_aggregate_node_options_new(aggregations,
