@@ -994,14 +994,6 @@ typedef struct TableAmRoutine
 
 	List *		(*transform_column_encoding_clauses) (Relation, List *encoding_opts, bool validate, bool optionFromType);
 
-	/*
-	 * Get AM-specific data (e.g. file splits) to be attached to the SeqScan
-	 * plan node on QD and dispatched to QE.
-	 *
-	 * Returns a List* that will be assigned to SeqScan->am_private.
-	 */
-	List *(*scan_get_am_private) (Relation rel, struct PlanState *ps);
-
 } TableAmRoutine;
 
 

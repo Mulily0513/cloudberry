@@ -596,11 +596,6 @@ _copySeqScan(const SeqScan *from)
 	 */
 	CopyScanFields((const Scan *) from, (Scan *) newnode);
 
-	/*
-	 * copy remainder of node
-	 */
-	COPY_NODE_FIELD(am_private);
-
 	return newnode;
 }
 

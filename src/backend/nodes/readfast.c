@@ -949,11 +949,7 @@ _readSequence(void)
 static void
 readSeqScanFields(SeqScan *local_node)
 {
-	READ_TEMP_LOCALS();
-
 	ReadCommonScan(&local_node->scan);
-
-	READ_NODE_FIELD(am_private);
 }
 
 static DynamicSeqScan *

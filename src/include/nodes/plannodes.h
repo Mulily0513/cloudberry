@@ -564,12 +564,6 @@ typedef struct Scan
 typedef struct SeqScan
 {
 	Scan		scan;
-
-	/*
-	 * private data for third-party AMs (e.g. Iceberg) to pass file splits
-	 * from QD to QE
-	 */
-	List	   *am_private;
 } SeqScan;
 
 /* ----------------

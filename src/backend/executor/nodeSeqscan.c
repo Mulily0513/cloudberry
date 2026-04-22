@@ -224,16 +224,6 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
 
 	/*
-	 * If we are on the QD, try to get AM-specific data (e.g. file splits) to
-	 * attach to the plan node before dispatch.
-	 */
-	if (Gp_role == GP_ROLE_DISPATCH)
-	{
-		node->am_private = table_scan_get_am_private(currentRelation,
-													 &scanstate->ss.ps);
-	}
-
-	/*
 	 * check scan slot with bloom filters in seqscan node or not.
 	 */
 	if (gp_enable_runtime_filter_pushdown
