@@ -249,6 +249,7 @@ typedef struct VecShareInputScanState
 	int is_cross_slice;
 	bool ready;
 	bool is_producer;
+	bool writer_ready_synced;
 } VecShareInputScanState;
 
 typedef struct VecAggStatePerAggData 

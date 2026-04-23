@@ -186,6 +186,7 @@ typedef struct shareinput_local_state
 	Tuplestorestate *ts_state;
 } shareinput_local_state;
 
+static shareinput_Xslice_reference *get_shareinput_reference_vec(int share_id);
 static void release_shareinput_reference_vec(shareinput_Xslice_reference *ref);
 
 static void shareinput_writer_notifyready_vec(shareinput_Xslice_reference *ref);
@@ -345,7 +346,44 @@ init_tuplestore_state_vec(ShareInputScanState *node)
 static TupleTableSlot *
 ExecVecShareInputScan(PlanState *pstate)
 {
-	return ExecuteVecPlan(&((VecShareInputScanState*)pstate)->estate);
+	VecShareInputScanState *vsisstate = (VecShareInputScanState *) pstate;
+	ShareInputScanState *sisstate = (ShareInputScanState *) pstate;
+	ShareInputScan *sisc = (ShareInputScan *) pstate->plan;
+
+	/*
+	 * Cross-slice coordination using GP's ConditionVariable mechanism.
+	 *
+	 * For Reader: wait for Writer to be ready before starting the Arrow plan.
+	 * This prevents SharedSourceNode::SyncReader() from blocking in
+	 * StartProducing() for up to 1000s waiting for the .ready file.
+	 *
+	 * For Writer (Producer): after the Arrow plan has started and materialized
+	 * data, notify all Reader slices that the data is ready.
+	 * The Arrow ShareScanNode writes data during plan execution (start+wait),
+	 * so we notify right after the first ExecuteVecPlan call (plan is started).
+	 */
+	if (sisc->cross_slice && sisstate->ref)
+	{
+		if (vsisstate->ready && !vsisstate->writer_ready_synced)
+		{
+			/* Reader: wait for Writer */
+			shareinput_reader_waitready_vec(sisstate->ref);
+			vsisstate->writer_ready_synced = true;
+		}
+	}
+
+	TupleTableSlot *result = ExecuteVecPlan(&vsisstate->estate);
+
+	/* Writer: notify Readers after Arrow plan has started (data materialized) */
+	if (sisc->cross_slice && sisstate->ref &&
+		vsisstate->is_producer && !vsisstate->writer_ready_synced &&
+		vsisstate->estate.started)
+	{
+		shareinput_writer_notifyready_vec(sisstate->ref);
+		vsisstate->writer_ready_synced = true;
+	}
+
+	return result;
 }
 
 /*  ------------------------------------------------------------------
@@ -448,7 +486,12 @@ ExecInitVecShareInputScan(ShareInputScan *node, EState *estate, int eflags)
 		local_state->childState = childState;
 	sisstate->local_state = local_state;
 
-	sisstate->ref = NULL;
+	/* Get a lease on the shared state for cross-slice coordination */
+	if (node->cross_slice)
+		sisstate->ref = get_shareinput_reference_vec(node->share_id);
+	else
+		sisstate->ref = NULL;
+	vsisstate->writer_ready_synced = false;
 	vsisstate->gp_session_id = gp_session_id;
 	vsisstate->gp_command_count = gp_command_count;
 	vsisstate->share_id = node->share_id;
@@ -516,6 +559,25 @@ ExecEndVecShareInputScan(ShareInputScanState *node)
 			{
 				if (!local_state->ready)
 					init_tuplestore_state_vec(node);
+				else
+				{
+					/*
+					 * Arrow vectorized path: local_state->ready is set true
+					 * at ExecInitVecShareInputScan, so the call above is a
+					 * no-op here. Make sure Readers are unblocked before
+					 * shareinput_writer_waitdone_vec runs, in case neither
+					 * ExecVecShareInputScan nor ExecSquelch has notified yet
+					 * (e.g., executor abort during plan tree initialization).
+					 * Otherwise shareinput_writer_waitdone_vec would elog(ERROR)
+					 * on state->ready == 0 during cleanup, risking PANIC.
+					 */
+					VecShareInputScanState *vsisstate = (VecShareInputScanState *) node;
+					if (vsisstate->is_producer && !vsisstate->writer_ready_synced)
+					{
+						shareinput_writer_notifyready_vec(node->ref);
+						vsisstate->writer_ready_synced = true;
+					}
+				}
 				shareinput_writer_waitdone_vec(node->ref, sisc->nconsumers);
 			}
 			else
@@ -604,6 +666,24 @@ ExecSquelchVecShareInputScan(ShareInputScanState *node)
 				elog(DEBUG1, "SISC WRITER (shareid=%d, slice=%d): initializing because squelched",
 					 sisc->share_id, currentSliceId);
 				init_tuplestore_state_vec(node);
+			}
+			else
+			{
+				/*
+				 * Arrow vectorized path: local_state->ready is set true at
+				 * ExecInitVecShareInputScan, so the block above is a no-op
+				 * here. If the producer is squelched before ExecVecShareInputScan
+				 * ever runs (or before the Arrow plan materializes data),
+				 * Readers on other slices would block in
+				 * shareinput_reader_waitready_vec() waiting on the cross-slice
+				 * ConditionVariable. Notify them now so they can proceed.
+				 */
+				VecShareInputScanState *vsisstate = (VecShareInputScanState *) node;
+				if (vsisstate->is_producer && !vsisstate->writer_ready_synced)
+				{
+					shareinput_writer_notifyready_vec(node->ref);
+					vsisstate->writer_ready_synced = true;
+				}
 			}
 		}
 		else
@@ -695,6 +775,59 @@ get_shareinput_fileset_vec(void)
 	return shareinput_Xslice_fileset_vec;
 }
 
+
+/*
+ * Get or create a reference to a cross-slice shared scan state.
+ */
+static shareinput_Xslice_reference *
+get_shareinput_reference_vec(int share_id)
+{
+	shareinput_tag tag;
+	shareinput_Xslice_state *xslice_state;
+	bool		found;
+	shareinput_Xslice_reference *ref;
+
+	ref = MemoryContextAllocZero(TopMemoryContext,
+								 sizeof(shareinput_Xslice_reference));
+
+	LWLockAcquire(ShareInputScanLock, LW_EXCLUSIVE);
+
+	tag.session_id = gp_session_id;
+	tag.command_count = gp_command_count;
+	tag.share_id = share_id;
+	xslice_state = hash_search(shareinput_Xslice_hash,
+							   &tag,
+							   HASH_ENTER_NULL,
+							   &found);
+	if (!found)
+	{
+		if (xslice_state == NULL)
+		{
+			pfree(ref);
+			LWLockRelease(ShareInputScanLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of cross-slice ShareInputScan slots")));
+		}
+
+		xslice_state->refcount = 0;
+		pg_atomic_init_u32(&xslice_state->ready, 0);
+		pg_atomic_init_u32(&xslice_state->ndone, 0);
+
+		ConditionVariableInit(&xslice_state->ready_done_cv);
+	}
+
+	xslice_state->refcount++;
+
+	ref->share_id = share_id;
+	ref->xslice_state = xslice_state;
+	ref->owner = CurrentResourceOwner;
+	dlist_push_head(&shareinput_Xslice_refs_vec, &ref->node);
+
+	LWLockRelease(ShareInputScanLock);
+
+	return ref;
+}
 
 /*
  * Release reference to a shared scan.
