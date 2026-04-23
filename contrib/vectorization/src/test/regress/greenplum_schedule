@@ -207,3 +207,6 @@ test: sum_bigint
 # vectorized WindowHashAgg spill (incl. concurrent path)
 test: window_hashagg_spill
 test: window_hashagg_spill_parallel
+
+# vectorized HashJoin spill (multi-join collision, thread-safety, replay correctness)
+test: hashjoin_spill
