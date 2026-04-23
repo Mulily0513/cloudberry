@@ -117,6 +117,8 @@ ORDER BY 1, 2;
  pg_foreign_table_seg     | ftsoptions         | text[]
  pg_index                 | indexprs           | pg_node_tree
  pg_index                 | indpred            | pg_node_tree
+ pg_lake_table            | ltoptions          | text[]
+ pg_lake_table            | lttable_type       | text
  pg_largeobject           | data               | bytea
  pg_largeobject_metadata  | lomacl             | aclitem[]
  pg_resgroupcapability    | value              | text
@@ -138,7 +140,7 @@ ORDER BY 1, 2;
  pg_task_run_history      | return_message     | text
  pg_task_run_history      | status             | text
  pg_task_run_history      | username           | text
-(35 rows)
+(37 rows)
 
 -- start_ignore
 -- system catalogs without primary keys
@@ -156,6 +158,8 @@ ORDER BY 1;
  gp_distribution_policy
  gp_fastsequence
  gp_id
+ gp_matview_aux
+ gp_matview_tables
  gp_partition_template
  gp_segment_configuration
  gp_version_at_initdb
@@ -166,6 +170,7 @@ ORDER BY 1;
  pg_compression
  pg_depend
  pg_extprotocol
+ pg_foreign_table_seg
  pg_password_history
  pg_proc_callback
  pg_profile
@@ -178,7 +183,7 @@ ORDER BY 1;
  pg_stat_last_operation
  pg_stat_last_shoperation
  pg_type_encoding
-(26 rows)
+(29 rows)
 
 -- end_ignore
 -- system catalog unique indexes not wrapped in a constraint

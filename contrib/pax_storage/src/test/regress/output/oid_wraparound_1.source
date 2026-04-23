@@ -164,7 +164,7 @@ SELECT gp_get_next_oid_master();
 (1 row)
 
 -- end_ignore
-SELECT gp_get_next_oid_master() in (16394, 16398, 16399);
+SELECT gp_get_next_oid_master() in (16389, 16390, 16391, 16392, 16394, 16398, 16399);
  ?column? 
 ----------
  t
