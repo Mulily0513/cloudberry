@@ -381,6 +381,18 @@ datalakeDoRPC_once(datalake_gphadoop_context *context)
 		/* Use POST (upload) to send request body */
 		context->churl_handle = datalake_churl_init_upload(context->uri.data, context->churl_headers);
 
+		/*
+		 * Override the default "Content-Type: application/octet-stream"
+		 * set by datalake_churl_init_upload.  The dlagent /dlproxy/write
+		 * endpoint is annotated with consumes=APPLICATION_JSON_VALUE and
+		 * deserializes the body as a FileListRequest JSON object, so the
+		 * request must advertise Content-Type: application/json or Spring
+		 * will reject it with HttpMediaTypeNotSupportedException before
+		 * the handler is invoked.
+		 */
+		datalake_churl_headers_override(context->churl_headers,
+										"Content-Type", "application/json");
+
 		/* Write JSON data to request body */
 		datalake_churl_write(context->churl_handle, json_data.data, json_data.len);
 
