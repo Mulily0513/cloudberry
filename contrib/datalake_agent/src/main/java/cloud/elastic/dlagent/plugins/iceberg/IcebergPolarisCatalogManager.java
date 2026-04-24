@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package cloud.elastic.dlagent.plugins.iceberg;
 
 import cloud.elastic.dlagent.api.model.RequestContext;
@@ -14,6 +33,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,6 +83,7 @@ public class IcebergPolarisCatalogManager {
     // Operation names for exceptions
     private static final String OP_CREATE_CATALOG = "createCatalog";
     private static final String OP_LIST_CATALOGS = "listCatalogs";
+    private static final String OP_LIST_NAMESPACES = "listNamespaces";
     private static final String OP_GET_TOKEN = "getToken";
 
     // HTTP status codes
@@ -70,6 +91,15 @@ public class IcebergPolarisCatalogManager {
     private static final int HTTP_CREATED = 201;
     private static final int HTTP_CONFLICT = 409;
     private static final int HTTP_BAD_REQUEST = 400;
+
+    // HTTP timeouts (ms) to avoid blocking indefinitely on a hung Polaris service
+    private static final int CONNECT_TIMEOUT_MS = 5_000;
+    private static final int READ_TIMEOUT_MS = 30_000;
+
+    private static void applyTimeouts(HttpURLConnection conn) {
+        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(READ_TIMEOUT_MS);
+    }
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -100,6 +130,7 @@ public class IcebergPolarisCatalogManager {
 
             String requestBody = objectMapper.writeValueAsString(payload);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            applyTimeouts(conn);
             conn.setRequestMethod(HTTP_POST);
             conn.setRequestProperty(HEADER_AUTHORIZATION, BEARER_PREFIX + token);
             conn.setRequestProperty(HEADER_POLARIS_REALM, realm);
@@ -134,6 +165,9 @@ public class IcebergPolarisCatalogManager {
                 );
             }
 
+            /* Management-path operation; free the socket eagerly to avoid
+             * keep-alive reuse stalls from the unconsumed response body. */
+            conn.disconnect();
             return responseCode == HTTP_CREATED || responseCode == HTTP_CONFLICT;
         } catch (Exception e) {
             if (e instanceof cloud.elastic.dlagent.service.rest.CatalogOperationException) {
@@ -154,9 +188,20 @@ public class IcebergPolarisCatalogManager {
 
             URL url = new URL(polarisBaseUrl + CATALOGS_ENDPOINT);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty(HEADER_AUTHORIZATION, "Bearer " + token);
+            applyTimeouts(conn);
+            conn.setRequestMethod(HTTP_GET);
+            conn.setRequestProperty(HEADER_AUTHORIZATION, BEARER_PREFIX + token);
             conn.setRequestProperty(HEADER_POLARIS_REALM, realm);
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode != HTTP_OK) {
+                throw new cloud.elastic.dlagent.service.rest.CatalogOperationException(
+                    OP_LIST_CATALOGS,
+                    responseCode,
+                    readErrorBody(conn),
+                    "Failed to list Polaris catalogs"
+                );
+            }
 
             try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
                 StringBuilder response = new StringBuilder();
@@ -167,16 +212,38 @@ public class IcebergPolarisCatalogManager {
                 JsonNode json = objectMapper.readTree(response.toString());
 
                 List<String> catalogs = new ArrayList<>();
-                if (json.has("catalogs")) {
-                    for (JsonNode catalog : json.get("catalogs")) {
-                        catalogs.add(catalog.get("name").asText());
+                if (json.has(FIELD_CATALOGS)) {
+                    for (JsonNode catalog : json.get(FIELD_CATALOGS)) {
+                        /* path() returns a MissingNode for absent fields,
+                         * avoiding NPE on malformed responses. */
+                        catalogs.add(catalog.path(FIELD_NAME).asText());
                     }
                 }
                 return catalogs;
             }
         } catch (Exception e) {
+            if (e instanceof cloud.elastic.dlagent.service.rest.CatalogOperationException) {
+                throw e;
+            }
             log.error("Failed to list Polaris catalogs", e);
             throw e;
+        }
+    }
+
+    private static String readErrorBody(HttpURLConnection conn) {
+        InputStream err = conn.getErrorStream();
+        if (err == null) {
+            return "";
+        }
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(err, StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line);
+            }
+            return sb.toString();
+        } catch (Exception ignored) {
+            return "";
         }
     }
 
@@ -188,11 +255,23 @@ public class IcebergPolarisCatalogManager {
             String polarisBaseUrl = getPolarisBaseUrl(context);
             String realm = getRealm(context);
 
-            URL url = new URL(polarisBaseUrl + "/api/catalog/v1/" + catalogName + "/namespaces");
+            String encodedCatalog = URLEncoder.encode(catalogName, StandardCharsets.UTF_8.name());
+            URL url = new URL(polarisBaseUrl + "/api/catalog/v1/" + encodedCatalog + "/namespaces");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            applyTimeouts(conn);
             conn.setRequestMethod(HTTP_GET);
             conn.setRequestProperty(HEADER_AUTHORIZATION, BEARER_PREFIX + token);
             conn.setRequestProperty(HEADER_POLARIS_REALM, realm);
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode != HTTP_OK) {
+                throw new cloud.elastic.dlagent.service.rest.CatalogOperationException(
+                    OP_LIST_NAMESPACES,
+                    responseCode,
+                    readErrorBody(conn),
+                    "Failed to list Polaris namespaces for catalog: " + catalogName
+                );
+            }
 
             try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
                 StringBuilder response = new StringBuilder();
@@ -204,13 +283,29 @@ public class IcebergPolarisCatalogManager {
 
                 List<String> namespaces = new ArrayList<>();
                 if (json.has("namespaces")) {
+                    /* Iceberg REST spec: each namespace is an array of
+                     * string levels (e.g. ["a","b"]); join with '.'. */
                     for (JsonNode namespace : json.get("namespaces")) {
-                        namespaces.add(namespace.asText());
+                        if (namespace.isArray()) {
+                            StringBuilder joined = new StringBuilder();
+                            for (JsonNode level : namespace) {
+                                if (joined.length() > 0) {
+                                    joined.append('.');
+                                }
+                                joined.append(level.asText());
+                            }
+                            namespaces.add(joined.toString());
+                        } else {
+                            namespaces.add(namespace.asText());
+                        }
                     }
                 }
                 return namespaces;
             }
         } catch (Exception e) {
+            if (e instanceof cloud.elastic.dlagent.service.rest.CatalogOperationException) {
+                throw e;
+            }
             log.error("Failed to list Polaris namespaces for catalog: {}", catalogName, e);
             throw e;
         }
@@ -278,18 +373,29 @@ public class IcebergPolarisCatalogManager {
     }
 
     private String getToken(RequestContext context) throws Exception {
+        /* Fail fast if credentials are missing rather than silently falling
+         * back to the well-known "root:secret" Polaris test account. */
         String clientId = context.getConfiguration().get(
-                IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.CLIENT_ID, "root");
+                IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.CLIENT_ID, "");
         String clientSecret = context.getConfiguration().get(
-                IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.CLIENT_SECRET, "secret");
+                IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.CLIENT_SECRET, "");
+        if (clientId.isEmpty() || clientSecret.isEmpty()) {
+            throw new IllegalStateException(
+                    "Polaris OAuth credentials are missing: set client_id and "
+                            + "client_secret on the foreign catalog options.");
+        }
         String scope = context.getConfiguration().get(
                 IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.SCOPE, "PRINCIPAL_ROLE:ALL");
 
-        String body = OAUTH_GRANT_TYPE + OAUTH_CLIENT_ID_PARAM + clientId +
-                OAUTH_CLIENT_SECRET_PARAM + clientSecret + OAUTH_SCOPE_PARAM + scope;
+        String charset = StandardCharsets.UTF_8.name();
+        String body = OAUTH_GRANT_TYPE +
+                OAUTH_CLIENT_ID_PARAM + URLEncoder.encode(clientId, charset) +
+                OAUTH_CLIENT_SECRET_PARAM + URLEncoder.encode(clientSecret, charset) +
+                OAUTH_SCOPE_PARAM + URLEncoder.encode(scope, charset);
 
         URL url = new URL(getPolarisBaseUrl(context) + OAUTH_TOKEN_ENDPOINT);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        applyTimeouts(conn);
         conn.setRequestMethod(HTTP_POST);
         conn.setRequestProperty(HEADER_CONTENT_TYPE, CONTENT_TYPE_FORM);
         conn.setRequestProperty(HEADER_POLARIS_REALM, getRealm(context));
@@ -301,15 +407,9 @@ public class IcebergPolarisCatalogManager {
 
         int responseCode = conn.getResponseCode();
         if (responseCode != HTTP_OK) {
-            String errorResponse = "";
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getErrorStream()))) {
-                StringBuilder response = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) {
-                    response.append(line);
-                }
-                errorResponse = response.toString();
-            }
+            /* getErrorStream() may be null (e.g. server closed without body);
+             * readErrorBody() handles that safely. */
+            String errorResponse = readErrorBody(conn);
 
             throw new cloud.elastic.dlagent.service.rest.CatalogOperationException(
                 OP_GET_TOKEN,
@@ -326,16 +426,19 @@ public class IcebergPolarisCatalogManager {
                 response.append(line);
             }
             String responseBody = response.toString();
-            log.debug("OAuth token response: {}", responseBody);
+            /* Do not log responseBody: it carries the access_token. */
+            log.debug("OAuth token response received successfully");
 
             try {
                 JsonNode json = objectMapper.readTree(responseBody);
                 JsonNode tokenNode = json.get(FIELD_ACCESS_TOKEN);
                 if (tokenNode == null) {
+                    /* Do not pass responseBody — it may contain credential data
+                     * that would leak via getMessage() when logged. */
                     throw new cloud.elastic.dlagent.service.rest.CatalogOperationException(
                         OP_GET_TOKEN,
                         HTTP_OK,
-                        responseBody,
+                        "",
                         "OAuth response missing access_token field"
                     );
                 }
@@ -344,10 +447,12 @@ public class IcebergPolarisCatalogManager {
                 if (e instanceof cloud.elastic.dlagent.service.rest.CatalogOperationException) {
                     throw e;
                 }
+                /* Do not pass responseBody — partial/malformed OAuth responses
+                 * may still contain credential fragments. */
                 throw new cloud.elastic.dlagent.service.rest.CatalogOperationException(
                     OP_GET_TOKEN,
                     HTTP_OK,
-                    responseBody,
+                    "",
                     "Failed to parse OAuth token response: " + e.getMessage()
                 );
             }

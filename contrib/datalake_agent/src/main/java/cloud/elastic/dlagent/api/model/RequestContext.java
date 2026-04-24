@@ -56,9 +56,9 @@ public class RequestContext {
 
     private String icebergConfigJsonString;
 
-    private Map<String, String> gopherProperties;
+    private Map<String, String> gopherProperties = new HashMap<>();
 
-    private Map<String, String> buildInCatalogProperties;
+    private Map<String, String> buildInCatalogProperties = new HashMap<>();
 
     private String icebergConfigVersion;
 
@@ -329,7 +329,7 @@ public class RequestContext {
     }
 
     public void setGopherProperties(Map<String, String> gopherProperties) {
-        this.gopherProperties = gopherProperties != null ? new HashMap<>(gopherProperties) : null;
+        this.gopherProperties = gopherProperties != null ? new HashMap<>(gopherProperties) : new HashMap<>();
     }
 
     public Map<String, String> getGopherProperties() {
@@ -337,11 +337,7 @@ public class RequestContext {
     }
 
     public void setBuildInCatalogProperties(Map<String, String> buildInCatalogProperties) {
-        this.buildInCatalogProperties = buildInCatalogProperties != null ? new HashMap<>(buildInCatalogProperties) : null;
-    }
-
-    public Map<String, String> getBuildInCatalogPropertiesProperties() {
-        return buildInCatalogProperties;
+        this.buildInCatalogProperties = buildInCatalogProperties != null ? new HashMap<>(buildInCatalogProperties) : new HashMap<>();
     }
 
     public void setIcebergConfigJsonString(String icebergConfigJsonString) {

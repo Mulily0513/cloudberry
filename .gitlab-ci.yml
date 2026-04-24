@@ -435,7 +435,6 @@ test_datalake_smoke:
   script: |
     trap 'test -e /tmp/.debugging && tmux new-session -d -s debug && tmux wait-for done' EXIT
 
-    env
     set -euxo pipefail
 
     export ENV=devel
@@ -456,7 +455,6 @@ test_datalake_feature:
   script: |
     trap 'test -e /tmp/.debugging && tmux new-session -d -s debug && tmux wait-for done' EXIT
 
-    env
     set -euxo pipefail
 
     export ENV=devel

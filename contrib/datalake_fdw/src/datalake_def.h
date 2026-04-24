@@ -334,7 +334,7 @@ typedef struct dataLakeOptions
 	char		*polaris_server_url;
 	char		*polaris_server_realm;
 	/* iceberg catalog default impl */
-	bool		set_catalog_defualt_impl;
+	bool		set_catalog_default_impl;
 	int			nJunkInfo;
 } dataLakeOptions;
 

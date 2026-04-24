@@ -368,26 +368,6 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
     }
 
     /**
-     * Parse metadata version from file path, following Iceberg naming convention.
-     * E.g., ".../metadata/00005-abc-def.metadata.json" -> 5
-     */
-    private static int parseMetadataVersion(String metadataFileLocation) {
-        if (metadataFileLocation == null) {
-            return -1;
-        }
-        int vStart = metadataFileLocation.lastIndexOf('/') + 1;
-        int vEnd = metadataFileLocation.indexOf('-', vStart);
-        if (vEnd > vStart) {
-            try {
-                return Integer.parseInt(metadataFileLocation.substring(vStart, vEnd));
-            } catch (NumberFormatException e) {
-                return -1;
-            }
-        }
-        return -1;
-    }
-
-    /**
      * Commit file groups for vacuum/compaction using Iceberg RewriteFiles API.
      * Atomically replaces old (rewritten) files with new files.
      */
@@ -399,7 +379,13 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         // Use transaction: rewrite.commit() only writes manifests, NOT metadata.json
         Transaction txn = table.newTransaction();
 
-        long startingSnapshotId = table.currentSnapshot().snapshotId();
+        Snapshot startingSnapshot = table.currentSnapshot();
+        if (startingSnapshot == null) {
+            throw new IllegalStateException(
+                    "Cannot commit file groups on an Iceberg table with no snapshots: "
+                            + context.getDataSource());
+        }
+        long startingSnapshotId = startingSnapshot.snapshotId();
         RewriteFiles rewrite = txn.newRewrite().validateFromSnapshot(startingSnapshotId);
 
         long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
@@ -534,7 +520,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
             batchAppend.appendFile(dataFile);
         }
         batchAppend.commit(); // normal commit — updates catalog
-        TableMetadata metadata = ((BaseTable) table).operations().current();
+        TableMetadata metadata = ((HasTableOperations) table).operations().current();
         return metadata.metadataFileLocation();
     }
 
@@ -558,7 +544,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
             }
         }
         rowDelta.commit(); // normal commit — updates catalog
-        TableMetadata metadata = ((BaseTable) table).operations().current();
+        TableMetadata metadata = ((HasTableOperations) table).operations().current();
         return metadata.metadataFileLocation();
     }
 
@@ -572,7 +558,13 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         healLegacyTableProperties(table);
 
         Transaction txn = table.newTransaction();
-        long startingSnapshotId = table.currentSnapshot().snapshotId();
+        Snapshot startingSnapshot = table.currentSnapshot();
+        if (startingSnapshot == null) {
+            throw new IllegalStateException(
+                    "Cannot commit rewrite on an Iceberg table with no snapshots: "
+                            + context.getDataSource());
+        }
+        long startingSnapshotId = startingSnapshot.snapshotId();
         RewriteFiles rewrite = txn.newRewrite().validateFromSnapshot(startingSnapshotId);
         long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
         rewrite.dataSequenceNumber(sequenceNumber);
@@ -589,7 +581,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         rewrite.commit();
         txn.commitTransaction(); // normal commit — updates catalog
 
-        TableMetadata metadata = ((BaseTable) table).operations().current();
+        TableMetadata metadata = ((HasTableOperations) table).operations().current();
         return metadata.metadataFileLocation();
     }
 

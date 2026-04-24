@@ -147,8 +147,8 @@ convertIcebergConfigToJson(dataLakeOptions* options)
 
     json_t *root = convertIcebergConfigToJsonObject(options->gopher);
 
-    /* Add set_catalog_defualt_impl flag to determine whether to use native catalog */
-    json_object_set_new(root, "set_catalog_defualt_impl", json_boolean(!options->set_catalog_defualt_impl));
+    /* Add set_catalog_default_impl flag to determine whether to use native catalog */
+    json_object_set_new(root, "set_catalog_default_impl", json_boolean(!options->set_catalog_default_impl));
     json_object_set_new(root, "iceberg_config_version", json_string("v1"));
 
     char *result = NULL;

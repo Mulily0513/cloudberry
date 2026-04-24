@@ -164,8 +164,8 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
             if (jsonObject.has("iceberg_config_version")) {
                 context.setIcebergConfigVersion(jsonObject.getString("iceberg_config_version"));
             }
-            if (jsonObject.has("set_catalog_defualt_impl")) {
-                context.setIcebergConfigUseDefaultCatalogImpl(jsonObject.getString("set_catalog_defualt_impl"));
+            if (jsonObject.has("set_catalog_default_impl")) {
+                context.setIcebergConfigUseDefaultCatalogImpl(jsonObject.getString("set_catalog_default_impl"));
             }
 
             // parser gopher
@@ -174,11 +174,8 @@ public class BaseConfigurationFactory implements ConfigurationFactory {
                 parseGopherJsonToProperties(gopher, context.getGopherProperties());
             }
 
-            // parser iceberg config
-            if (jsonObject.has("iceberg")) {
-                //TODO
-                org.json.JSONObject iceberg = jsonObject.getJSONObject("iceberg");
-            }
+            // The "iceberg" config section is reserved for future handling;
+            // nothing reads it yet, so don't parse it into a discarded local.
         } catch (Exception e) {
             LOG.error("Failed to init iceberg config from json string", e);
         }

@@ -534,11 +534,11 @@ void parseForeignTableOptions(dataLakeOptions* opt, List *options)
 		{
 			if (pg_strcasecmp(defGetString(def), "true") == 0)
 			{
-				opt->set_catalog_defualt_impl = true;
+				opt->set_catalog_default_impl = true;
 			}
 			else
 			{
-				opt->set_catalog_defualt_impl = false;
+				opt->set_catalog_default_impl = false;
 			}
 		}
 	}

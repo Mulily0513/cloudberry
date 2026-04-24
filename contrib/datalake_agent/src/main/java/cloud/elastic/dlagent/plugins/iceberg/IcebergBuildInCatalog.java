@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package cloud.elastic.dlagent.plugins.iceberg;
 
 import cloud.elastic.dlagent.api.security.SecureLogin;
@@ -29,7 +48,6 @@ public class IcebergBuildInCatalog implements IcebergCatalog {
     private DlIcebergBuildInCatalog buildInCatalog;
     private IcebergUtilities icebergUtilities;
     private Configuration configuration;
-    private boolean isUseGopherClient = false;
     private String catalogLocation;
 
     public IcebergBuildInCatalog(String catalogLocation,
@@ -45,7 +63,7 @@ public class IcebergBuildInCatalog implements IcebergCatalog {
         this.catalogLocation = catalogLocation;
 
         createDefaultBuildInCatalog(catalogLocation, icebergUtilities, configuration,
-                                    secureLogin, serverName, configFile, buildInCatalogProperties);
+                                    secureLogin, serverName, configFile, gopherProperties, buildInCatalogProperties);
     }
 
     public void createDefaultBuildInCatalog(String catalogLocation,
@@ -54,6 +72,7 @@ public class IcebergBuildInCatalog implements IcebergCatalog {
                                          SecureLogin secureLogin,
                                          String serverName,
                                          String configFile,
+                                         Map<String, String> gopherProperties,
                                          Map<String, String> buildInCatalogProperties) {
         HiveConf conf = new HiveConf(configuration, IcebergBuildInCatalog.class);
 
@@ -67,6 +86,11 @@ public class IcebergBuildInCatalog implements IcebergCatalog {
         Map<String, String> properties = icebergUtilities.composeCatalogProperties(this.configuration);
         if (catalogLocation != null) {
             properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
+        }
+        if (gopherProperties != null) {
+            for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+                properties.put(entry.getKey(), entry.getValue());
+            }
         }
         properties.forEach((key, value) -> LOG.debug(" createDefaultBuildInCatalog properties {}: {}", key, value));
 

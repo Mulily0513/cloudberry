@@ -88,6 +88,7 @@ public class IcebergHiveCatalog implements IcebergCatalog {
         if (catalogLocation != null) {
             properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
         }
+        properties.put(CatalogProperties.CLIENT_POOL_SIZE, "5");
         properties.forEach((key, value) -> LOG.debug(" createDefaultHiveCatalog properties {}: {}", key, value));
 
         hiveCatalog.initialize("IcebergHiveCatalog", properties);
@@ -102,6 +103,9 @@ public class IcebergHiveCatalog implements IcebergCatalog {
                                         Map<String, String> gopherProperties) {
         HiveConf conf = new HiveConf(configuration, IcebergHiveCatalog.class);
 
+        // Mirror createDefaultHiveCatalog() so the Hadoop temp dir is under the
+        // calling user's own path rather than the OS default (container/multi-user safe).
+        conf.set("hadoop.tmp.dir", "/tmp/hadoop-" + System.getProperty("user.name"));
         conf.setBoolean(ConfigProperties.ENGINE_HIVE_ENABLED, true);
 
         hiveCatalog = new DlIcebergHiveCatalog(secureLogin, serverName, configFile);
@@ -111,8 +115,10 @@ public class IcebergHiveCatalog implements IcebergCatalog {
             properties.put(CatalogProperties.WAREHOUSE_LOCATION, catalogLocation);
         }
 
-        for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
-            properties.put(entry.getKey(), entry.getValue());
+        if (gopherProperties != null) {
+            for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+                properties.put(entry.getKey(), entry.getValue());
+            }
         }
 
         properties.put(CatalogProperties.CLIENT_POOL_SIZE, "5");

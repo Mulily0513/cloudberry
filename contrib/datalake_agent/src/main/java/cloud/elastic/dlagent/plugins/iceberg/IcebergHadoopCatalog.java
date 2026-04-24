@@ -150,8 +150,10 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation);
 
 
-        for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
-            props.put(entry.getKey(), entry.getValue());
+        if (gopherProperties != null) {
+            for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+                props.put(entry.getKey(), entry.getValue());
+            }
         }
         //TODO(liuxiaoyu): need set gopherFileIO
         //props.put(CatalogProperties.FILE_IO_IMPL, "");

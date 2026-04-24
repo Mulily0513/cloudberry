@@ -32,8 +32,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import cloud.elastic.dlagent.plugins.iceberg.utilities.IcebergUtilities;
 import org.apache.hadoop.conf.Configuration;
@@ -63,25 +61,18 @@ public class IcebergPolarisCatalog implements IcebergCatalog {
     private RESTCatalog restCatalog;
     private IcebergUtilities icebergUtilities;
     private Configuration configuration;
-    private ObjectMapper objectMapper;
-    private String polarisBaseUrl;
-    private String realm;
-    private String clientId;
-    private String clientSecret;
 
     public IcebergPolarisCatalog(String warehouse, IcebergUtilities icebergUtilities, Configuration configuration) {
         this.icebergUtilities = icebergUtilities;
         this.configuration = configuration;
         this.restCatalog = new RESTCatalog();
-        this.objectMapper = new ObjectMapper();
 
         String catalogName = icebergUtilities.extractWarehouseFromTableName(warehouse);
-        this.clientId = FilePathUtils.unescapeString(configuration.get("client_id","root"));
-        this.clientSecret = FilePathUtils.unescapeString(configuration.get("client_secret","secret"));
+        String clientId = FilePathUtils.unescapeString(configuration.get("client_id","root"));
+        String clientSecret = FilePathUtils.unescapeString(configuration.get("client_secret","secret"));
         String scope = FilePathUtils.unescapeString(configuration.get("scope","PRINCIPAL_ROLE:ALL"));
         String polarisServerUrl = FilePathUtils.unescapeString(configuration.get("polaris_server_url", "http://127.0.0.1:8181/api/catalog"));
-        this.realm = FilePathUtils.unescapeString(configuration.get("polaris_server_realm", "POLARIS"));
-        this.polarisBaseUrl = polarisServerUrl.replace("/api/catalog", "");
+        String realm = FilePathUtils.unescapeString(configuration.get("polaris_server_realm", "POLARIS"));
         String credential = clientId + ":" + clientSecret;
 
         ImmutableMap.Builder<String, String> propertiesBuilder =
