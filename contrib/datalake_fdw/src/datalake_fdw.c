@@ -866,48 +866,43 @@ static void commit_iceberg_write(Relation relation, dataLakeFdwScanState *sstate
 
 TupleTableSlot *dataLakeExecForeignUpdate(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
 {
+	dataLakeFdwScanState	*sstate		= (dataLakeFdwScanState*)rinfo->ri_FdwState;
+	dataLakeModifyState		*mstate		= sstate->modify_state;
+	MemoryContext			 oldcontext;
+
 	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignUpdate starts on segment: %d", DATALAKE_SEGMENT_ID);
-	int						i;
-	bool					isnull;
-	HeapTupleData			tmptup;
-	AttrNumber				wholerow_attno	= rinfo->ri_RowIdAttNo;
-	Datum					record 			= slot_getattr(planSlot, wholerow_attno, &isnull);
-	HeapTupleHeader			tuphd 			= DatumGetHeapTupleHeader(record);
-	Oid						tupdesc_oid		= HeapTupleHeaderGetTypeId(tuphd);
-	int32					tupdesc_typmod	= HeapTupleHeaderGetTypMod(tuphd);
-	TupleDesc 				tupdesc			= lookup_rowtype_tupdesc(tupdesc_oid, tupdesc_typmod);
-	dataLakeFdwScanState	*sstate			= (dataLakeFdwScanState*)rinfo->ri_FdwState;
-	dataLakeModifyState		*mstate			= sstate->modify_state;
-	TupleTableSlot			*junk_slot		= mstate->us_slot;
 
 	Assert(mstate);
-	ExecClearTuple(junk_slot);
 
-	// Get tupledesc of record
-	tmptup.t_len = HeapTupleHeaderGetDatumLength(tuphd);
-	tmptup.t_data = tuphd;
+	/*
+	 * Iceberg merge-on-read UPDATE is emitted as "INSERT new row + write a
+	 * position-delete entry pointing at the old row".  The old row's
+	 * (file_path, pos) must come from the ctid junk column, decoded through
+	 * the per-operation fileIndexMap built in BeginForeignModify -- the same
+	 * path that ExecForeignDelete uses.
+	 *
+	 * The previous implementation tried to read the junk values from
+	 * wholerow attribute positions natts+1 / natts+2, which are past the end
+	 * of the wholerow tuple for Iceberg foreign tables; heap_getattr returned
+	 * NULL and 0 for every row, causing every position-delete file to be
+	 * written as ("", 0).  That silently broke merge-on-read correctness:
+	 * the delete entries never matched any data file path, the reader's
+	 * delete index was built empty, and queries returned both the pre- and
+	 * post-update versions of every updated row.
+	 */
+	prepareIcebergDeleteJunkSlot(rinfo, planSlot, "UPDATE");
 
-	for (i = 0; i < DATALAKE_ICEBERG_JUNK_NUM; i++)
-	{
-		Datum junk_attr = heap_getattr(&tmptup,
-									rinfo->ri_RelationDesc->rd_att->natts + i + 1,
-									tupdesc,
-									&isnull);
-		junk_slot->tts_values[i] = junk_attr;
-		junk_slot->tts_isnull[i] = isnull;
-	}
-
-	MemoryContext oldcontext;
 	MemoryContextReset(sstate->rowcontext);
 	oldcontext = MemoryContextSwitchTo(sstate->rowcontext);
 
+	/* Write the new row version to the data provider. */
 	slot_getallattrs(slot);
 	writeToProvider(sstate->provider, slot, 0);
-	writeToProvider(mstate->us_provider, junk_slot, 0);
+
+	/* Write the position-delete entry for the old row. */
+	writeToProvider(mstate->us_provider, mstate->us_slot, 0);
 
 	MemoryContextSwitchTo(oldcontext);
-
-	ReleaseTupleDesc(tupdesc);
 
 	elog(DEBUG5, "datalake_fdw: dataLakeExecForeignUpdate ends on segment: %d", DATALAKE_SEGMENT_ID);
 	return slot;
