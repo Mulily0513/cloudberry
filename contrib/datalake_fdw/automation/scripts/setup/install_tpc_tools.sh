@@ -52,11 +52,18 @@ if [[ ! -x "${TPCH_SRC}/dbgen" ]]; then
         rm -rf "${TPCH_SRC}"
         git clone --depth 1 --branch "${TPCH_REF}" "${TPCH_REPO}" "${TPCH_SRC}"
     fi
-    log "building dbgen"
-    # Build dbgen only; ignore compile-time warnings (%ld / %lld on LP64) that
-    # the upstream Makefile does not scrub.
+    log "building dbgen (MACHINE=LINUX, default CFLAGS)"
+    # dbgen only (no qgen). Do NOT override CFLAGS on the command line —
+    # that would drop the Makefile's own -DLINUX / -D_FILE_OFFSET_BITS=64
+    # that expose DSS_HUGE. CBDB's bundled gcc 4.8 compiles dbgen stock;
+    # a newer host gcc (>=10) may complain about LP64 %ld format specifiers,
+    # in which case re-run this installer from inside the CBDB container
+    # (the umbrella /workspace bind-mount makes the clone visible there):
+    #
+    #   docker exec hashdata-lightning-umbrella-hashdata-1 bash -lc \
+    #     'bash /workspace/database/contrib/datalake_fdw/automation/\
+    #       scripts/setup/install_tpc_tools.sh'
     make -C "${TPCH_SRC}" -s dbgen MACHINE=LINUX DATABASE=POSTGRES WORKLOAD=TPCH \
-         CC=gcc CFLAGS='-O2 -Wno-format -Wno-implicit-int -Wno-implicit-function-declaration' \
          >/dev/null 2>&1 || true
 fi
 [[ -x "${TPCH_SRC}/dbgen" ]] || { log "dbgen build failed"; exit 1; }
@@ -87,8 +94,11 @@ fi
 log "dsdgen OK"
 
 # ---------- symlinks ----------
-ln -sf "${TPCH_SRC}/dbgen" "${BIN_DIR}/dbgen"
-ln -sf "${TPCDS_SRC}/tools/dsdgen" "${BIN_DIR}/dsdgen"
+# Use relative paths so the links resolve identically on the host and inside
+# the CBDB container (where /workspace is the umbrella mount and absolute
+# host paths like /opt/hashdata-lightning-umbrella/... do not exist).
+ln -sfn ../tpch-dbgen/dbgen       "${BIN_DIR}/dbgen"
+ln -sfn ../tpcds-kit/tools/dsdgen "${BIN_DIR}/dsdgen"
 
 log "installed: ${BIN_DIR}/{dbgen,dsdgen}"
 log "dbgen requires its data dir (dists.dss) from ${TPCH_SRC}"
