@@ -163,15 +163,16 @@ phase_query() {
     : > "$summary"
     printf 'query\tstatus\tlatency_ms\tnote\n' > "$summary"
 
+    # qdir resolves per-tier (sf1/sf10/sf100/sf1000_subset). Compute the
+    # in-container path from the tier we actually picked.
+    local qtier; qtier="$(basename "$qdir")"
     log "running queries from $qdir against $DB"
     local pass=0 fail=0 crash=0 timeout=0
     local consec_crash=0
     for qf in "$qdir"/q*.sql; do
         [[ -f "$qf" ]] || continue
         local qname; qname="$(basename "$qf" .sql)"
-        local qpath_in="/workspace/database/contrib/datalake_fdw/automation/sqlrepo/scale/iceberg_am_tpch/query/sf${TPC_SCALE}/${qname}.sql"
-        [[ -e "$HERE/query/sf${TPC_SCALE}/${qname}.sql" ]] || \
-            qpath_in="/workspace/database/contrib/datalake_fdw/automation/sqlrepo/scale/iceberg_am_tpch/$(realpath --relative-to="$AUTOMATION_DIR/.." "$qf")"
+        local qpath_in="/workspace/database/contrib/datalake_fdw/automation/sqlrepo/scale/iceberg_am_tpch/query/${qtier}/${qname}.sql"
         local log="$REPORT_DIR/${qname}.log"
         local t0_ns; t0_ns="$(date +%s%N)"
         psql_file_in "$DB" "$qpath_in" "$log"
