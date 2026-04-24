@@ -62,10 +62,13 @@ if [[ "$MODE" != "clean" ]]; then
         err "dbgen not built; run INSTALL_TPC_TOOLS=1 scripts/setup/install_tools.sh"
         exit 1
     fi
-    # Disk guard. dbgen SF=N produces ~N GB raw; iceberg AM roughly doubles.
-    # Check the parent (which always exists) rather than $RAW_HOST (which we
-    # intentionally create on the container side for gpadmin ownership).
-    local_need_gb=$(( TPC_SCALE * 3 ))
+    # Disk guard. Observed on this environment: SF=N needs roughly 1.1*N GB
+    # raw + 0.6*N GB iceberg parquet (zstd) + 0.75*N GB stage peak while the
+    # largest table (lineitem, 75% of row volume) is loading. Round to
+    # ~2.5*N GB free required with a little slack. If the largest table's
+    # stage is dropped mid-load this could be trimmed further, but that's
+    # a later optimisation.
+    local_need_gb=$(( (TPC_SCALE * 25 + 9) / 10 ))  # ceil(2.5*SF)
     avail_gb=$(df --output=avail -BG "$AUTOMATION_DIR" | tail -1 | tr -dc 0-9)
     if (( avail_gb < local_need_gb )); then
         err "insufficient disk for SF=$TPC_SCALE: need ~${local_need_gb}GB, have ${avail_gb}GB at $AUTOMATION_DIR"

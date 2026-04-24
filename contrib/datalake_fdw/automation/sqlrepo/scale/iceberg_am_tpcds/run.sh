@@ -39,8 +39,9 @@ if [[ "$MODE" != "clean" ]]; then
         err "dsdgen not built; run INSTALL_TPC_TOOLS=1 scripts/setup/install_tools.sh"
         exit 1
     fi
-    # dsdgen SF=N produces ~N GB raw; iceberg AM about doubles.
-    local_need_gb=$(( TPC_SCALE * 3 ))
+    # Disk guard. Observed: SF=N TPC-DS ≈ 1.1*N raw + 0.5*N iceberg + stage
+    # peak while a fact table loads. Round to ~2.5*N GB free required.
+    local_need_gb=$(( (TPC_SCALE * 25 + 9) / 10 ))
     avail_gb=$(df --output=avail -BG "$AUTOMATION_DIR" | tail -1 | tr -dc 0-9)
     if (( avail_gb < local_need_gb )); then
         err "insufficient disk for SF=$TPC_SCALE: need ~${local_need_gb}GB, have ${avail_gb}GB"
