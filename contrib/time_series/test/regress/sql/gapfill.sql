@@ -3207,6 +3207,10 @@ INSERT INTO gf_src VALUES
     ('2024-01-01 07:30+00', 2, 64.0);
 
 -- CAGG: hourly aggregation
+-- Put time_series on search_path so the rest of this section
+-- can use unqualified time_bucket / time_bucket_gapfill calls.
+SET search_path TO public, time_series;
+
 CREATE MATERIALIZED VIEW gf_hourly
 WITH (time_series.continuous) AS
   SELECT time_bucket('1 hour'::interval, time) AS bucket,

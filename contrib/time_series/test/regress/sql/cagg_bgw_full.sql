@@ -1,0 +1,277 @@
+-- ============================================================
+-- cagg_bgw_full.sql
+--
+-- Heavy mock-time test of the BGW scheduler driving CAGG refresh
+-- end-to-end.  Adapted from TimescaleDB tsl/test/sql/cagg_bgw.sql.in
+-- (Apache 2.0 portions; spirit-equivalent).
+--
+-- Differences vs upstream (V1 architecture / CBDB):
+--   - schemas: _timescaledb_config / _timescaledb_internal / _timescaledb_catalog
+--     → time_series
+--   - integer time column + create_hypertable + set_integer_now_func
+--     → timestamptz column + plain DISTRIBUTED BY (no hypertable concept)
+--   - timescaledb.continuous / materialized_only=true
+--     → time_series.continuous / time_series.materialized_only=true
+--   - timescaledb.current_timestamp_mock GUC
+--     → ts_bgw_params_reset_time() from our mock_time framework
+--   - test.wait_for_job_to_run helper
+--     → wait_for_runs() local plpgsql helper
+--   - Multi-role permission tests skipped (V1 doesn't have ROLE_*
+--     infrastructure baked in).
+--
+-- Total mock-time ticks used: ~10
+-- ============================================================
+
+SET optimizer = off;
+SET timezone = 'UTC';
+
+DROP EXTENSION IF EXISTS time_series CASCADE;
+DROP TABLE IF EXISTS public.bgw_log CASCADE;
+DROP TABLE IF EXISTS public.bgw_dsm_handle_store CASCADE;
+DROP TABLE IF EXISTS m_full CASCADE;
+
+CREATE EXTENSION time_series;
+SET search_path TO public, time_series;
+
+-- ============================================================
+-- mock_time framework setup (1:1 with cagg_bgw.sql.in L51-70)
+-- ============================================================
+CREATE TABLE public.bgw_log(
+    msg_no INT,
+    mock_time BIGINT,
+    application_name TEXT,
+    msg TEXT
+) DISTRIBUTED REPLICATED;
+
+CREATE VIEW public.sorted_bgw_log AS
+    SELECT msg_no, mock_time, application_name,
+           regexp_replace(
+               regexp_replace(msg,
+                   '(Wait until|started at|execution time) [0-9]+(\.[0-9]+)?',
+                   '\1 (RANDOM)', 'g'),
+               'background worker "[^"]+"', 'connection') AS msg
+      FROM public.bgw_log
+     ORDER BY mock_time, application_name COLLATE "C", msg_no;
+
+CREATE TABLE public.bgw_dsm_handle_store(handle BIGINT) DISTRIBUTED REPLICATED;
+INSERT INTO public.bgw_dsm_handle_store VALUES (0);
+SELECT time_series.ts_bgw_params_create();
+
+-- ============================================================
+-- Source table + CAGG (cagg_bgw.sql.in L78-92, adapted)
+-- ============================================================
+CREATE TABLE m_full (
+    time TIMESTAMPTZ NOT NULL,
+    tags_id INT NOT NULL,
+    v INT
+) DISTRIBUTED BY (tags_id);
+
+-- 24 hours of synthetic data anchored at REAL now().  We deliberately
+-- do NOT anchor at the mock clock origin (2024-01-01), because the
+-- BGW worker computes its refresh window from `now()` (= transaction
+-- start time, real time), not from the mocked clock — only mock_wait
+-- is intercepted, not now().  So source data lives in real-time and
+-- the window catches it.  The mock clock still drives scheduler tick
+-- timing and bgw_log timestamps.
+INSERT INTO m_full
+SELECT now() - (h * interval '1 hour'), (h % 5) + 1, h
+FROM generate_series(1, 24) h;
+
+-- materialized_only is intentionally LEFT DEFAULT (false).  Reasons:
+--  1. With true, view only shows mat-table data; we'd need the worker
+--     to actually populate the mat table to see anything.
+--  2. With default (false), the view is a UNION ALL of mat + raw
+--     aggregation, so our assertions about source-data-derived
+--     aggregates (s > 1000 etc.) reflect the full picture.
+CREATE MATERIALIZED VIEW cv_full
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS c, sum(v) AS s
+  FROM m_full GROUP BY bucket, tags_id;
+
+SELECT add_continuous_aggregate_policy('cv_full',
+       '7 days'::interval, '0'::interval, '12 hours'::interval) AS jid \gset
+
+-- ============================================================
+-- BGW-FULL-01: scheduler with no jobs yet → no stats, view empty
+-- (cagg_bgw.sql.in L111-117 spirit)
+-- ============================================================
+\echo '=== BGW-FULL-01: stats empty before any scheduler run ==='
+SELECT total_runs FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- ============================================================
+-- BGW-FULL-02: First scheduler run → policy fires, view populates
+-- (cagg_bgw.sql.in L119-129)
+-- ============================================================
+\echo '=== BGW-FULL-02: first scheduler run ==='
+-- Reset clock to 2024-01-01 UTC, force next_start to that moment
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-01 00:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+
+-- IMMEDIATELY_SET_UNTIL: mock_wait fast-forwards virtual clock
+SELECT time_series.ts_bgw_params_mock_wait_returns_immediately(1);
+
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2023-12-31 23:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+
+-- Run scheduler for 60 virtual seconds
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+-- Job ran once successfully
+SELECT total_runs >= 1   AS at_least_one_run,
+       total_successes >= 1 AS at_least_one_success,
+       last_run_success   AS last_ok,
+       total_failures     AS failures,
+       total_crashes      AS crashes
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- View populated (24 buckets × 5 tags = 24 distinct buckets, but only when h%5+1 cycles)
+SELECT count(*) > 0 AS view_populated FROM cv_full;
+
+-- ============================================================
+-- BGW-FULL-03: alter_job changes schedule_interval, next_start tracks
+-- (cagg_bgw.sql.in L172-176)
+-- ============================================================
+\echo '=== BGW-FULL-03: alter_job schedule_interval ==='
+SELECT (alter_job(:jid, schedule_interval => '5 minutes'::interval)).schedule_interval;
+SELECT schedule_interval FROM time_series.bgw_job WHERE id = :jid;
+
+-- ============================================================
+-- BGW-FULL-04: invalidations — UPDATE source, next refresh sees it
+-- (cagg_bgw.sql.in L207-252)
+-- ============================================================
+\echo '=== BGW-FULL-04: invalidations propagate to next refresh ==='
+-- Capture current value at one bucket
+SELECT s AS s_before
+  FROM cv_full
+ WHERE tags_id = 1
+ ORDER BY bucket DESC
+ LIMIT 1 \gset
+
+-- UPDATE source data; trigger writes to L1 invalidation log.
+-- Source rows are anchored at now()-Nh so target by tags_id (which
+-- cycles 1..5 with h, so tag=1 hits h={4,9,14,19,24}).
+UPDATE m_full SET v = v + 1000
+ WHERE tags_id = 1;
+
+-- Advance virtual clock by 12 hours (past schedule_interval, but more
+-- importantly past next_start) and force fire
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2023-12-31 23:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-01 12:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+-- total_runs should have incremented; failures still 0
+SELECT total_runs >= 2   AS more_than_one_run,
+       total_successes >= 2 AS more_than_one_success,
+       total_failures = 0 AS no_failures,
+       last_run_success   AS last_ok
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- View should reflect the UPDATE — sum changed for affected bucket(s)
+SELECT count(*) > 0 AS view_has_updated_bucket
+  FROM cv_full
+ WHERE s > 1000;   -- our +1000 increments push at least one bucket above
+
+-- ============================================================
+-- BGW-FULL-05: merged refresh — changes in multiple buckets
+-- (cagg_bgw.sql.in L270-283)
+-- ============================================================
+\echo '=== BGW-FULL-05: merged refresh covers multiple dirty buckets ==='
+-- UPDATE all source rows so all buckets become dirty
+UPDATE m_full SET v = v + 10000;
+
+-- Advance virtual clock and fire scheduler again
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2024-01-01 11:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-02 00:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+-- One more successful run
+SELECT total_runs >= 3   AS at_least_three_runs,
+       total_successes >= 3 AS at_least_three_successes,
+       total_failures = 0 AS still_no_failures
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- All buckets should now have v+10000+ values reflected via sum
+-- (each bucket in cv_full has multiple rows so sum >= 10000)
+SELECT count(*) > 5 AS many_buckets_updated FROM cv_full WHERE s > 10000;
+
+-- ============================================================
+-- BGW-FULL-06: alter_job pause via scheduled=false
+-- (cagg_bgw.sql.in spirit — not in the .in directly but commonly tested)
+-- ============================================================
+\echo '=== BGW-FULL-06: alter_job(scheduled=false) → no further runs ==='
+SELECT (alter_job(:jid, scheduled => false)).scheduled;
+
+-- Capture runs count
+SELECT total_runs AS runs_before_pause
+  FROM time_series.bgw_job_stat WHERE job_id = :jid \gset
+
+-- Force a tick that would normally trigger the policy
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2023-12-31 23:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-03 00:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+-- Should NOT have incremented while paused
+SELECT total_runs = :runs_before_pause AS runs_unchanged_while_paused
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- Resume and verify it picks back up
+SELECT (alter_job(:jid, scheduled => true)).scheduled;
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2023-12-31 23:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+SELECT total_runs > :runs_before_pause AS runs_resumed
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- ============================================================
+-- BGW-FULL-07: scheduler exits within ttl when no work pending
+-- (cagg_bgw.sql.in L196-198 spirit)
+-- ============================================================
+\echo '=== BGW-FULL-07: scheduler honors ttl ==='
+-- Far-future next_start so policy doesn't fire
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2099-01-01 00:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(1000);
+
+-- "DB Scheduler" application_name appears in log; ttl-bounded run completed
+SELECT count(*) > 0 AS scheduler_logged
+  FROM public.bgw_log WHERE application_name = 'DB Scheduler';
+
+-- ============================================================
+-- BGW-FULL-08: bgw_log captures multiple ticks (no monotonic check —
+-- we deliberately reset/jump the mock clock backward & forward
+-- between sub-tests to test alter_job semantics)
+-- ============================================================
+\echo '=== BGW-FULL-08: bgw_log accumulated entries across all ticks ==='
+SELECT count(*) > 5 AS log_has_many_entries FROM public.bgw_log;
+SELECT count(DISTINCT mock_time) > 1 AS log_spans_multiple_clock_resets
+  FROM public.bgw_log;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+SELECT remove_continuous_aggregate_policy('cv_full');
+SELECT time_series.ts_bgw_params_destroy();
+DROP VIEW public.sorted_bgw_log;
+DROP TABLE public.bgw_log;
+DROP TABLE public.bgw_dsm_handle_store;
+DROP VIEW cv_full;
+DROP TABLE m_full CASCADE;
+DROP EXTENSION time_series CASCADE;

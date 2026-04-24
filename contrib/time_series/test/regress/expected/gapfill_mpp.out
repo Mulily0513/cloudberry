@@ -10,7 +10,10 @@
 -- MPP KEY INSIGHT: In CBDB, GapFill runs independently on each segment.
 -- Group-aware gapfill detects GROUP BY columns before the bucket column
 -- in the GroupAggregate sort order and propagates them to gap rows.
+DROP EXTENSION IF EXISTS time_series CASCADE;
+NOTICE:  extension "time_series" does not exist, skipping
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 -- Fix session timezone for stable expected output.
 SET timezone = 'UTC';
 -- ============================================================

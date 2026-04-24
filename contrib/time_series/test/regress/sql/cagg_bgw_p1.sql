@@ -1,0 +1,158 @@
+-- ============================================================
+-- cagg_bgw_p1.sql
+--
+-- P1 operational features:
+--   P1.1  refresh_continuous_aggregate(force => true)
+--   P1.2  add_continuous_aggregate_policy(initial_start, timezone)
+--   P1.3  add_job_stat_history_retention_policy
+-- ============================================================
+
+SET optimizer = off;
+SET timezone = 'UTC';
+
+DROP EXTENSION IF EXISTS time_series CASCADE;
+DROP TABLE IF EXISTS p1_src CASCADE;
+
+CREATE EXTENSION time_series;
+SET search_path TO public, time_series;
+
+CREATE TABLE p1_src (
+    time TIMESTAMPTZ NOT NULL,
+    tags_id INT NOT NULL,
+    v INT
+) DISTRIBUTED BY (tags_id);
+
+INSERT INTO p1_src
+SELECT '2024-01-01'::timestamptz - h*'1 hour'::interval, h%5+1, h
+FROM generate_series(1, 24) h;
+
+CREATE MATERIALIZED VIEW p1_cv
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS c
+  FROM p1_src GROUP BY bucket, tags_id;
+
+-- ============================================================
+-- P1.1: force=TRUE re-materializes ranges that have no
+--       outstanding invalidation entries.
+-- ============================================================
+\echo '=== P1.1-A: normal refresh populates all buckets ==='
+CALL time_series.refresh_continuous_aggregate('p1_cv', NULL, NULL);
+SELECT count(*) > 0 AS first_refresh_populated FROM p1_cv;
+
+-- Simulate data drift: corrupt the materialization table directly so
+-- normal refresh (which checks invalidation log) won't catch it.
+-- (We can't truly corrupt it under MPP without ALTER, but we can
+-- empty selected ranges via DELETE on the mat table.)
+DO $$
+DECLARE
+    v_mat_table regclass;
+BEGIN
+    SELECT (mat_table_schema || '.' || mat_table_name)::regclass
+      INTO v_mat_table
+      FROM time_series.continuous_agg
+     WHERE user_view_name = 'p1_cv';
+    EXECUTE format('DELETE FROM %s', v_mat_table);
+END $$;
+
+-- After DELETE the user view falls back to direct view (which still sees
+-- source data via UNION) — so it would still return rows.  The relevant
+-- check is whether force=TRUE successfully re-materializes vs.
+-- "already up-to-date" no-op.
+\echo '=== P1.1-B: force=TRUE refreshes despite no invalidation entries ==='
+CALL time_series.refresh_continuous_aggregate('p1_cv', NULL, NULL, force => true);
+-- After force, mat table should be repopulated.
+SELECT count(*) > 0 AS forced_repopulated FROM time_series._mat_p1_cv_1;
+
+\echo '=== P1.1-C: force=FALSE on already-up-to-date is a NOTICE no-op ==='
+CALL time_series.refresh_continuous_aggregate('p1_cv', NULL, NULL);
+
+-- ============================================================
+-- P1.2: add_continuous_aggregate_policy with initial_start + timezone
+-- ============================================================
+\echo '=== P1.2-A: timezone stored on bgw_job ==='
+SELECT add_continuous_aggregate_policy(
+       'p1_cv', '1 day'::interval, '0'::interval, '1 hour'::interval,
+       initial_start => '2030-01-01 03:00+00'::timestamptz,
+       timezone      => 'Asia/Shanghai') AS jid \gset
+
+SELECT j.timezone,
+       j.initial_start AT TIME ZONE 'UTC' AS initial_start_utc,
+       s.next_start    AT TIME ZONE 'UTC' AS next_start_utc
+  FROM time_series.bgw_job j JOIN time_series.bgw_job_stat s ON j.id = s.job_id
+ WHERE j.id = :jid;
+
+SELECT remove_continuous_aggregate_policy('p1_cv');
+
+\echo '=== P1.2-B: invalid timezone rejected at registration ==='
+SELECT add_continuous_aggregate_policy(
+       'p1_cv', '1 day'::interval, '0'::interval, '1 hour'::interval,
+       timezone => 'Mars/Olympus_Mons');
+
+\echo '=== P1.2-C: NULL initial_start defaults to now() ==='
+SELECT add_continuous_aggregate_policy(
+       'p1_cv', '1 day'::interval, '0'::interval, '1 hour'::interval) AS jid \gset
+SELECT s.next_start <= now() + '1 second'::interval AS next_start_near_now
+  FROM time_series.bgw_job_stat s WHERE s.job_id = :jid;
+SELECT remove_continuous_aggregate_policy('p1_cv');
+
+-- ============================================================
+-- P1.3: built-in job stat history retention policy
+--
+-- Mirrors TSDB sql/job_stat_history_log_retention.sql:
+--   - id=1, registered at extension install
+--   - no add_*/remove_* helper — alter_job(1, ...) tunes it
+-- ============================================================
+\echo '=== P1.3-A: built-in retention job present at install ==='
+SELECT id, proc_schema, proc_name, application_name,
+       schedule_interval, max_retries, scheduled, fixed_schedule,
+       config->>'drop_after' AS drop_after,
+       check_schema, check_name
+  FROM time_series.bgw_job WHERE id = 1;
+
+\echo '=== P1.3-B: nextval() does not collide with built-in id=1 ==='
+SELECT nextval('time_series.bgw_job_id_seq') > 1 AS seq_advanced;
+
+\echo '=== P1.3-C: check function rejects NULL config ==='
+SELECT time_series.policy_job_stat_history_retention_check(NULL);
+
+\echo '=== P1.3-D: check function rejects missing drop_after ==='
+SELECT time_series.policy_job_stat_history_retention_check('{}'::jsonb);
+
+\echo '=== P1.3-E: check function accepts valid config ==='
+SELECT time_series.policy_job_stat_history_retention_check(
+       '{"drop_after": "30 days"}'::jsonb);
+
+\echo '=== P1.3-F: policy function actually purges old rows ==='
+-- Insert two stat history rows tagged with pid=12345 to filter out any
+-- rows the BGW scheduler may have written for job_id=1 in the meantime
+-- (the built-in retention job is scheduled and may have fired once).
+INSERT INTO time_series.bgw_job_stat_history
+       (job_id, pid, execution_start, execution_finish, succeeded, data)
+VALUES (1, 12345, now() - '60 days'::interval, now() - '60 days'::interval,
+        true, '{}'::jsonb);
+INSERT INTO time_series.bgw_job_stat_history
+       (job_id, pid, execution_start, execution_finish, succeeded, data)
+VALUES (1, 12345, now() - '1 day'::interval, now() - '1 day'::interval,
+        true, '{}'::jsonb);
+
+SELECT count(*) AS rows_before FROM time_series.bgw_job_stat_history
+ WHERE pid = 12345;
+
+SELECT time_series.policy_job_stat_history_retention(1,
+       '{"drop_after": "30 days"}'::jsonb) >= 1 AS at_least_one_deleted;
+
+SELECT count(*) AS rows_after FROM time_series.bgw_job_stat_history
+ WHERE pid = 12345;
+
+\echo '=== P1.3-G: alter_job tunes drop_after ==='
+SELECT (alter_job(1, config => '{"drop_after":"7 days"}'::jsonb)).config;
+SELECT config->>'drop_after' AS drop_after FROM time_series.bgw_job WHERE id = 1;
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP VIEW p1_cv CASCADE;
+DROP TABLE p1_src CASCADE;
+DROP EXTENSION time_series CASCADE;
+\echo '=== P1 TEST COMPLETE ==='

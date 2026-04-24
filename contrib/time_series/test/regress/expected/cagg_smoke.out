@@ -13,6 +13,7 @@ SET optimizer = off;
 SET timezone = 'UTC';
 DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 SET search_path TO public, time_series;
 -- ============================================================
 -- Phase 1: CREATE
@@ -93,8 +94,11 @@ ORDER BY user_view_name;
 === Phase 2: Full REFRESH ===
 -- Refresh all 3 CAGGs
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 CALL time_series.refresh_continuous_aggregate('sensor_2hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_2hourly"
 CALL time_series.refresh_continuous_aggregate('sensor_daily', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_daily"
 -- Mat rows for each
 SELECT count(*) AS hourly_rows FROM sensor_hourly;
  hourly_rows 
@@ -321,6 +325,7 @@ SELECT count(*) > 0 AS has_l1 FROM time_series.cagg_invalidation_log;
 -- Incremental REFRESH covering backfill range
 CALL time_series.refresh_continuous_aggregate('sensor_hourly',
   '2024-01-01 02:00+00', '2024-01-01 11:00+00');
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- B. materialized_only=true: backfill must be IN the mat table
 --    (proves incremental REFRESH actually wrote to mat table,
 --     not just relying on real-time branch)
@@ -385,7 +390,9 @@ SELECT count(*) AS diff_backfill FROM (
 \echo '=== Phase 5: Multi-CAGG consistency ==='
 === Phase 5: Multi-CAGG consistency ===
 CALL time_series.refresh_continuous_aggregate('sensor_2hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_2hourly"
 CALL time_series.refresh_continuous_aggregate('sensor_daily', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_daily"
 \echo '--- sensor_hourly ---'
 --- sensor_hourly ---
 SELECT count(*) AS diff_hourly FROM (
@@ -491,6 +498,7 @@ SELECT '2024-01-01 00:00+00'::timestamptz
 FROM generate_series(1, 5) dev,
      generate_series(12, 13) hr;
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- Watermark should have advanced past the original 10:00
 SELECT MAX(w.watermark) AS wm_after_round1
 FROM time_series.cagg_watermark w
@@ -536,6 +544,7 @@ SELECT '2024-01-01 00:00+00'::timestamptz
 FROM generate_series(1, 5) dev,
      generate_series(16, 17) hr;
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- Watermark should have advanced further
 SELECT MAX(w.watermark) AS wm_after_round2
 FROM time_series.cagg_watermark w
@@ -670,7 +679,9 @@ ORDER BY user_view_name;
 \echo '--- B: remaining CAGGs still correct ---'
 --- B: remaining CAGGs still correct ---
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 CALL time_series.refresh_continuous_aggregate('sensor_2hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_2hourly"
 SELECT count(*) AS diff_after_drop FROM (
   (SELECT bucket, device_id, cnt,
           round(avg_temp::numeric, 10) AS avg_temp, min_hum, max_hum
@@ -711,6 +722,7 @@ FROM time_series.cagg_invalidation_log;
 === Phase 9: TRUNCATE ===
 TRUNCATE sensor;
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- Mat table should be empty
 SELECT count(*) AS after_truncate FROM sensor_hourly;
  after_truncate 
@@ -728,6 +740,7 @@ SELECT '2024-06-01 00:00+00'::timestamptz + (i || ' hour')::interval,
        (i % 10) + 1, random() * 100, random() * 100
 FROM generate_series(1, 200) i;
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 SELECT count(*) AS diff_repopulate FROM (
   (SELECT bucket, device_id, cnt,
           round(avg_temp::numeric, 10) AS avg_temp,

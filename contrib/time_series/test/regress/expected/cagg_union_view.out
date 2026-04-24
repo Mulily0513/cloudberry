@@ -7,6 +7,7 @@ SET optimizer = off;
 SET timezone = 'UTC';
 DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 SET search_path TO public, time_series;
 -- Setup: deterministic source table
 CREATE TABLE metrics (
@@ -77,6 +78,7 @@ SELECT count(*) AS diff_rt01 FROM (
 \echo '=== RT-02: after REFRESH EXCEPT = 0 ==='
 === RT-02: after REFRESH EXCEPT = 0 ===
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 SELECT count(*) AS mat_after_refresh FROM time_series._mat_cv_1;
  mat_after_refresh 
 -------------------
@@ -362,6 +364,7 @@ DROP TABLE metrics_fresh CASCADE;
 \echo '=== RT-10: full REFRESH → all from mat branch ==='
 === RT-10: full REFRESH → all from mat branch ===
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- All rows served from mat table; count from user view equals count from mat
 SELECT count(*) AS cv_total FROM cv;
  cv_total 
@@ -513,6 +516,7 @@ SELECT materialized_only FROM time_series.continuous_agg WHERE user_view_name = 
 -- Ensure cv is in real-time mode (RT-14 left it in mat-only)
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Set watermark to split data between mat and real-time branches (scope to cv)
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-01-01 02:00:00+00'::timestamptz
@@ -663,6 +667,7 @@ SELECT count(*) AS diff_rt16_pre FROM (
 
 -- Phase 2: After REFRESH (mat branch stores HAVING-filtered result)
 CALL time_series.refresh_continuous_aggregate('cv_hav', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hav"
 SELECT count(*) AS mat_hav_rows FROM cv_hav;
  mat_hav_rows 
 --------------
@@ -693,6 +698,7 @@ INSERT INTO metrics_hav VALUES
   ('2024-01-01 04:45+00', 6, 66.0);
 -- bucket=04 now has 6 rows (3 original + 3 backfill) → passes HAVING > 5
 CALL time_series.refresh_continuous_aggregate('cv_hav', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hav"
 -- Now 3 buckets should pass
 SELECT count(*) AS mat_hav_after_backfill FROM cv_hav;
  mat_hav_after_backfill 
@@ -718,6 +724,7 @@ DROP TABLE metrics_hav CASCADE;
 -- Ensure cv is in real-time mode and fully refreshed for stable JOIN result
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 CREATE TABLE tag_info (tags_id INT PRIMARY KEY, label TEXT)
   DISTRIBUTED REPLICATED;
 INSERT INTO tag_info VALUES (1, 'sensor-A'), (2, 'sensor-B'), (3, 'sensor-C');
@@ -864,6 +871,7 @@ SELECT count(*) AS diff_rt18b FROM (
 === RT-18c: per-segment watermark divergence ===
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Verify watermarks are initially uniform after REFRESH
 SELECT count(DISTINCT watermark) AS wm_distinct_before
   FROM time_series.cagg_watermark
@@ -918,6 +926,7 @@ SELECT count(*) AS diff_rt18c FROM (
 
 -- Restore uniform watermarks for subsequent tests
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- ============================================================
 -- RT-19: GRANT preserved across set_materialized_only
 --        (CREATE OR REPLACE VIEW must not drop permissions)
@@ -1026,6 +1035,7 @@ DROP TABLE m_plan CASCADE;
 -- Ensure cv is in real-time mode and fully refreshed
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Move watermark back so half the data is in mat, half in real-time (scope to cv)
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-01-01 05:00:00+00'::timestamptz
@@ -1188,6 +1198,7 @@ SELECT count(*) AS diff_wh_rt FROM (
 
 -- After REFRESH
 CALL time_series.refresh_continuous_aggregate('cv_wh', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_wh"
 SELECT count(*) AS diff_wh_mat FROM (
   (  SELECT bucket, loc, sbc, spread FROM cv_wh
    EXCEPT
@@ -1277,6 +1288,7 @@ SELECT count(*) AS diff_ts_rt FROM (
 
 -- After REFRESH
 CALL time_series.refresh_continuous_aggregate('cv_ts', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ts"
 SELECT count(*) AS diff_ts_mat FROM (
   (  SELECT bucket, cnt, a FROM cv_ts
    EXCEPT
@@ -1340,6 +1352,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_atz" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_atz_11
 CALL time_series.refresh_continuous_aggregate('cv_atz', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_atz"
 SELECT count(*) AS diff_atz FROM (
   (  SELECT bucket, min_est, avg_temp FROM cv_atz
    EXCEPT
@@ -1385,6 +1398,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_tbtz" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_tbtz_12
 CALL time_series.refresh_continuous_aggregate('cv_tbtz', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_tbtz"
 SELECT count(*) AS diff_tbtz FROM (
   (  SELECT bucket, cnt FROM cv_tbtz
    EXCEPT
@@ -1417,6 +1431,7 @@ NOTICE:  view "cv_tbtz" does not exist, skipping
 === RT-29: CAGG vs VIEW equivalence ===
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 CREATE VIEW plain_oracle AS
   SELECT time_bucket('1 hour'::interval, time) AS bucket,
          tags_id, count(*) AS cnt, avg(temperature) AS avg_temp
@@ -1462,6 +1477,7 @@ DROP VIEW plain_oracle;
 \echo '=== RT-30: stale then fresh ==='
 === RT-30: stale then fresh ===
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Record current value for (bucket=01:00, tags_id=1)
 ALTER VIEW cv SET (time_series.materialized_only = true);
 SELECT cnt AS cnt_before_backfill FROM cv
@@ -1485,6 +1501,7 @@ WHERE bucket = '2024-01-01 01:00+00' AND tags_id = 1;
 ALTER VIEW cv SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv',
   '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv"
 ALTER VIEW cv SET (time_series.materialized_only = true);
 SELECT cnt AS cnt_fresh FROM cv
 WHERE bucket = '2024-01-01 01:00+00' AND tags_id = 1;
@@ -1533,6 +1550,7 @@ DROP TABLE tz_cast CASCADE;
 \echo '=== RT-31: watermark delete + restore ==='
 === RT-31: watermark delete + restore ===
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Baseline: fully materialized
 ALTER VIEW cv SET (time_series.materialized_only = true);
 SELECT count(*) AS mat_before_wm_del FROM cv;
@@ -1549,13 +1567,14 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg
 -- Query should ERROR: watermark not found (fail-fast, same as TSDB)
 \set ON_ERROR_STOP 0
 SELECT count(*) FROM cv;
-ERROR:  watermark not found for continuous aggregate 1 (cagg_insert.c:834)  (seg2 slice1 172.19.0.2:7004 pid=96392) (cagg_insert.c:834)
+ERROR:  watermark not found for continuous aggregate 1 (insert.c:842)  (seg2 slice1 172.19.0.3:7004 pid=48253) (insert.c:842)
 HINT:  The watermark catalog may be corrupted. Re-create the watermark rows using _cagg_init_segment_watermark().
 \set ON_ERROR_STOP 1
 -- REFRESH should also ERROR (watermark lookup fails during refresh)
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
-ERROR:  watermark not found for continuous aggregate 1 (cagg_refresh.c:828)
+NOTICE:  refreshing continuous aggregate "cv"
+ERROR:  watermark not found for continuous aggregate 1 (refresh.c:880)
 HINT:  The watermark catalog may be corrupted. Re-create the watermark rows using _cagg_init_segment_watermark().
 \set ON_ERROR_STOP 1
 -- Manual restore: re-create watermark rows (one per segment)
@@ -1582,6 +1601,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg
 
 -- REFRESH to advance watermark to proper value
 CALL time_series.refresh_continuous_aggregate('cv', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv"
 -- Mat-only mode now returns correct data (watermark restored)
 ALTER VIEW cv SET (time_series.materialized_only = true);
 SELECT count(*) AS mat_after_full_restore FROM cv;

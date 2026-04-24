@@ -19,7 +19,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "include/time_series.h"
+#include "../include/time_series.h"
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -113,7 +113,7 @@ cagg_get_threshold(Oid source_oid)
 
 	/* Scan cagg_invalidation_threshold (RANDOMLY → local row only) */
 	th_rel = table_open(th_oid, AccessShareLock);
-	scan = heap_beginscan(th_rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+	scan = heap_beginscan(th_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		bool	isnull;
@@ -163,7 +163,7 @@ cagg_get_threshold(Oid source_oid)
 
 			/* Find cagg_ids for this source (REPLICATED → local scan) */
 			ca_rel = table_open(ca_oid, AccessShareLock);
-			scan = heap_beginscan(ca_rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+			scan = heap_beginscan(ca_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 			while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 			{
 				bool	isnull2;
@@ -182,7 +182,7 @@ cagg_get_threshold(Oid source_oid)
 			if (cagg_ids != NIL)
 			{
 				wm_rel = table_open(wm_oid, AccessShareLock);
-				scan = heap_beginscan(wm_rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+				scan = heap_beginscan(wm_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 				while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 				{
 					bool	isnull2;
@@ -238,7 +238,7 @@ cagg_get_time_attnum(Oid source_oid, Relation source_rel)
 		elog(ERROR, "cagg_invalidation_trigfn: continuous_agg table not found");
 
 	ca_rel = table_open(ca_oid, AccessShareLock);
-	scan = heap_beginscan(ca_rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+	scan = heap_beginscan(ca_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		bool	isnull;
@@ -357,6 +357,13 @@ cagg_l1_batch_flush(void)
 {
 	if (l1_batch.has_data)
 	{
+		elog(DEBUG2, "cagg L1 batch flush: source_oid=%u range=[%s, %s]",
+			 l1_batch.source_oid,
+			 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+						 TimestampTzGetDatum(l1_batch.min_time))),
+			 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+						 TimestampTzGetDatum(l1_batch.max_time))));
+
 		cagg_write_l1(l1_batch.source_oid,
 					  l1_batch.min_time,
 					  l1_batch.max_time);
@@ -377,6 +384,9 @@ cagg_l1_xact_callback(XactEvent event, void *arg)
 		case XACT_EVENT_ABORT:
 		case XACT_EVENT_PARALLEL_ABORT:
 			/* Discard on abort — no L1 should be written */
+			if (l1_batch.has_data)
+				elog(DEBUG2, "cagg L1 batch discarded on abort: "
+					 "source_oid=%u", l1_batch.source_oid);
 			l1_batch.has_data = false;
 			break;
 
@@ -475,8 +485,13 @@ cagg_extract_time(HeapTuple tuple, TupleDesc tupdesc,
 						DirectFunctionCall1(date_timestamptz, val));
 			break;
 		default:
-			elog(ERROR, "cagg_invalidation_trigfn: unsupported time column type %u",
-				 typid);
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("unsupported time column type for "
+							"continuous aggregate: type OID %u",
+							typid),
+					 errhint("Supported types: timestamp, timestamptz, "
+							 "date, integer, bigint.")));
 			return false;
 	}
 
@@ -532,9 +547,33 @@ cagg_invalidation_trigfn(PG_FUNCTION_ARGS)
 	AttrNumber		time_attnum;
 
 	if (!CALLED_AS_TRIGGER(fcinfo))
-		elog(ERROR, "cagg_invalidation_trigfn: not called by trigger manager");
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cagg_invalidation_trigfn must be called as a trigger")));
 
 	trigdata = (TriggerData *) fcinfo->context;
+
+	/*
+	 * Yield silently when the extension is not installed, is being
+	 * upgraded, or while a logical dump is being replayed.  Without
+	 * this guard pg_restore would re-invalidate every CAGG range as
+	 * the dumped data is replayed (and may even reference a
+	 * cagg_id that no longer matches the post-restore catalog).
+	 */
+	if (!ts_extension_is_loaded_and_not_upgrading())
+	{
+		HeapTuple ret_tuple = trigdata->tg_newtuple ?
+			trigdata->tg_newtuple : trigdata->tg_trigtuple;
+		if (ret_tuple == NULL && trigdata->tg_newslot != NULL &&
+			!TupIsNull(trigdata->tg_newslot))
+			ret_tuple = ExecFetchSlotHeapTuple(trigdata->tg_newslot,
+											   false, NULL);
+		if (ret_tuple == NULL && trigdata->tg_trigslot != NULL &&
+			!TupIsNull(trigdata->tg_trigslot))
+			ret_tuple = ExecFetchSlotHeapTuple(trigdata->tg_trigslot,
+											   false, NULL);
+		return PointerGetDatum(ret_tuple);
+	}
 
 	/*
 	 * Only write L1 on segments.  On coordinator (QD) or utility mode,
@@ -667,6 +706,8 @@ cagg_init_segment_watermark(PG_FUNCTION_ARGS)
 
 	table_close(wm_rel, RowExclusiveLock);
 
+	elog(DEBUG2, "cagg watermark initialized: cagg_id=%d, segment-local",
+		 cagg_id);
 	PG_RETURN_VOID();
 }
 
@@ -711,42 +752,9 @@ cagg_init_segment_threshold(PG_FUNCTION_ARGS)
 
 	table_close(th_rel, RowExclusiveLock);
 
+	elog(DEBUG2, "cagg threshold initialized: source_oid=%u, segment-local",
+		 source_oid);
 	PG_RETURN_VOID();
-}
-
-/* ================================================================
- * STATEMENT-level trigger for TRUNCATE.
- *
- * TRUNCATE does not fire ROW-level triggers, so we need a separate
- * STATEMENT-level trigger that writes a full-range invalidation entry
- * {-infinity, +infinity} to L1.
- * ================================================================ */
-
-PG_FUNCTION_INFO_V1(cagg_invalidation_truncate_trigfn);
-
-Datum
-cagg_invalidation_truncate_trigfn(PG_FUNCTION_ARGS)
-{
-	TriggerData	   *trigdata;
-	Oid				source_oid;
-
-	if (!CALLED_AS_TRIGGER(fcinfo))
-		elog(ERROR, "cagg_invalidation_truncate_trigfn: not called by trigger manager");
-
-	trigdata = (TriggerData *) fcinfo->context;
-
-	/* Only write on segments */
-	if (Gp_role != GP_ROLE_EXECUTE)
-		return PointerGetDatum(NULL);
-
-	source_oid = RelationGetRelid(trigdata->tg_relation);
-
-	cagg_invalidate_cache_if_needed(source_oid);
-
-	/* Write full-range invalidation */
-	cagg_write_l1(source_oid, DT_NOBEGIN, DT_NOEND);
-
-	return PointerGetDatum(NULL);
 }
 
 /* ================================================================
@@ -793,7 +801,7 @@ cagg_watermark_fn(PG_FUNCTION_ARGS)
 				 errhint("Is the time_series extension installed?")));
 
 	wm_rel = table_open(wm_oid, AccessShareLock);
-	scan = heap_beginscan(wm_rel, GetTransactionSnapshot(), 0, NULL, NULL, 0);
+	scan = heap_beginscan(wm_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{

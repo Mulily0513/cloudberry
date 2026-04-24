@@ -1,0 +1,152 @@
+-- ============================================================
+-- bgw_scheduler_control.sql
+--
+-- Mock-time port of TimescaleDB tsl/test/sql/bgw_scheduler_control.sql
+-- (Apache 2.0 spirit-equivalent).  Tests scheduler GUC controls.
+--
+-- Multi-role grant tests (ALTER SYSTEM permissions for
+-- non-superuser) are skipped because V1 doesn't have ROLE_*
+-- fixture infrastructure baked in.
+--
+-- 2 cases / 2 mock_time scheduler ticks.
+-- ============================================================
+SET optimizer = off;
+SET timezone = 'UTC';
+DROP EXTENSION IF EXISTS time_series CASCADE;
+NOTICE:  extension "time_series" does not exist, skipping
+DROP TABLE IF EXISTS public.bgw_log CASCADE;
+NOTICE:  table "bgw_log" does not exist, skipping
+DROP TABLE IF EXISTS public.bgw_dsm_handle_store CASCADE;
+NOTICE:  table "bgw_dsm_handle_store" does not exist, skipping
+CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
+SET search_path TO public, time_series;
+-- ============================================================
+-- Test infrastructure
+-- ============================================================
+CREATE TABLE public.bgw_log(
+    msg_no INT,
+    mock_time BIGINT,
+    application_name TEXT,
+    msg TEXT
+) DISTRIBUTED REPLICATED;
+CREATE TABLE public.bgw_dsm_handle_store(handle BIGINT) DISTRIBUTED REPLICATED;
+INSERT INTO public.bgw_dsm_handle_store VALUES (0);
+SELECT time_series.ts_bgw_params_create();
+ ts_bgw_params_create 
+----------------------
+ 
+(1 row)
+
+CREATE FUNCTION public.insert_test_job(
+    application_name name,
+    proc_name name,
+    schedule_interval interval,
+    max_runtime interval = '0',
+    retry_period interval = '1s',
+    scheduled bool = true
+) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+    v_id int;
+BEGIN
+    INSERT INTO time_series.bgw_job(
+        application_name, schedule_interval, max_runtime, max_retries,
+        retry_period, proc_schema, proc_name, scheduled, fixed_schedule,
+        initial_start, hypertable_id, config)
+    VALUES (
+        application_name, schedule_interval, max_runtime, -1,
+        retry_period, 'time_series', proc_name, scheduled, false,
+        now(), 0, NULL)
+    RETURNING id INTO v_id;
+    RETURN v_id;
+END$$;
+SELECT time_series.ts_bgw_params_mock_wait_returns_immediately(1);
+ ts_bgw_params_mock_wait_returns_immediately 
+---------------------------------------------
+ 
+(1 row)
+
+-- ============================================================
+-- CTL-01: bgw_log_level GUC at DEBUG1 includes more log lines
+-- (bgw_scheduler_control.sql L46-84)
+-- ============================================================
+\echo '=== CTL-01: bgw_log_level=DEBUG1 captures debug messages ==='
+=== CTL-01: bgw_log_level=DEBUG1 captures debug messages ===
+SET time_series.bgw_log_level = 'DEBUG1';
+SELECT time_series.ts_bgw_params_reset_time(0, false);
+ ts_bgw_params_reset_time 
+--------------------------
+ 
+(1 row)
+
+SELECT public.insert_test_job('test_ctl_1', 'bgw_test_job_1',
+       INTERVAL '100ms', INTERVAL '100s', INTERVAL '1s')
+   AS jid_ctl1 \gset
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(25);
+ ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish 
+------------------------------------------------------------
+ 
+(1 row)
+
+-- Should have captured at least one DB Scheduler log line
+SELECT count(*) > 0 AS scheduler_logged_at_debug1
+  FROM public.bgw_log WHERE application_name = 'DB Scheduler';
+ scheduler_logged_at_debug1 
+----------------------------
+ t
+(1 row)
+
+-- Job ran
+SELECT total_runs >= 1 AS job_ran
+  FROM time_series.bgw_job_stat WHERE job_id = :jid_ctl1;
+ job_ran 
+---------
+ t
+(1 row)
+
+DELETE FROM time_series.bgw_job WHERE id = :jid_ctl1;
+-- ============================================================
+-- CTL-02: bgw_log_level reset → fewer log lines (default WARNING)
+-- (bgw_scheduler_control.sql L89-92)
+-- ============================================================
+\echo '=== CTL-02: bgw_log_level reset returns to default ==='
+=== CTL-02: bgw_log_level reset returns to default ===
+RESET time_series.bgw_log_level;
+TRUNCATE public.bgw_log;
+SELECT time_series.ts_bgw_params_reset_time(0, false);
+ ts_bgw_params_reset_time 
+--------------------------
+ 
+(1 row)
+
+SELECT public.insert_test_job('test_ctl_2', 'bgw_test_job_1',
+       INTERVAL '100ms', INTERVAL '100s', INTERVAL '1s')
+   AS jid_ctl2 \gset
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(25);
+ ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish 
+------------------------------------------------------------
+ 
+(1 row)
+
+-- Job still runs (log level only affects how much is logged)
+SELECT total_runs >= 1 AS job_ran_at_default_log
+  FROM time_series.bgw_job_stat WHERE job_id = :jid_ctl2;
+ job_ran_at_default_log 
+------------------------
+ t
+(1 row)
+
+DELETE FROM time_series.bgw_job WHERE id = :jid_ctl2;
+-- ============================================================
+-- Cleanup
+-- ============================================================
+SELECT time_series.ts_bgw_params_destroy();
+ ts_bgw_params_destroy 
+-----------------------
+ 
+(1 row)
+
+DROP TABLE public.bgw_log;
+DROP TABLE public.bgw_dsm_handle_store;
+DROP FUNCTION public.insert_test_job(name, name, interval, interval, interval, bool);
+DROP EXTENSION time_series CASCADE;

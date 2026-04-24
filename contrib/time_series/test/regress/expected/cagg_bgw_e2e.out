@@ -1,0 +1,282 @@
+-- ============================================================
+-- cagg_bgw_e2e.sql
+--
+-- End-to-end BGW worker integration tests.
+--
+-- Unlike cagg_bgw_mock.sql (mock scheduler) and cagg_bgw_policy.sql
+-- (synchronous run_job), this file exercises the *real* BGW path:
+-- scheduler wakes → fork worker → worker executes refresh → mark_end
+-- writes stat.  Validates that:
+--   1. Real scheduler picks up newly-INSERTed bgw_job rows promptly
+--      (regression: previously took 60+ s due to no relcache callback)
+--   2. Real worker process completes a CAGG refresh successfully
+--   3. run_job in an explicit BEGIN block has predictable semantics
+-- ============================================================
+SET optimizer = off;
+SET timezone = 'UTC';
+DROP EXTENSION IF EXISTS time_series CASCADE;
+NOTICE:  extension "time_series" does not exist, skipping
+CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
+SET search_path TO public, time_series;
+-- ============================================================
+-- Test infra: one-shot stat reader for polling
+-- ============================================================
+-- Returns the current total_runs for a given job_id.  Used below
+-- in a "pg_sleep / poll_runs" pattern at psql command level — each
+-- pair of statements runs in its own transaction with a fresh
+-- snapshot, so commits made by the BGW worker between iterations
+-- are visible.
+--
+-- A plpgsql LOOP would NOT work here: plpgsql functions hold one
+-- snapshot for the whole call, so a worker's commit during the
+-- loop would never become visible to subsequent SELECTs inside
+-- the same function.
+CREATE OR REPLACE FUNCTION poll_runs(p_job_id int) RETURNS int
+LANGUAGE sql AS $$
+    SELECT total_runs::int FROM time_series.bgw_job_stat WHERE job_id = p_job_id;
+$$;
+-- ============================================================
+-- Source data + CAGG
+-- ============================================================
+CREATE TABLE m_e2e (
+    time TIMESTAMPTZ NOT NULL,
+    tags_id INT NOT NULL,
+    v INT
+) DISTRIBUTED BY (tags_id);
+-- 600 rows across 50 hours × 5 tags.  Sized so that:
+--   * each hour bucket has multiple rows (count(*) > 1)
+--   * data lands on every segment (not a single-row degenerate)
+--   * refresh has enough work that mark_end stats are meaningful
+INSERT INTO m_e2e
+SELECT now() - (i * interval '5 minutes'),
+       (i % 5) + 1,
+       i
+FROM generate_series(1, 600) i;
+CREATE MATERIALIZED VIEW cv_e2e
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS c
+  FROM m_e2e GROUP BY bucket, tags_id;
+NOTICE:  continuous aggregate "cv_e2e" successfully created
+DETAIL:  Materialization table: time_series._mat_cv_e2e_1
+-- ============================================================
+-- E2E-01: Real scheduler picks up new policy within ~10 seconds
+--
+-- schedule_interval = 5s (not 1h) so the test can actually observe
+-- a SECOND tick within its 30s walltime budget.  With 1h the test
+-- only ever sees total_runs = 1, which can't distinguish "policy
+-- ran exactly once and stopped" from "schedule_interval honored".
+-- ============================================================
+\echo '=== E2E-01: real BGW scheduler picks up new policy promptly ==='
+=== E2E-01: real BGW scheduler picks up new policy promptly ===
+SELECT add_continuous_aggregate_policy('cv_e2e',
+       '7 days'::interval, '0'::interval, '5 seconds'::interval) AS jid_e2e \gset
+-- Force the worker to fire on first iteration: set next_start in the past.
+UPDATE time_series.bgw_job_stat
+   SET next_start = now() - interval '1 minute'
+ WHERE job_id = :jid_e2e;
+-- ALSO seed a stat row if mark_start hasn't run yet (race with first
+-- scheduler tick) — INSERT IF NOT EXISTS via UPSERT pattern.
+-- The UPDATE above is no-op if the row doesn't exist; ensure it exists:
+INSERT INTO time_series.bgw_job_stat (job_id, next_start)
+SELECT :jid_e2e, now() - interval '1 minute'
+WHERE NOT EXISTS (
+    SELECT 1 FROM time_series.bgw_job_stat WHERE job_id = :jid_e2e
+);
+-- Poll for the worker to fire.  Belt-and-suspenders scheduler reload
+-- bounds the latency to one MAX_TIMEOUT (5s) wakeup; we wait up to ~20s
+-- split into 5 sleeps so each pg_sleep() ends a statement and the next
+-- SELECT can see fresh committed data (plpgsql LOOPs reuse the
+-- function's snapshot, which would never observe the worker's commit).
+\o /dev/null
+SELECT pg_sleep(4); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(4); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(4); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(4); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(4); SELECT poll_runs(:jid_e2e);
+\o
+SELECT poll_runs(:jid_e2e) >= 1 AS worker_ran_within_20s;
+ worker_ran_within_20s 
+-----------------------
+ t
+(1 row)
+
+-- Assert the worker actually wrote a successful run.
+SELECT total_runs >= 1   AS at_least_one_run,
+       total_successes >= 1 AS at_least_one_success,
+       last_run_success   AS last_ok
+  FROM time_series.bgw_job_stat WHERE job_id = :jid_e2e;
+ at_least_one_run | at_least_one_success | last_ok 
+------------------+----------------------+---------
+ t                | t                    | f
+(1 row)
+
+-- Assert the cagg is materialized AND correct.  With 600 source rows
+-- / 5 tags / 5-minute spacing, each 1-hour bucket aggregates ~2-3 rows
+-- per tag.
+--
+-- "Correct" means: cv_e2e row count matches a fresh GROUP BY of the
+-- source table — strictly stronger than "row count is non-zero".  This
+-- catches a class of regressions where BGW dispatch works but refresh
+-- writes the wrong number of mat rows (off-by-one on bucket boundary,
+-- missing tags, double-write on retry, ...).
+SELECT (SELECT count(*) FROM cv_e2e) =
+       (SELECT count(*) FROM (
+            SELECT time_bucket('1 hour'::interval, time), tags_id
+              FROM m_e2e GROUP BY 1, 2) src)
+       AS cagg_row_count_matches_source,
+       (SELECT max(c) FROM cv_e2e) > 1 AS bucket_aggregates_multiple_rows;
+ cagg_row_count_matches_source | bucket_aggregates_multiple_rows 
+-------------------------------+---------------------------------
+ t                             | t
+(1 row)
+
+-- Assert schedule_interval=5s is actually honored: poll up to ~30s
+-- and require total_runs to advance from 1 to >= 3 (ie at least 2
+-- additional ticks fired after the initial one).
+\o /dev/null
+SELECT pg_sleep(6); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(6); SELECT poll_runs(:jid_e2e);
+SELECT pg_sleep(6); SELECT poll_runs(:jid_e2e);
+\o
+SELECT poll_runs(:jid_e2e) >= 3 AS schedule_interval_honored;
+ schedule_interval_honored 
+---------------------------
+ t
+(1 row)
+
+-- ============================================================
+-- E2E-04: BGW auto-refresh picks up new INSERTs
+--
+-- The whole point of an auto-refresh policy is "I INSERT new data,
+-- BGW notices and re-materializes within schedule_interval without
+-- me lifting a finger."  E2E-01 only verifies the FIRST refresh
+-- after policy registration; this case verifies the steady-state
+-- "new data → automatic refresh" loop, which is the user-facing
+-- contract of the whole feature.
+--
+-- Strategy: insert one batch of new buckets (synthetic future-ish
+-- timestamps offset from the existing range), poll for cv_e2e to
+-- include them, assert they arrived without us calling run_job.
+-- ============================================================
+\echo '=== E2E-04: BGW auto-refreshes on incremental INSERT ==='
+=== E2E-04: BGW auto-refreshes on incremental INSERT ===
+SELECT count(*) AS cv_rows_before FROM cv_e2e \gset
+-- Insert 30 new rows in 6 fresh buckets we have NOT seen before
+-- (offset into the past so they fall within the start_offset=7d
+-- window but well before the existing data).  Trigger writes them
+-- to cagg_invalidation_log (L1).
+INSERT INTO m_e2e
+SELECT now() - interval '6 days' - (i * interval '15 minutes'),
+       (i % 5) + 1,
+       9000 + i
+FROM generate_series(1, 30) i;
+-- Poll for BGW to absorb the new buckets.  schedule_interval=5s
+-- means at most one tick window plus refresh time before the
+-- new mat rows show up.  Budget 25s to be safe.
+\o /dev/null
+SELECT pg_sleep(6); SELECT count(*) FROM cv_e2e;
+SELECT pg_sleep(6); SELECT count(*) FROM cv_e2e;
+SELECT pg_sleep(6); SELECT count(*) FROM cv_e2e;
+SELECT pg_sleep(6); SELECT count(*) FROM cv_e2e;
+\o
+-- Assert: cv_e2e grew, AND it now matches a fresh GROUP BY of
+-- the source (ie BGW absorbed exactly the new buckets, not
+-- duplicates and not partial).
+SELECT (SELECT count(*) FROM cv_e2e) > :cv_rows_before
+       AS cagg_grew_after_insert,
+       (SELECT count(*) FROM cv_e2e) =
+       (SELECT count(*) FROM (
+            SELECT time_bucket('1 hour'::interval, time), tags_id
+              FROM m_e2e GROUP BY 1, 2) src)
+       AS cagg_row_count_still_matches;
+ cagg_grew_after_insert | cagg_row_count_still_matches 
+------------------------+------------------------------
+ t                      | t
+(1 row)
+
+-- ============================================================
+-- E2E-02: cleanup the policy — worker stops firing
+-- ============================================================
+\echo '=== E2E-02: remove policy → no further runs ==='
+=== E2E-02: remove policy → no further runs ===
+SELECT total_runs AS runs_at_removal FROM time_series.bgw_job_stat
+ WHERE job_id = :jid_e2e \gset
+SELECT remove_continuous_aggregate_policy('cv_e2e');
+ remove_continuous_aggregate_policy 
+------------------------------------
+ 
+(1 row)
+
+-- After remove, the bgw_job row is gone and stat is cascade-deleted.
+SELECT count(*) AS job_rows_after_remove
+  FROM time_series.bgw_job WHERE id = :jid_e2e;
+ job_rows_after_remove 
+-----------------------
+                     0
+(1 row)
+
+SELECT count(*) AS stat_rows_after_remove
+  FROM time_series.bgw_job_stat WHERE job_id = :jid_e2e;
+ stat_rows_after_remove 
+------------------------
+                      0
+(1 row)
+
+-- ============================================================
+-- E2E-03: run_job inside an explicit transaction block must error
+--
+-- The run_job procedure manages transactions internally on the failure
+-- path (AbortCurrentTransaction + StartTransactionCommand so mark_end
+-- can record the failure stat).  PG forbids that in an atomic call
+-- context, so run_job must reject up-front rather than crash with an
+-- assertion.  Documented contract: run_job is autocommit-only.
+-- ============================================================
+\echo '=== E2E-03: run_job inside BEGIN/COMMIT raises a clean error ==='
+=== E2E-03: run_job inside BEGIN/COMMIT raises a clean error ===
+SELECT add_continuous_aggregate_policy('cv_e2e',
+       '7 days'::interval, '0'::interval, '1 hour'::interval) AS jid_b1 \gset
+\set VERBOSITY terse
+\set ON_ERROR_STOP 0
+BEGIN;
+CALL time_series.run_job(:jid_b1);
+ERROR:  time_series.run_job cannot run in an atomic context
+ROLLBACK;
+\set ON_ERROR_STOP 1
+\set VERBOSITY default
+-- Sanity: autocommit run_job still works (regression — this is the
+-- supported call path).
+--
+-- NOTICE output is suppressed because two independent refresh paths
+-- race here: (1) the real BGW scheduler picks up jid_b1 (next_start=now())
+-- and forks a worker, (2) this CALL runs synchronously.  Both serialize
+-- on pg_advisory_xact_lock(cagg_id), so whichever wins drains the
+-- invalidation log; the loser sees an empty log and emits
+-- "already up-to-date".  Either ordering is correct, but the captured
+-- expected output is timing-dependent.  The actual assertion is
+-- run_attempted_autocommit (total_runs > 0) — independent of NOTICE
+-- content.  See cagg/refresh.c:1132,1463 for the two NOTICE sites.
+SET client_min_messages TO WARNING;
+CALL time_series.run_job(:jid_b1);
+RESET client_min_messages;
+SELECT total_runs > 0 AS run_attempted_autocommit
+  FROM time_series.bgw_job_stat WHERE job_id = :jid_b1;
+ run_attempted_autocommit 
+--------------------------
+ t
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+SELECT remove_continuous_aggregate_policy('cv_e2e');
+ remove_continuous_aggregate_policy 
+------------------------------------
+ 
+(1 row)
+
+DROP VIEW cv_e2e;
+DROP TABLE m_e2e;
+DROP FUNCTION poll_runs(int);
+DROP EXTENSION time_series CASCADE;

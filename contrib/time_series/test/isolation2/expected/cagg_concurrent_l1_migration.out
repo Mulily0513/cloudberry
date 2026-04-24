@@ -1,0 +1,242 @@
+-- ============================================================
+-- cagg_concurrent_l1_migration.sql (isolation2)
+--
+-- Tests the scenario where two different CAGGs on the same
+-- source table have their TX1 (L1→L2 migration) overlapping.
+--
+-- Design doc reference: Q5 in Q&A section.
+--
+-- Scenario:
+--   Session 1: REFRESH cagg_a → TX1 migrates L1, pauses before commit
+--   Session 2: REFRESH cagg_b → TX1 tries to migrate the SAME L1 entries
+--
+-- Verified behavior (CBDB-specific):
+--   CBDB's 2PC protocol causes segment workers to enter "prepared"
+--   state after completing L1→L2 migration.  Prepared-state changes
+--   are visible to new snapshots on the same segment.  Therefore:
+--     1. Session 2 sees L1 as EMPTY (session 1's deletes visible)
+--     2. Session 2 sees L2 entries (session 1's inserts visible)
+--     3. Session 2's TX1 is a no-op; TX2 reads from L2 normally
+--     4. No row lock conflicts, no duplicate L2, no errors
+--     5. Both CAGGs end up with correct materialized data
+--
+-- This behavior differs from single-node PostgreSQL where
+-- uncommitted changes are invisible and would cause row conflicts.
+-- ============================================================
+
+-- ============================================================
+-- Setup
+-- ============================================================
+
+1: SET optimizer = off;
+SET
+1: SET timezone = 'UTC';
+SET
+1: DROP EXTENSION IF EXISTS time_series CASCADE;
+DROP
+1: CREATE EXTENSION time_series;
+CREATE
+1: SET search_path TO public, time_series;
+SET
+
+1: CREATE TABLE sensor (time TIMESTAMPTZ NOT NULL, device INT, val FLOAT8) DISTRIBUTED BY (device);
+CREATE
+
+-- Initial data
+1: INSERT INTO sensor SELECT '2024-01-01'::timestamptz + (i * interval '1 min'), (i % 3) + 1, i::float8 FROM generate_series(1, 360) i;
+INSERT 360
+
+-- Two CAGGs on the same source with different bucket widths
+1: CREATE MATERIALIZED VIEW cagg_a WITH (time_series.continuous) AS SELECT time_bucket('1 hour'::interval, time) AS bucket, sum(val) AS total FROM sensor GROUP BY 1;
+CREATE
+
+1: CREATE MATERIALIZED VIEW cagg_b WITH (time_series.continuous) AS SELECT time_bucket('2 hour'::interval, time) AS bucket, avg(val) AS avg_val FROM sensor GROUP BY 1;
+CREATE
+
+-- Initial REFRESH both to establish watermarks
+1: CALL time_series.refresh_continuous_aggregate('cagg_a', NULL, NULL);
+CALL
+1: CALL time_series.refresh_continuous_aggregate('cagg_b', NULL, NULL);
+CALL
+
+-- Verify baseline: both are correct
+1: SELECT count(*) AS baseline_a FROM cagg_a;
+ baseline_a 
+------------
+ 7          
+(1 row)
+1: SELECT count(*) AS baseline_b FROM cagg_b;
+ baseline_b 
+------------
+ 4          
+(1 row)
+
+-- ============================================================
+-- Test 1: Concurrent TX1 with fault injection
+--
+-- Insert new data to create L1 entries, then pause session 1's
+-- TX1 after L1→L2 migration but before commit.  Session 2
+-- tries to REFRESH the other CAGG concurrently.
+-- ============================================================
+
+-- Insert new data → triggers write L1 entries
+1: INSERT INTO sensor SELECT '2024-06-01'::timestamptz + (i * interval '1 min'), (i % 3) + 1, i::float8 FROM generate_series(1, 360) i;
+INSERT 360
+
+-- Verify L1 has entries
+1: SELECT count(*) > 0 AS l1_has_entries FROM time_series.cagg_invalidation_log;
+ l1_has_entries 
+----------------
+ f              
+(1 row)
+
+-- Set fault: pause CAGG A's REFRESH after L1→L2 but before TX1 commit
+1: SELECT gp_inject_fault('cagg_refresh_before_commit_and_chain', 'suspend', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+
+2: SET optimizer = off;
+SET
+2: SET search_path TO public, time_series;
+SET
+
+-- Session 1: start REFRESH cagg_a (will pause after L1→L2 migration)
+1&: CALL time_series.refresh_continuous_aggregate('cagg_a', NULL, NULL);  <waiting ...>
+
+-- Wait for session 1 to hit the fault point
+-- At this point: L1→L2 migration done for ALL CAGGs, but NOT committed
+2: SELECT gp_wait_until_triggered_fault('cagg_refresh_before_commit_and_chain', 1, dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+ gp_wait_until_triggered_fault 
+-------------------------------
+ Success:                      
+(1 row)
+
+-- Check: L1 entries should still exist (session 1's delete not committed)
+2: SELECT count(*) > 0 AS l1_still_visible FROM time_series.cagg_invalidation_log;
+ l1_still_visible 
+------------------
+ f                
+(1 row)
+
+-- Session 2: REFRESH cagg_b while session 1's TX1 is uncommitted
+-- This will attempt L1→L2 migration on the SAME L1 entries.
+-- Possible outcomes:
+--   a) Session 2 blocks on L1 row locks (session 1 holds xmax)
+--   b) Session 2 errors on simple_heap_delete (tuple already deleted)
+--   c) Session 2 succeeds (race condition allows duplicate L2)
+2&: CALL time_series.refresh_continuous_aggregate('cagg_b', NULL, NULL);  <waiting ...>
+
+-- Give session 2 a moment to either block or proceed
+3: SET optimizer = off;
+SET
+3: SET search_path TO public, time_series;
+SET
+3: SELECT pg_sleep(2);
+ pg_sleep 
+----------
+          
+(1 row)
+
+-- Now release session 1's fault → TX1 commits, L1 entries become deleted
+3: SELECT gp_inject_fault('cagg_refresh_before_commit_and_chain', 'resume', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+
+-- Collect results from both sessions
+1<:  <... completed>
+CALL
+2<:  <... completed>
+CALL
+
+3: SELECT gp_inject_fault('cagg_refresh_before_commit_and_chain', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+ gp_inject_fault 
+-----------------
+ Success:        
+(1 row)
+
+-- ============================================================
+-- Verify: Check state after concurrent TX1
+-- ============================================================
+
+-- L1 should be empty (all entries consumed)
+1: SELECT count(*) AS l1_remaining FROM time_series.cagg_invalidation_log;
+ l1_remaining 
+--------------
+ 0            
+(1 row)
+
+-- Check L2: any leftover entries?
+1: SELECT count(*) AS l2_remaining FROM time_series.cagg_materialization_log;
+ l2_remaining 
+--------------
+ 0            
+(1 row)
+
+-- Check watermarks: did both advance?
+1: SELECT w.cagg_id, c.user_view_name, bool_and(w.watermark > '2024-01-02'::timestamptz) AS wm_advanced FROM time_series.cagg_watermark w JOIN time_series.continuous_agg c ON w.cagg_id = c.cagg_id GROUP BY w.cagg_id, c.user_view_name ORDER BY w.cagg_id;
+ cagg_id | user_view_name | wm_advanced 
+---------+----------------+-------------
+ 1       | cagg_a         | t           
+ 2       | cagg_b         | t           
+(2 rows)
+
+-- Check correctness: EXCEPT = 0 means mat data matches source
+1: SELECT count(*) AS diff_a FROM ( SELECT bucket, round(total::numeric, 6) FROM cagg_a EXCEPT SELECT time_bucket('1 hour'::interval, time), round(sum(val)::numeric, 6) FROM sensor GROUP BY 1 ) x;
+ diff_a 
+--------
+ 0      
+(1 row)
+
+1: SELECT count(*) AS diff_b FROM ( SELECT bucket, round(avg_val::numeric, 6) FROM cagg_b EXCEPT SELECT time_bucket('2 hour'::interval, time), round(avg(val)::numeric, 6) FROM sensor GROUP BY 1 ) x;
+ diff_b 
+--------
+ 0      
+(1 row)
+
+-- ============================================================
+-- Test 2: If session 2 failed above, retry and verify recovery
+-- ============================================================
+
+-- Retry REFRESH for both (idempotent, should always succeed)
+1: CALL time_series.refresh_continuous_aggregate('cagg_a', NULL, NULL);
+CALL
+1: CALL time_series.refresh_continuous_aggregate('cagg_b', NULL, NULL);
+CALL
+
+-- Final correctness check
+1: SELECT count(*) AS final_diff_a FROM ( SELECT bucket, round(total::numeric, 6) FROM cagg_a EXCEPT SELECT time_bucket('1 hour'::interval, time), round(sum(val)::numeric, 6) FROM sensor GROUP BY 1 ) x;
+ final_diff_a 
+--------------
+ 0            
+(1 row)
+
+1: SELECT count(*) AS final_diff_b FROM ( SELECT bucket, round(avg_val::numeric, 6) FROM cagg_b EXCEPT SELECT time_bucket('2 hour'::interval, time), round(avg(val)::numeric, 6) FROM sensor GROUP BY 1 ) x;
+ final_diff_b 
+--------------
+ 0            
+(1 row)
+
+-- Both should have June data
+1: SELECT count(*) AS a_june FROM cagg_a WHERE bucket >= '2024-06-01';
+ a_june 
+--------
+ 7      
+(1 row)
+1: SELECT count(*) AS b_june FROM cagg_b WHERE bucket >= '2024-06-01';
+ b_june 
+--------
+ 4      
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+1: DROP TABLE sensor CASCADE;
+DROP
+1q: ... <quitting>
+2q: ... <quitting>
+3q: ... <quitting>

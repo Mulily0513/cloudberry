@@ -8,6 +8,7 @@ test: cagg_insert
 test: cagg_concurrent_refresh
 
 # Two CAGGs on same source: concurrent INSERT/UPDATE/REFRESH
+test: cagg_multi_iso
 
 # Concurrent invalidation threshold updates
 test: cagg_concurrent_invalidation

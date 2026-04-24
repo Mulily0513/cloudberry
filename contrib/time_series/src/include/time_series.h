@@ -15,8 +15,34 @@
 #include "optimizer/planner.h"
 #include "utils/relcache.h"
 
+/* ----------------------------------------------------------------
+ * Extension identity — single source of truth so renames don't
+ * require touching a dozen string literals.
+ * ---------------------------------------------------------------- */
+#define TS_EXTENSION_NAME         "time_series"
+#define TS_EXTENSION_SCHEMA_NAME  "time_series"
+
 /* Cached namespace OID (time_series.c) */
 extern Oid ht_get_namespace_oid_cached(void);
+
+/* ---- Extension state machine (time_series.c) ----
+ *
+ * Mirrors TimescaleDB's pattern in src/extension.c: track whether
+ * the time_series extension is installed in the current database
+ * via a process-local state machine, refreshed lazily and
+ * invalidated by relcache callbacks on the proxy table
+ * (time_series.continuous_agg).
+ *
+ * Hooks installed by _PG_init outlive DROP EXTENSION CASCADE
+ * (the .so stays loaded), so every hook entry must guard its
+ * SPI / catalog access with ts_extension_is_loaded_and_not_upgrading().
+ */
+extern bool ts_extension_is_loaded(void);
+extern bool ts_extension_is_loaded_and_not_upgrading(void);
+extern void ts_extension_invalidate(void);
+
+/* GUC: time_series.restoring — suppress hooks during pg_restore */
+extern bool ts_guc_restoring;
 
 /* ---- time_bucket functions (time_bucket.c) ---- */
 
@@ -67,9 +93,6 @@ extern void ht_cagg_init(void);
 /* Row-level trigger: write dirty time ranges to L1 */
 extern Datum cagg_invalidation_trigfn(PG_FUNCTION_ARGS);
 
-/* Statement-level trigger for TRUNCATE: full-range L1 invalidation */
-extern Datum cagg_invalidation_truncate_trigfn(PG_FUNCTION_ARGS);
-
 /* Segment-local watermark initialization (dispatched via gp_dist_random) */
 extern Datum cagg_init_segment_watermark(PG_FUNCTION_ARGS);
 
@@ -81,6 +104,13 @@ extern Datum cagg_watermark_fn(PG_FUNCTION_ARGS);
 /* Max number of individual interval refreshes per REFRESH call.
  * If exceeded, merge all intervals into one large range. Default 10. */
 extern int ts_guc_materializations_per_refresh_window;
+
+/* ---- BGW GUC variables (defined in bgw/scheduler.c) ---- */
+extern int ts_guc_bgw_max_workers;
+
+/* ---- BGW Scheduler (bgw/scheduler.c) ---- */
+extern void ts_bgw_define_gucs(void);
+extern void ts_bgw_register_scheduler(void);
 
 /* ---- Continuous Aggregate REFRESH (cagg_refresh.c) ---- */
 

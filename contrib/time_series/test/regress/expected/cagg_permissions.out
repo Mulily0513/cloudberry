@@ -14,6 +14,7 @@ SET optimizer = off;
 SET timezone = 'UTC';
 DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 SET search_path TO public, time_series;
 -- ============================================================
 -- Setup: create test roles and source table
@@ -51,6 +52,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "sensor_hourly" successfully created
 DETAIL:  Materialization table: time_series._mat_sensor_hourly_1
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- ============================================================
 -- PERM-01: Owner can SELECT, REFRESH, ALTER — baseline
 -- ============================================================
@@ -63,6 +65,7 @@ SELECT count(*) AS owner_select FROM sensor_hourly;
 (1 row)
 
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 ALTER VIEW sensor_hourly SET (time_series.materialized_only = true);
 SELECT materialized_only FROM time_series.continuous_agg
 WHERE user_view_name = 'sensor_hourly';
@@ -113,8 +116,7 @@ RESET ROLE;
 \set ON_ERROR_STOP 0
 SET ROLE ts_user_reader;
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
-ERROR:  permission denied for table continuous_agg
-CONTEXT:  SQL statement "SELECT c.cagg_id, c.source_table_oid, c.mat_table_schema, c.mat_table_name, c.partial_view_schema, c.partial_view_name, c.bucket_column, c.bucket_width, bf.time_type, a.attname AS mat_bucket_col FROM time_series.continuous_agg c JOIN time_series.cagg_bucket_function bf ON c.cagg_id = bf.cagg_id JOIN pg_class pc ON pc.relname = c.mat_table_name   AND pc.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = c.mat_table_schema) JOIN pg_attribute a ON a.attrelid = pc.oid AND a.attnum = 1 AND NOT a.attisdropped WHERE c.user_view_schema = $1 AND c.user_view_name = $2"
+ERROR:  must be owner of materialized view sensor_hourly
 RESET ROLE;
 \set ON_ERROR_STOP 1
 -- ============================================================
@@ -125,8 +127,7 @@ RESET ROLE;
 \set ON_ERROR_STOP 0
 SET ROLE ts_user_reader;
 ALTER VIEW sensor_hourly SET (time_series.materialized_only = true);
-ERROR:  permission denied for table continuous_agg
-CONTEXT:  SQL statement "SELECT cagg_id, user_view_schema, user_view_name,        mat_table_schema, mat_table_name,        direct_view_schema, direct_view_name,        materialized_only FROM time_series.continuous_agg WHERE user_view_schema = $1 AND user_view_name = $2"
+ERROR:  must be owner of view sensor_hourly
 RESET ROLE;
 \set ON_ERROR_STOP 1
 -- ============================================================
@@ -209,6 +210,7 @@ RESET ROLE;
 -- Restore
 ALTER VIEW sensor_hourly SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 -- ============================================================
 -- PERM-10: Writer with INSERT on source → trigger fires correctly
 --          (trigger runs as table owner, not the inserting user)
@@ -230,6 +232,7 @@ FROM time_series.cagg_invalidation_log;
 
 -- REFRESH (as owner) should pick up the writer's invalidation
 CALL time_series.refresh_continuous_aggregate('sensor_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "sensor_hourly"
 SELECT count(*) AS diff_after_writer FROM (
   (  SELECT bucket, device_id, cnt, round(avg_temp::numeric, 10) FROM sensor_hourly
    EXCEPT
@@ -281,6 +284,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "hourly" successfully created
 DETAIL:  Materialization table: time_series._mat_hourly_2
 CALL time_series.refresh_continuous_aggregate('restricted_schema.hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "restricted_schema.hourly"
 -- Without USAGE on schema, user cannot see it
 \set ON_ERROR_STOP 0
 SET ROLE ts_user_noperm;

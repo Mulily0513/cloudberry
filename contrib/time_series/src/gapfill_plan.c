@@ -1280,12 +1280,18 @@ ht_gapfill_create_upper_paths(PlannerInfo *root,
 	if (prev_create_upper_paths_hook)
 		prev_create_upper_paths_hook(root, stage, input_rel, output_rel, extra);
 
-	/* Only interested in the GROUP_AGG stage */
-	if (stage != UPPERREL_GROUP_AGG)
+	/*
+	 * Bail out if the time_series extension is not currently installed
+	 * (for example after DROP EXTENSION CASCADE — the .so stays
+	 * resident but our catalog tables are gone).  Same guard pattern
+	 * as ts_cagg_process_utility; see time_series.c for the state
+	 * machine.
+	 */
+	if (!ts_extension_is_loaded_and_not_upgrading())
 		return;
 
-	/* Quick check: is time_series extension installed? */
-	if (!OidIsValid(ht_get_namespace_oid_cached()))
+	/* Only interested in the GROUP_AGG stage */
+	if (stage != UPPERREL_GROUP_AGG)
 		return;
 
 	/* Check if the query's parse target list contains a gapfill call */
@@ -1379,7 +1385,7 @@ query_contains_gapfill(Query *parse)
 {
 	GapfillDetectContext ctx = {false};
 
-	if (!OidIsValid(ht_get_namespace_oid_cached()))
+	if (!ts_extension_is_loaded_and_not_upgrading())
 		return false;
 	query_tree_walker(parse, gapfill_detect_walker, &ctx, 0);
 	return ctx.found;

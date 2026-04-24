@@ -10,9 +10,21 @@ OBJS = \
 	src/gapfill.o \
 	src/gapfill_plan.o \
 	src/gapfill_exec.o \
-	src/cagg_create.o \
-	src/cagg_insert.o \
-	src/cagg_refresh.o
+	src/cagg/create.o \
+	src/cagg/insert.o \
+	src/cagg/refresh.o \
+	src/bgw/scheduler.o \
+	src/bgw/job.o \
+	src/bgw/job_stat.o \
+	src/bgw/job_stat_history.o \
+	src/bgw/timer.o \
+	src/bgw/launcher_interface.o \
+	src/bgw/errdata.o \
+	src/bgw_policy/cagg_refresh_policy.o \
+	test/mock_time/params.o \
+	test/mock_time/timer_mock.o \
+	test/mock_time/scheduler_mock.o \
+	test/mock_time/log.o
 
 EXTENSION = time_series
 DATA = time_series--1.0.sql

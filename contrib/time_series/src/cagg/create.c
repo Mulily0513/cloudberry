@@ -15,7 +15,7 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "include/time_series.h"
+#include "../include/time_series.h"
 
 #include "access/xact.h"
 #include "catalog/namespace.h"
@@ -23,6 +23,9 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
+#include "commands/extension.h"
+#include "miscadmin.h"			/* GetUserId */
+#include "utils/acl.h"			/* pg_class_ownercheck, aclcheck_error */
 #include "executor/spi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -291,6 +294,51 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 						QueryCompletion *qc)
 {
 	Node *parsetree = pstmt->utilityStmt;
+	bool altering_time_series = false;
+
+	/*
+	 * Early bail-out when the time_series extension is not (or no
+	 * longer) installed, or while the extension is being altered.
+	 *
+	 * The shared library stays resident across DROP EXTENSION (PG
+	 * never unloads preloaded libs), so the ProcessUtility_hook
+	 * pointer still points at us — but the various SPI queries we
+	 * issue below reference extension-owned tables
+	 *   time_series.continuous_agg
+	 *   time_series.bgw_job
+	 *   time_series.cagg_invalidation_log
+	 * which were dropped along with the extension.  Without this
+	 * guard the next DDL after DROP EXTENSION CASCADE — even a
+	 * plain TRUNCATE on an unrelated table — fails with
+	 *   ERROR: relation "time_series.continuous_agg" does not exist
+	 *
+	 * Modelled after TimescaleDB's process_utility.c: the actual
+	 * check is delegated to ts_extension_is_loaded_and_not_upgrading()
+	 * which is backed by a process-local state machine + relcache
+	 * invalidation callback (see time_series.c).
+	 *
+	 * We additionally bypass the hook for ALTER EXTENSION
+	 * time_series ... because upgrade scripts run inside the hook
+	 * scope and may reference catalog tables that don't yet exist
+	 * in the new shape.
+	 */
+	if (IsA(parsetree, AlterExtensionStmt))
+	{
+		AlterExtensionStmt *stmt = (AlterExtensionStmt *) parsetree;
+
+		altering_time_series = (strcmp(stmt->extname, TS_EXTENSION_SCHEMA_NAME) == 0);
+	}
+
+	if (altering_time_series || !ts_extension_is_loaded_and_not_upgrading())
+	{
+		if (prev_ProcessUtility)
+			prev_ProcessUtility(pstmt, queryString, readOnlyTree,
+								context, params, queryEnv, dest, qc);
+		else
+			standard_ProcessUtility(pstmt, queryString, readOnlyTree,
+									context, params, queryEnv, dest, qc);
+		return;
+	}
 
 	/*
 	 * Intercept CREATE MATERIALIZED VIEW ... WITH (time_series.continuous).
@@ -483,6 +531,124 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 	}
 
 	/*
+	 * Block DROP COLUMN / ALTER COLUMN TYPE on the bucket column of a
+	 * CAGG source table.
+	 *
+	 * For non-bucket columns, PG's native pg_depend machinery already
+	 * blocks the change if any of our internal views reference it
+	 * (without CASCADE) and tells the user to drop the view first.
+	 * For columns that aren't referenced by the views (e.g. a sibling
+	 * column never aggregated by the CAGG), the operation is safe and
+	 * we let it through.
+	 *
+	 * The bucket column is special: it's stored by NAME in
+	 * time_series.continuous_agg.bucket_column and used by
+	 * cagg_refresh.c when generating SQL.  Renaming, dropping, or
+	 * retyping it would silently break every subsequent REFRESH.
+	 *
+	 * Mirrors TimescaleDB's process_altertable_drop_column guard,
+	 * which similarly limits the block to partitioning columns
+	 * (the time column and space-partition columns).
+	 */
+	if (IsA(parsetree, AlterTableStmt) && Gp_role != GP_ROLE_EXECUTE)
+	{
+		AlterTableStmt *stmt = (AlterTableStmt *) parsetree;
+
+		if (stmt->objtype == OBJECT_TABLE && stmt->relation != NULL)
+		{
+			Oid			src_oid = RangeVarGetRelid(stmt->relation,
+												   NoLock, true);
+
+			if (OidIsValid(src_oid))
+			{
+				ListCell   *cell;
+				char	   *bucket_col_to_check = NULL;
+				int			subtype_to_check = -1;
+
+				foreach(cell, stmt->cmds)
+				{
+					AlterTableCmd *cmd = lfirst_node(AlterTableCmd, cell);
+
+					if ((cmd->subtype == AT_DropColumn ||
+						 cmd->subtype == AT_AlterColumnType) &&
+						cmd->name != NULL)
+					{
+						bucket_col_to_check = cmd->name;
+						subtype_to_check = cmd->subtype;
+						break;
+					}
+				}
+
+				if (bucket_col_to_check != NULL)
+				{
+					Oid			argtypes[2] = { OIDOID, NAMEOID };
+					Datum		args[2];
+					int			ret;
+					MemoryContext caller_cxt = CurrentMemoryContext;
+					char	   *src_schema = get_namespace_name(
+											get_rel_namespace(src_oid));
+					char	   *src_name = get_rel_name(src_oid);
+					char	   *vschema = NULL;
+					char	   *vname = NULL;
+					bool		blocks = false;
+					NameData	col_name;
+
+					namestrcpy(&col_name, bucket_col_to_check);
+					args[0] = ObjectIdGetDatum(src_oid);
+					args[1] = NameGetDatum(&col_name);
+
+					SPI_connect();
+					ret = SPI_execute_with_args(
+						"SELECT user_view_schema, user_view_name "
+						"FROM time_series.continuous_agg "
+						"WHERE source_table_oid = $1 "
+						"  AND bucket_column = $2 LIMIT 1",
+						2, argtypes, args, NULL, true, 1);
+
+					if (ret == SPI_OK_SELECT && SPI_processed > 0)
+					{
+						bool	isnull;
+						Datum	d_schema = SPI_getbinval(SPI_tuptable->vals[0],
+											SPI_tuptable->tupdesc, 1, &isnull);
+						char   *s_raw = isnull ? "?" :
+							NameStr(*DatumGetName(d_schema));
+						Datum	d_name = SPI_getbinval(SPI_tuptable->vals[0],
+											SPI_tuptable->tupdesc, 2, &isnull);
+						char   *n_raw = isnull ? "?" :
+							NameStr(*DatumGetName(d_name));
+						MemoryContext old = MemoryContextSwitchTo(caller_cxt);
+
+						vschema = pstrdup(s_raw);
+						vname   = pstrdup(n_raw);
+						blocks = true;
+						MemoryContextSwitchTo(old);
+					}
+					SPI_finish();
+
+					if (blocks)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot %s column \"%s\" of "
+										"\"%s.%s\" — it is the bucket "
+										"column for continuous aggregate "
+										"\"%s.%s\"",
+										subtype_to_check == AT_DropColumn
+											? "drop" : "change type of",
+										bucket_col_to_check,
+										src_schema, src_name,
+										vschema, vname),
+								 errhint("Drop the continuous aggregate "
+										 "first (DROP VIEW %s.%s CASCADE), "
+										 "then re-create it against the "
+										 "new schema.",
+										 quote_identifier(vschema),
+										 quote_identifier(vname))));
+				}
+			}
+		}
+	}
+
+	/*
 	 * Intercept ALTER VIEW cv SET (time_series.materialized_only = bool).
 	 *
 	 * PG parses namespaced options `ns.name = val` into DefElem with
@@ -526,7 +692,7 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 						{
 							DefElem *de = lfirst_node(DefElem, opt_cell);
 							bool	is_ours = (de->defnamespace != NULL &&
-									strcmp(de->defnamespace, "time_series") == 0 &&
+									strcmp(de->defnamespace, TS_EXTENSION_SCHEMA_NAME) == 0 &&
 									strcmp(de->defname, "materialized_only") == 0);
 							bool	is_cagg = false;
 							bool	mo_value = false;
@@ -534,6 +700,24 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 							if (is_ours)
 							{
 								mo_value = defGetBoolean(de);
+
+								/*
+								 * Owner check: the standard ALTER VIEW
+								 * handler is bypassed (we strip the
+								 * option below), so its built-in ACL
+								 * check never fires.  Mirror PG's
+								 * behavior by gating on
+								 * pg_class_ownercheck of the user
+								 * view here.  Without this, any
+								 * role with USAGE on the schema
+								 * could flip another user's CAGG
+								 * mode.
+								 */
+								if (!pg_class_ownercheck(view_oid,
+														 GetUserId()))
+									aclcheck_error(ACLCHECK_NOT_OWNER,
+												   OBJECT_VIEW,
+												   view_name);
 
 								SPI_connect();
 								/* cagg_apply_materialized_only does the full
@@ -569,11 +753,130 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 				if (handled)
 				{
 					stmt->cmds = new_cmds;
-					/* If nothing left to do, skip standard handler */
+					/*
+					 * If nothing left to do, skip the standard handler.
+					 *
+					 * Trade-off: this also skips prev_ProcessUtility.
+					 * An audit/logging hook chained earlier will not see
+					 * this ALTER VIEW (the materialized_only=...) path —
+					 * we've already executed its semantic effect via
+					 * cagg_apply_materialized_only's view rebuild.  We
+					 * accept this gap because:
+					 *   1. running standard_ProcessUtility on a stmt
+					 *      whose cmds list is NIL trips PG with
+					 *      "ALTER TABLE has no commands";
+					 *   2. invoking prev_ProcessUtility with a NIL cmds
+					 *      list to "let audit see it" leaks the
+					 *      half-stripped statement, and most audit
+					 *      hooks expect the cmds list to be the actual
+					 *      commands they should record;
+					 *   3. the materialized_only flag flip is a
+					 *      time_series-internal concept; auditing
+					 *      requirements for it are tracked via
+					 *      continuous_agg.materialized_only catalog
+					 *      changes which most audit setups already
+					 *      observe via INSERT/UPDATE on that table.
+					 * If finer audit coverage is needed in future,
+					 * emit our own audit row before returning.
+					 */
 					if (new_cmds == NIL)
 						return;
 				}
 			}
+		}
+	}
+
+	/*
+	 * PRE-execution defense: block RENAME COLUMN on CAGG internal objects.
+	 *
+	 * A CAGG creates four objects: the user view (cv), and three internal
+	 * objects in the time_series schema — _mat_<name>_<N> (the materialization
+	 * table), _partial_view_<N> (partial-aggregate over source), and
+	 * _direct_view_<N> (final aggregate over mat table).  Users should never
+	 * touch the latter three directly, but nothing in PG stops them.
+	 *
+	 * If a user does ALTER TABLE _mat_cv_1 RENAME COLUMN bucket TO mbucket,
+	 * the rename succeeds (PG view dependents follow attnum, so SELECT cv
+	 * keeps working), but cagg_refresh's hard-coded SQL "INSERT INTO mat_table
+	 * SELECT * FROM partial_view WHERE bucket >= ..." still references the
+	 * old column name and fails with an opaque "column does not exist" error
+	 * hours/days later.  The causal link to the rename is essentially
+	 * impossible to recover from logs alone.
+	 *
+	 * Mirror TSDB's process_utility.c handling (block columns of materialization
+	 * tables and partial/direct views): fail fast with a clear message at
+	 * RENAME time, so the user immediately sees what they did wrong.
+	 *
+	 * Identify internal objects by namespace (time_series) + name prefix.
+	 * The catalog still holds the source-of-truth (continuous_agg row points
+	 * at mat_table_name etc.) but the prefix check is cheaper and equivalent
+	 * — these prefixes are reserved by cagg_create.c's CAGG builder and will
+	 * never collide with user-visible names.
+	 */
+	if (IsA(parsetree, RenameStmt) && Gp_role != GP_ROLE_EXECUTE)
+	{
+		RenameStmt *pre_rstmt = (RenameStmt *) parsetree;
+		bool		is_internal_target = false;
+		bool		is_column_rename = (pre_rstmt->renameType == OBJECT_COLUMN);
+		bool		is_object_rename = (pre_rstmt->renameType == OBJECT_TABLE ||
+										pre_rstmt->renameType == OBJECT_VIEW);
+
+		/*
+		 * Both column-renames (RENAME COLUMN) and object-renames
+		 * (RENAME TABLE / RENAME VIEW) on internal CAGG objects break
+		 * cagg_refresh, because its hard-coded SQL references
+		 *   continuous_agg.mat_table_name (catalog) → _mat_<name>_<N>
+		 *   continuous_agg.bucket_column  (catalog) → bucket
+		 * by name.  Renaming any of these out from under the catalog
+		 * causes opaque "does not exist" errors at the next refresh.
+		 *
+		 * MATVIEW renames (rstmt->renameType == OBJECT_MATVIEW) are NOT
+		 * blocked here — the user view is meant to be user-facing, and
+		 * the existing post-execution hook already syncs
+		 * continuous_agg.user_view_name on that path.
+		 */
+		if ((is_column_rename || is_object_rename) &&
+			pre_rstmt->relation != NULL &&
+			pre_rstmt->relation->relname != NULL)
+		{
+			Oid			rel_oid = RangeVarGetRelid(pre_rstmt->relation,
+												   NoLock, true);
+
+			if (OidIsValid(rel_oid))
+			{
+				Oid			ts_ns_oid = get_namespace_oid(TS_EXTENSION_SCHEMA_NAME, true);
+				Oid			rel_ns_oid = get_rel_namespace(rel_oid);
+				const char *relname = pre_rstmt->relation->relname;
+
+				if (OidIsValid(ts_ns_oid) && rel_ns_oid == ts_ns_oid &&
+					(strncmp(relname, "_mat_", 5) == 0 ||
+					 strncmp(relname, "_partial_view_", 14) == 0 ||
+					 strncmp(relname, "_direct_view_", 13) == 0))
+				{
+					is_internal_target = true;
+				}
+			}
+		}
+
+		if (is_internal_target)
+		{
+			if (is_column_rename)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot rename column \"%s\" of "
+								"continuous aggregate internal object \"%s\"",
+								pre_rstmt->subname,
+								pre_rstmt->relation->relname),
+						 errhint("Drop and re-create the continuous "
+								 "aggregate to change column names.")));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot rename continuous aggregate "
+								"internal object \"%s\"",
+								pre_rstmt->relation->relname),
+						 errhint("Drop and re-create the continuous "
+								 "aggregate to rename internal objects.")));
 		}
 	}
 
@@ -627,6 +930,75 @@ ts_cagg_process_utility(PlannedStmt *pstmt,
 					 old_name, rstmt->newname);
 			SPI_finish();
 		}
+
+		/*
+		 * Also sync continuous_agg.bucket_column when the user renames a
+		 * source table column that is referenced as a CAGG's time column.
+		 *
+		 * Without this, ALTER TABLE source RENAME COLUMN time TO ts
+		 * silently corrupts the catalog: the rename succeeds, the
+		 * dependent _partial_view_/_direct_view_ auto-update (PG views
+		 * track columns by attnum), but continuous_agg.bucket_column
+		 * still holds the old name 'time'.  The next INSERT on the
+		 * source fires ts_cagg_invalidation_trigger, which calls
+		 * cagg_get_time_attnum to look up 'time' by name, fails, and
+		 * raises "could not find time column" — leaving the source
+		 * table effectively read-only until the user manually rolls
+		 * back the rename or drops the CAGG.
+		 *
+		 * We follow the rename rather than block it: column rename is
+		 * a legitimate user operation; only the catalog needs touching.
+		 */
+		if (rstmt->renameType == OBJECT_COLUMN &&
+			rstmt->relation != NULL &&
+			rstmt->subname != NULL &&
+			rstmt->newname != NULL)
+		{
+			Oid			source_oid = RangeVarGetRelid(rstmt->relation,
+													  NoLock, true);
+			Oid			ts_ns_oid;
+			Oid			ca_oid = InvalidOid;
+
+			/*
+			 * Guard: only run the catalog sync when the time_series
+			 * extension is actually installed in this database.  The
+			 * ProcessUtility hook fires for every backend in the
+			 * cluster, including those running CREATE EXTENSION
+			 * gp_toolkit (which internally RENAMEs columns) BEFORE
+			 * time_series itself is installed.  Without this guard the
+			 * SPI UPDATE references a missing relation and aborts the
+			 * outer DDL.
+			 */
+			ts_ns_oid = get_namespace_oid(TS_EXTENSION_SCHEMA_NAME, true);
+			if (OidIsValid(ts_ns_oid))
+				ca_oid = get_relname_relid("continuous_agg", ts_ns_oid);
+
+			if (OidIsValid(source_oid) && OidIsValid(ca_oid))
+			{
+				Oid			argtypes[3] = { TEXTOID, OIDOID, NAMEOID };
+				Datum		args[3];
+				int			ret;
+
+				args[0] = CStringGetTextDatum(rstmt->newname);
+				args[1] = ObjectIdGetDatum(source_oid);
+				args[2] = DirectFunctionCall1(namein,
+											  CStringGetDatum(rstmt->subname));
+
+				SPI_connect();
+				ret = SPI_execute_with_args(
+					"UPDATE time_series.continuous_agg "
+					"   SET bucket_column = $1::name "
+					" WHERE source_table_oid = $2 "
+					"   AND bucket_column = $3",
+					3, argtypes, args, NULL, false, 0);
+
+				if (ret == SPI_OK_UPDATE && SPI_processed > 0)
+					elog(NOTICE,
+						 "continuous_agg.bucket_column renamed: \"%s\" -> \"%s\"",
+						 rstmt->subname, rstmt->newname);
+				SPI_finish();
+			}
+		}
 	}
 }
 
@@ -648,7 +1020,7 @@ cagg_check_continuous_option(List *options, bool *materialized_only)
 		DefElem *def = lfirst_node(DefElem, lc);
 
 		if (def->defnamespace == NULL ||
-			strcmp(def->defnamespace, "time_series") != 0)
+			strcmp(def->defnamespace, TS_EXTENSION_SCHEMA_NAME) != 0)
 			continue;
 
 		if (strcmp(def->defname, "continuous") == 0)
@@ -756,10 +1128,19 @@ cagg_create(CreateTableAsStmt *stmt, const char *queryString)
 		}
 	}
 
+	elog(LOG, "creating continuous aggregate \"%s.%s\" on source \"%s.%s\" "
+		 "(materialized_only=%s, skip_data=%s)",
+		 info.user_view_schema, info.user_view_name,
+		 info.source_schema, info.source_table,
+		 info.materialized_only ? "true" : "false",
+		 info.skip_data ? "true" : "false");
+
 	SPI_connect();
 
 	/* 1. Register in catalog (to get cagg_id for naming) */
 	info.cagg_id = cagg_register_catalog(&info);
+	elog(DEBUG1, "cagg \"%s.%s\": registered cagg_id=%d",
+		 info.user_view_schema, info.user_view_name, info.cagg_id);
 
 	/* Generate internal names */
 	snprintf(info.mat_table_name, NAMEDATALEN,
@@ -793,13 +1174,19 @@ cagg_create(CreateTableAsStmt *stmt, const char *queryString)
 
 	/* 2. Create materialization table */
 	cagg_create_mat_table(&info);
+	elog(DEBUG1, "cagg \"%s.%s\": materialization table time_series.%s created",
+		 info.user_view_schema, info.user_view_name, info.mat_table_name);
 
 	/* 3. Create the three views */
 	cagg_create_views(&info);
+	elog(DEBUG1, "cagg \"%s.%s\": partial/direct/user views created",
+		 info.user_view_schema, info.user_view_name);
 
 	/* 4. Install invalidation trigger on source table */
 	SIMPLE_FAULT_INJECTOR("cagg_create_before_trigger_install");
 	cagg_install_trigger(&info);
+	elog(DEBUG1, "cagg \"%s.%s\": invalidation trigger installed on source",
+		 info.user_view_schema, info.user_view_name);
 
 	/* 5. Initialize watermark for this CAGG — one row per segment.
 	 *
@@ -1137,6 +1524,33 @@ cagg_validate_query(Query *query, CaggCreateInfo *info)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("continuous aggregate does not support CTEs (WITH clause)")));
 
+	/* Recursive CTE — query-level flag stronger than cteList alone */
+	if (query->hasRecursive)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate does not support WITH RECURSIVE")));
+
+	/* Modifying CTE — WITH d AS (DELETE/UPDATE/INSERT ...) SELECT ... */
+	if (query->hasModifyingCTE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate does not support data-modifying CTEs")));
+
+	/* Set-returning function in target list */
+	if (query->hasTargetSRFs)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate does not support set-returning "
+						"functions in the target list")));
+
+	/* Query-level Row-Level Security flag (covers RLS coming through
+	 * inheritance / views in addition to the per-RTE relrowsecurity
+	 * check below) */
+	if (query->hasRowSecurity)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate does not support row-level security")));
+
 	/* GROUPING SETS / ROLLUP / CUBE */
 	if (query->groupingSets)
 		ereport(ERROR,
@@ -1237,6 +1651,48 @@ cagg_validate_query(Query *query, CaggCreateInfo *info)
 								 "real-time branches. Use timestamptz instead.")));
 			}
 		}
+	}
+
+	/*
+	 * Same check on WHERE and HAVING clauses.
+	 *
+	 * A WHERE clause filtering on a STABLE/VOLATILE function (most
+	 * commonly `WHERE time > now() - interval '7 days'`) silently
+	 * makes the materialization result depend on **when refresh is
+	 * called**, not just on the source data — past refresh runs
+	 * include rows that the current refresh's WHERE excludes,
+	 * producing "ghost buckets" in the materialization that the
+	 * live branch can no longer see.  HAVING has the same problem
+	 * for post-aggregate filters.
+	 *
+	 * target-list mutable functions are at least visible in the
+	 * user-facing column values; mutable WHERE/HAVING is silent.
+	 * Reject both at create time.
+	 */
+	if (query->jointree && query->jointree->quals &&
+		contain_mutable_functions((Node *) query->jointree->quals))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate WHERE clause contains "
+						"a mutable (non-IMMUTABLE) function"),
+				 errhint("WHERE clauses like 'time > now() - interval ...' "
+						 "produce different row sets on each refresh, "
+						 "leaving stale materialization rows that the "
+						 "live branch can no longer reach.  Use a fixed "
+						 "timestamp or apply the filter in the SELECT "
+						 "querying the CAGG instead.")));
+	}
+
+	if (query->havingQual &&
+		contain_mutable_functions((Node *) query->havingQual))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("continuous aggregate HAVING clause contains "
+						"a mutable (non-IMMUTABLE) function"),
+				 errhint("Filter on aggregate output in queries against "
+						 "the continuous aggregate, not in its definition.")));
 	}
 }
 
@@ -1377,7 +1833,7 @@ cagg_create_mat_table(CaggCreateInfo *info)
 	initStringInfo(&sql);
 
 	appendStringInfo(&sql, "CREATE TABLE time_series.%s (",
-					 info->mat_table_name);
+					 quote_identifier(info->mat_table_name));
 
 	/* Build column list from query target list */
 	foreach(lc, info->query->targetList)
@@ -1532,7 +1988,7 @@ cagg_create_mat_table(CaggCreateInfo *info)
 		resetStringInfo(&sql);
 		appendStringInfo(&sql,
 			"CREATE INDEX ON time_series.%s (%s)",
-			info->mat_table_name,
+			quote_identifier(info->mat_table_name),
 			quote_identifier(idx_col));
 		SPI_execute(sql.data, false, 0);
 	}
@@ -1597,7 +2053,7 @@ cagg_create_views(CaggCreateInfo *info)
 				"CREATE VIEW %s.%s AS SELECT * FROM time_series.%s",
 				quote_identifier(info->user_view_schema),
 				quote_identifier(info->user_view_name),
-				info->mat_table_name);
+				quote_identifier(info->mat_table_name));
 		}
 		else
 		{
@@ -1610,9 +2066,9 @@ cagg_create_views(CaggCreateInfo *info)
 				"WHERE %s >= time_series.cagg_watermark(%d)",
 				quote_identifier(info->user_view_schema),
 				quote_identifier(info->user_view_name),
-				info->mat_table_name,
+				quote_identifier(info->mat_table_name),
 				quote_identifier(bucket_alias), info->cagg_id,
-				info->direct_view_name,
+				quote_identifier(info->direct_view_name),
 				quote_identifier(bucket_alias), info->cagg_id);
 		}
 		SPI_execute(sql.data, false, 0);
@@ -1687,6 +2143,67 @@ cagg_register_catalog(CaggCreateInfo *info)
 	Datum	args[8];
 	int		ret;
 	int		cagg_id;
+
+	/*
+	 * Reject "same source, different time column" CAGGs.
+	 *
+	 * cagg_invalidation_trigfn picks ONE bucket_column per source table
+	 * (see cagg_get_time_attnum: scans continuous_agg, takes the first
+	 * matching CAGG, breaks).  If a second CAGG on the same source uses
+	 * a different time column, the trigger only records dirty intervals
+	 * by the FIRST CAGG's column — the second CAGG's dirty buckets are
+	 * misaligned and back-filled rows in those buckets are never
+	 * materialized, leading to silent under-counts in user queries.
+	 *
+	 * We could in principle fix the trigger to record dirty intervals
+	 * for every column at once, but: (a) the use case (two CAGGs on the
+	 * same source aggregating by different time columns) is a rare
+	 * anti-pattern, (b) TSDB's own architecture prevents this via its
+	 * single hypertable time-partitioning column.  Reject at create time
+	 * with a clear message — much better than silently-wrong aggregates.
+	 */
+	{
+		Oid		chk_argtypes[2] = { OIDOID, NAMEOID };
+		Datum	chk_args[2];
+		int		chk_ret;
+
+		chk_args[0] = ObjectIdGetDatum(info->source_relid);
+		chk_args[1] = DirectFunctionCall1(namein,
+										  CStringGetDatum(info->bucket_column));
+
+		chk_ret = SPI_execute_with_args(
+			"SELECT user_view_name, bucket_column "
+			"  FROM time_series.continuous_agg "
+			" WHERE source_table_oid = $1 "
+			"   AND bucket_column != $2 "
+			" LIMIT 1",
+			2, chk_argtypes, chk_args, NULL, true, 1);
+
+		if (chk_ret == SPI_OK_SELECT && SPI_processed > 0)
+		{
+			bool	isnull;
+			/* both columns are NAME type, not TEXT */
+			char   *existing_view = NameStr(*DatumGetName(
+				SPI_getbinval(SPI_tuptable->vals[0],
+							  SPI_tuptable->tupdesc, 1, &isnull)));
+			char   *existing_col = NameStr(*DatumGetName(
+				SPI_getbinval(SPI_tuptable->vals[0],
+							  SPI_tuptable->tupdesc, 2, &isnull)));
+
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot create continuous aggregate using time "
+							"column \"%s\" on source table \"%s.%s\"",
+							info->bucket_column,
+							info->source_schema, info->source_table),
+					 errdetail("Existing continuous aggregate \"%s\" on this "
+							   "source already uses time column \"%s\".",
+							   existing_view, existing_col),
+					 errhint("All continuous aggregates on the same source "
+							 "table must use the same time column.  Drop the "
+							 "existing CAGG or use the same column.")));
+		}
+	}
 
 	args[0] = CStringGetTextDatum(info->user_view_schema);
 	args[1] = CStringGetTextDatum(info->user_view_name);

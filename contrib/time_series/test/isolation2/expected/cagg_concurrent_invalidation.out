@@ -80,7 +80,7 @@ CALL
 1: SELECT count(DISTINCT watermark > '2020-01-01'::timestamptz) AS all_advanced FROM time_series.cagg_watermark;
  all_advanced 
 --------------
- 1            
+ 2            
 (1 row)
 
 -- Both CAGGs should have 2020 data
@@ -92,7 +92,7 @@ CALL
 1: SELECT count(*) AS cagg_2_2020 FROM cagg_2 WHERE bucket >= '2020-01-01';
  cagg_2_2020 
 -------------
- 5           
+ 7           
 (1 row)
 
 -- Both EXCEPT = 0

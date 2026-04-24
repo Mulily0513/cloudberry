@@ -11,6 +11,7 @@
 -- Group-aware gapfill detects GROUP BY columns before the bucket column
 -- in the GroupAggregate sort order and propagates them to gap rows.
 
+DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
 
 -- Fix session timezone for stable expected output.

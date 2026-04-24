@@ -19,13 +19,16 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "include/time_series.h"
+#include "../include/time_series.h"
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/skey.h"
 #include "access/table.h"
 #include "access/xact.h"
+#include "storage/lmgr.h"			/* LockRelationOid */
+#include "miscadmin.h"				/* GetUserId */
+#include "utils/acl.h"				/* pg_class_ownercheck, aclcheck_error */
 #include "catalog/namespace.h"
 #include "datatype/timestamp.h"
 #include "executor/spi.h"
@@ -33,6 +36,8 @@
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "tcop/pquery.h"			/* ActivePortal */
+#include "utils/guc.h"			/* set_config_option */
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
@@ -265,6 +270,24 @@ cagg_segment_move_l1_to_l2(PG_FUNCTION_ARGS)
 	if (!OidIsValid(l1_oid) || !OidIsValid(l2_oid) || !OidIsValid(ca_oid))
 		elog(ERROR, "_cagg_move_l1_to_l2: catalog tables not found");
 
+	/*
+	 * Lock order: L1 (RowExclusive) → L2 (RowExclusive) → continuous_agg
+	 * (AccessShare).
+	 *
+	 * The trigger insert path acquires the catalog tables in the
+	 * opposite order: continuous_agg (AccessShare) → cagg_watermark
+	 * (AccessShare) → L1 (RowExclusive).  The shared pair {L1,
+	 * continuous_agg} is therefore acquired in opposite orders here
+	 * and there.
+	 *
+	 * This is currently safe because the lock modes don't pairwise
+	 * conflict: AccessShare on continuous_agg never blocks against
+	 * itself, and both paths take RowExclusive on L1 (compatible
+	 * with itself).  If either mode is ever tightened (e.g. taking
+	 * Share or stronger on continuous_agg during DDL) this becomes
+	 * a deadlock.  Update both call sites together if you change
+	 * either mode.
+	 */
 	l1_rel = table_open(l1_oid, RowExclusiveLock);
 	l2_rel = table_open(l2_oid, RowExclusiveLock);
 	ca_rel = table_open(ca_oid, AccessShareLock);
@@ -273,8 +296,13 @@ cagg_segment_move_l1_to_l2(PG_FUNCTION_ARGS)
 	 * Step 1: Collect all cagg_ids for this source from continuous_agg.
 	 * continuous_agg is REPLICATED, so every segment has a full copy.
 	 * We scan it to find which CAGGs reference this source_oid.
+	 *
+	 * Use the active snapshot (MVCC) so visibility rules are honored;
+	 * SnapshotSelf would expose uncommitted writes from this xact and
+	 * ignore xmax (a fragile choice if the surrounding lock scheme is
+	 * ever relaxed).  Mirrors TimescaleDB's invalidation log scans.
 	 */
-	ca_scan = heap_beginscan(ca_rel, SnapshotSelf, 0, NULL, NULL, 0);
+	ca_scan = heap_beginscan(ca_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 	while ((ca_tup = heap_getnext(ca_scan, ForwardScanDirection)) != NULL)
 	{
 		bool	isnull;
@@ -311,7 +339,8 @@ cagg_segment_move_l1_to_l2(PG_FUNCTION_ARGS)
 	 * L2 schema: (cagg_id int, lowest_modified timestamptz,
 	 *             greatest_modified timestamptz)
 	 */
-	l1_scan = heap_beginscan(l1_rel, SnapshotSelf, 0, NULL, NULL, 0);
+	/* MVCC for L1 scan — see comment on the continuous_agg scan above. */
+	l1_scan = heap_beginscan(l1_rel, GetActiveSnapshot(), 0, NULL, NULL, 0);
 	while ((l1_tup = heap_getnext(l1_scan, ForwardScanDirection)) != NULL)
 	{
 		bool		isnull;
@@ -427,7 +456,7 @@ cagg_align_bucket_internal(TimestampTz ts, CaggRefreshInfo *info,
 			args[2] = CStringGetTextDatum(info->bucket_timezone);
 			args[3] = TimestampTzGetDatum(info->bucket_origin);
 
-			appendStringInfo(&sql, "SELECT time_bucket($1, $2, $3, $4)%s",
+			appendStringInfo(&sql, "SELECT time_series.time_bucket($1, $2, $3, $4)%s",
 							 suffix ? suffix : "");
 			ret = SPI_execute_with_args(sql.data, 4, argtypes, args, NULL, true, 1);
 		}
@@ -440,7 +469,7 @@ cagg_align_bucket_internal(TimestampTz ts, CaggRefreshInfo *info,
 			args[1] = TimestampTzGetDatum(ts);
 			args[2] = CStringGetTextDatum(info->bucket_timezone);
 
-			appendStringInfo(&sql, "SELECT time_bucket($1, $2, $3)%s",
+			appendStringInfo(&sql, "SELECT time_series.time_bucket($1, $2, $3)%s",
 							 suffix ? suffix : "");
 			ret = SPI_execute_with_args(sql.data, 3, argtypes, args, NULL, true, 1);
 		}
@@ -455,7 +484,7 @@ cagg_align_bucket_internal(TimestampTz ts, CaggRefreshInfo *info,
 		args[1] = TimestampTzGetDatum(ts);
 		args[2] = IntervalPGetDatum(info->bucket_offset);
 
-		appendStringInfo(&sql, "SELECT time_bucket($1, $2, $3)%s",
+		appendStringInfo(&sql, "SELECT time_series.time_bucket($1, $2, $3)%s",
 						 suffix ? suffix : "");
 		ret = SPI_execute_with_args(sql.data, 3, argtypes, args, NULL, true, 1);
 	}
@@ -469,7 +498,7 @@ cagg_align_bucket_internal(TimestampTz ts, CaggRefreshInfo *info,
 		args[1] = TimestampTzGetDatum(ts);
 		args[2] = TimestampTzGetDatum(info->bucket_origin);
 
-		appendStringInfo(&sql, "SELECT time_bucket($1, $2, $3)%s",
+		appendStringInfo(&sql, "SELECT time_series.time_bucket($1, $2, $3)%s",
 						 suffix ? suffix : "");
 		ret = SPI_execute_with_args(sql.data, 3, argtypes, args, NULL, true, 1);
 	}
@@ -482,7 +511,7 @@ cagg_align_bucket_internal(TimestampTz ts, CaggRefreshInfo *info,
 		args[0] = IntervalPGetDatum(info->bucket_width);
 		args[1] = TimestampTzGetDatum(ts);
 
-		appendStringInfo(&sql, "SELECT time_bucket($1, $2)%s",
+		appendStringInfo(&sql, "SELECT time_series.time_bucket($1, $2)%s",
 						 suffix ? suffix : "");
 		ret = SPI_execute_with_args(sql.data, 2, argtypes, args, NULL, true, 1);
 	}
@@ -656,6 +685,8 @@ cagg_refresh_one_interval(CaggRefreshInfo *info,
 	StringInfoData sql;
 	Oid		argtypes[2] = { TIMESTAMPTZOID, TIMESTAMPTZOID };
 	Datum	args[2];
+	uint64	deleted_rows;
+	uint64	inserted_rows;
 
 	args[0] = TimestampTzGetDatum(start);
 	args[1] = TimestampTzGetDatum(end);
@@ -675,6 +706,7 @@ cagg_refresh_one_interval(CaggRefreshInfo *info,
 		quote_identifier(info->mat_bucket_col));
 
 	SPI_execute_with_args(sql.data, 2, argtypes, args, NULL, false, 0);
+	deleted_rows = SPI_processed;
 
 	/*
 	 * INSERT new rows from partial view for this range.
@@ -692,8 +724,28 @@ cagg_refresh_one_interval(CaggRefreshInfo *info,
 		quote_identifier(info->mat_bucket_col));
 
 	SPI_execute_with_args(sql.data, 2, argtypes, args, NULL, false, 0);
+	inserted_rows = SPI_processed;
 
 	pfree(sql.data);
+
+	/*
+	 * Server-log audit of rows touched per interval.  Mirrors TSDB
+	 * materialize.c:597,607 "deleted/inserted N row(s)" at LOG level —
+	 * default-visible diagnostic for CAGG drift in long-stability
+	 * environments.
+	 *
+	 * The cagg_bgw_mock test framework's emit_log_hook captures every
+	 * LOG message (server-side severity LOG > WARNING) into bgw_log.
+	 * The mock_time_monotonic assertion is now PARTITION BY
+	 * application_name, so cross-process LOG-level interleaving from
+	 * multiple BGW workers no longer breaks msg_no ordering.
+	 */
+	elog(LOG,
+		 "deleted " UINT64_FORMAT " row(s) from materialization table \"%s.%s\"",
+		 deleted_rows, info->mat_table_schema, info->mat_table_name);
+	elog(LOG,
+		 "inserted " UINT64_FORMAT " row(s) into materialization table \"%s.%s\"",
+		 inserted_rows, info->mat_table_schema, info->mat_table_name);
 }
 
 /* ================================================================
@@ -853,6 +905,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 	char			cagg_name_buf[NAMEDATALEN];
 	TimestampTz		window_start = DT_NOBEGIN;
 	TimestampTz		window_end = DT_NOEND;
+	bool			force = false;
 	CaggRefreshInfo	info;
 	DirtyInterval  *intervals = NULL;
 	int				n_intervals;
@@ -876,6 +929,16 @@ cagg_refresh(PG_FUNCTION_ARGS)
 	if (!PG_ARGISNULL(2))
 		window_end = PG_GETARG_TIMESTAMPTZ(2);
 
+	/*
+	 * Optional 4th arg: force.  When true, treat the entire refresh
+	 * window as one big invalidation regardless of L2 contents.  Used
+	 * to recover from data drift (e.g. trigger missed an INSERT, or
+	 * mat table got out of sync via direct manipulation).  Mirrors
+	 * TSDB tsl/src/continuous_aggs/refresh.c:648.
+	 */
+	if (PG_NARGS() >= 4 && !PG_ARGISNULL(3))
+		force = PG_GETARG_BOOL(3);
+
 	/* Validate window */
 	if (!TIMESTAMP_IS_NOBEGIN(window_start) &&
 		!TIMESTAMP_IS_NOEND(window_end) &&
@@ -883,6 +946,42 @@ cagg_refresh(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("refresh window start must be before end")));
+
+	/*
+	 * Ownership check: only the CAGG owner (or a superuser, which
+	 * pg_class_ownercheck handles internally) may invoke
+	 * refresh_continuous_aggregate.  Without this, any role with
+	 * EXECUTE on the procedure (PUBLIC by default for CREATE
+	 * PROCEDURE) could refresh another tenant's CAGG, advance its
+	 * watermark, and consume scheduler resources.
+	 *
+	 * Mirrors TimescaleDB's tsl/src/continuous_aggs/refresh.c which
+	 * gates refresh on the user view's owner.  TSDB on PG16+ uses
+	 * object_ownercheck; on PG14 (our base) the equivalent is
+	 * pg_class_ownercheck.
+	 *
+	 * The check is by name lookup (not via the metadata SPI) so the
+	 * "does not exist" path is reached *before* any state read; users
+	 * who lack visibility get the same NOTICE as if the cagg was
+	 * absent.
+	 */
+	{
+		char		schema_buf[NAMEDATALEN];
+		char		name_buf[NAMEDATALEN];
+		Oid			ns_oid;
+		Oid			view_oid;
+
+		cagg_parse_qualified_name(cagg_name_buf, schema_buf, name_buf);
+		ns_oid = get_namespace_oid(schema_buf, true);
+		view_oid = OidIsValid(ns_oid)
+			? get_relname_relid(name_buf, ns_oid)
+			: InvalidOid;
+
+		if (OidIsValid(view_oid) &&
+			!pg_class_ownercheck(view_oid, GetUserId()))
+			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_MATVIEW,
+						   cagg_name_buf);
+	}
 
 	/* Must run on coordinator */
 	if (Gp_role == GP_ROLE_EXECUTE)
@@ -914,27 +1013,84 @@ cagg_refresh(PG_FUNCTION_ARGS)
 							 "not from a function, trigger, or exception handler.")));
 	}
 
+
 	/*
 	 * Use SPI_OPT_NONATOMIC so we can do SPI_commit_and_chain() to split
 	 * the work into two transactions.
 	 */
 	SPI_connect_ext(SPI_OPT_NONATOMIC);
 
+
+	/*
+	 * In the normal psql path, ExecuteCallStmt's caller (PortalRunUtility)
+	 * has an ActiveSnapshot tied to the user's Portal, so SPI's downstream
+	 * SQL execution (pquery.c:EnsurePortalSnapshotExists) finds it and
+	 * proceeds.
+	 *
+	 * In the BGW path, however, there is no user Portal and no ActiveSnapshot:
+	 * job.c starts a transaction and calls SPI_execute_extended() directly.
+	 * Without an active snapshot, our SPI_execute_with_args() calls below
+	 * would fail with "cannot execute SQL without an outer snapshot or
+	 * portal" (pquery.c:2075).
+	 *
+	 * Push a transaction snapshot only if one isn't already active.  We
+	 * also Pop+Push around SPI_commit_and_chain() below, since that path
+	 * tears down the active snapshot stack as part of commit.
+	 */
+	/*
+	 * All callers (psql CALL, run_job, BGW worker) now arrive here with
+	 * a valid ActivePortal — the BGW worker creates a transient Portal
+	 * before invoking us, mirroring TSDB's tsl/src/bgw_policy/job.c
+	 * pattern.  This means snapshot management is delegated to the
+	 * Portal infrastructure: PortalRun for psql, our manual setup +
+	 * EnsurePortalSnapshotExists for BGW.  No path-specific snapshot
+	 * stack management is needed below.
+	 */
+
+
+	/*
+	 * Disable ORCA for the duration of this refresh.
+	 *
+	 * cagg_refresh issues many UPDATE statements against DISTRIBUTED
+	 * REPLICATED catalog tables (cagg_invalidation_threshold etc.).
+	 * ORCA emits "Operator Update on replicated tables not supported"
+	 * and falls back to the Postgres planner, but that fallback path
+	 * SIGSEGVs in BGW workers — see signal-11 crash logs and the project
+	 * convention in CLAUDE.md ("Always SET optimizer = off for CBDB").
+	 *
+	 * Forcing the Postgres planner avoids the entire ORCA-fallback path.
+	 *
+	 * We assign the global directly (instead of set_config_option) because
+	 * SET LOCAL via SPI showed no effect under BGW NONATOMIC SPI: the next
+	 * SPI_execute_with_args still triggered ORCA NOTICE and the same crash.
+	 *
+	 * Save/restore via PG_TRY/PG_FINALLY: cagg_refresh is reachable from
+	 * three call paths — BGW worker (process exits, no leak), CALL
+	 * run_job (stays in user session), direct CALL refresh_continuous_aggregate
+	 * (stays in user session).  Without restore, the latter two would
+	 * silently flip the caller's optimizer GUC to off for the rest of the
+	 * session — a hard-to-diagnose performance regression for any user
+	 * still relying on ORCA.  PG_FINALLY ensures restore even on ERROR.
+	 */
+	{
+		extern bool optimizer;
+		bool saved_optimizer = optimizer;
+
+		optimizer = false;
+		PG_TRY();
+		{
+
 	/* ---- Transaction 1: L1 → L2 migration ---- */
 
 	cagg_lookup_metadata(cagg_name_buf, &info);
+
+
 	cagg_acquire_lock(info.cagg_id);
+
 
 	/*
 	 * Acquire source-level advisory lock to serialize L1→L2 migration
 	 * across all CAGGs on the same source table.
-	 *
-	 * Without this, two concurrent REFRESHes on different CAGGs (same
-	 * source) would both scan and simple_heap_delete the same L1 entries,
-	 * causing "tuple concurrently deleted" errors.
-	 *
-	 * Use negative OID to avoid collision with the per-CAGG lock above
-	 * (cagg_id is positive).
 	 */
 	{
 		Oid		lock_argtypes[1] = { INT8OID };
@@ -946,7 +1102,40 @@ cagg_refresh(PG_FUNCTION_ARGS)
 			1, lock_argtypes, lock_args, NULL, true, 0);
 	}
 
+	/*
+	 * Acquire a real relation-level lock on cagg_invalidation_threshold
+	 * to serialize against concurrent DDL or out-of-band UPDATEs to
+	 * the threshold row (e.g. an admin manually rewriting state).
+	 *
+	 * Mirrors TimescaleDB's invalidation_threshold.c — they take
+	 * ShareUpdateExclusiveLock on the relation and RowExclusiveLock
+	 * implicitly during the UPDATE.  Without this, advisory locks
+	 * alone do not block PG-level DDL or non-cooperating DML.
+	 */
+	{
+		Oid		ns_oid = ht_get_namespace_oid_cached();
+		Oid		th_oid = OidIsValid(ns_oid)
+			? get_relname_relid("cagg_invalidation_threshold", ns_oid)
+			: InvalidOid;
+
+		if (OidIsValid(th_oid))
+			LockRelationOid(th_oid, ShareUpdateExclusiveLock);
+	}
+
+	/*
+	 * Match TSDB tsl/src/continuous_aggs/refresh.c:759 — just the
+	 * CAGG name, no window timestamps.  Window detail is logged at
+	 * DEBUG1 below (multiple sites with start/end values), so the
+	 * NOTICE here stays deterministic for regression tests where
+	 * window = now() - offset embeds a real-time timestamp.
+	 */
+	ereport(NOTICE,
+			(errmsg("refreshing continuous aggregate \"%s\"",
+					cagg_name_buf)));
+
 	cagg_migrate_l1_to_l2(&info);
+	elog(DEBUG1, "cagg \"%s\": L1->L2 migration complete (TX1)", cagg_name_buf);
+
 
 	/*
 	 * Advance invalidation threshold early (before commit) so that
@@ -986,7 +1175,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 
 			initStringInfo(&max_sql);
 			appendStringInfo(&max_sql,
-				"SELECT time_bucket($1, %s) "
+				"SELECT time_series.time_bucket($1, %s) "
 				"FROM %s ORDER BY 1 DESC NULLS LAST LIMIT 1",
 				quote_identifier(info.bucket_column),
 				quote_qualified_identifier(
@@ -1028,13 +1217,22 @@ cagg_refresh(PG_FUNCTION_ARGS)
 
 	SIMPLE_FAULT_INJECTOR("cagg_refresh_before_commit_and_chain");
 
+
+	/*
+	 * Hand off to TX2 via SPI_commit_and_chain.  With a valid
+	 * ActivePortal, ForgetPortalSnapshots / push-new-snapshot are
+	 * orchestrated by Portal + SPI machinery; we don't manipulate
+	 * the snapshot stack manually here.
+	 */
 	SPI_commit_and_chain();
 
 	SIMPLE_FAULT_INJECTOR("cagg_refresh_after_commit_and_chain");
 
 	/* ---- Transaction 2: Materialize dirty intervals ---- */
 
+
 	cagg_acquire_lock(info.cagg_id);
+
 
 	/*
 	 * Re-lookup metadata in the new transaction.  The previous transaction's
@@ -1042,6 +1240,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 	 */
 	memset(&info, 0, sizeof(info));
 	cagg_lookup_metadata(cagg_name_buf, &info);
+
 
 	/*
 	 * Unified refresh path (aligned with TimescaleDB behavior):
@@ -1110,6 +1309,48 @@ cagg_refresh(PG_FUNCTION_ARGS)
 											  &intervals);
 
 	/*
+	 * force=TRUE: treat the entire refresh window as one big dirty
+	 * interval, regardless of what L2 contains.  Mirrors TSDB
+	 * invalidation.c:896-908 which pre-seeds an "always-merged"
+	 * invalidation entry covering the whole window before merging
+	 * with the regular L2 entries.
+	 *
+	 * The unmat-range append below will merge this entry with any
+	 * adjacent L2 entries; downstream cagg_refresh_one_interval
+	 * unconditionally DELETEs+INSERTs the buckets, which is the
+	 * recovery escape hatch for data drift after the trigger missed
+	 * an INSERT or the mat table was manipulated directly.
+	 */
+	if (force)
+	{
+		TimestampTz forced_start =
+			TIMESTAMP_IS_NOBEGIN(window_start) ? current_watermark : window_start;
+		TimestampTz forced_end = window_end;
+
+		/* If start is still -infinity, fall back to actual data boundary
+		 * later (max_end clamp); for the synthetic interval here use
+		 * the window_start we have. */
+		if (!TIMESTAMP_IS_NOEND(forced_end) && forced_start < forced_end)
+		{
+			elog(LOG, "cagg \"%s\": force refresh window [%s, %s)",
+				 cagg_name_buf,
+				 TIMESTAMP_IS_NOBEGIN(forced_start) ? "-infinity"
+				 : DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(forced_start))),
+				 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(forced_end))));
+
+			intervals = (intervals == NULL)
+				? palloc(sizeof(DirtyInterval))
+				: repalloc(intervals,
+						   sizeof(DirtyInterval) * (n_intervals + 1));
+			intervals[n_intervals].start = forced_start;
+			intervals[n_intervals].end = forced_end;
+			n_intervals++;
+		}
+	}
+
+	/*
 	 * Add the unmaterialized range [watermark, window_end) as an extra
 	 * dirty interval.  This ensures new data beyond the watermark gets
 	 * materialized even if there are no L2 entries for it.
@@ -1124,6 +1365,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 		/* Clamp unmaterialized range to window */
 		if (!TIMESTAMP_IS_NOBEGIN(window_start) && unmat_start < window_start)
 			unmat_start = window_start;
+
 
 		/* Only add if the range is non-empty */
 		if (TIMESTAMP_IS_NOBEGIN(unmat_start) ||
@@ -1187,6 +1429,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 				intervals = merged;
 				n_intervals = num_merged;
 			}
+
 		}
 	}
 
@@ -1214,10 +1457,29 @@ cagg_refresh(PG_FUNCTION_ARGS)
 		n_intervals = 1;
 	}
 
+	if (n_intervals == 0)
+	{
+		ereport(NOTICE,
+				(errmsg("continuous aggregate \"%s\" is already up-to-date",
+						cagg_name_buf)));
+	}
+
 	if (n_intervals > 0)
 	{
+		elog(DEBUG1, "cagg \"%s\": refreshing %d dirty interval%s",
+			 cagg_name_buf, n_intervals, n_intervals == 1 ? "" : "s");
+
 		for (i = 0; i < n_intervals; i++)
 		{
+			elog(DEBUG1, "cagg \"%s\": interval %d/%d [%s, %s)",
+				 cagg_name_buf, i + 1, n_intervals,
+				 TIMESTAMP_IS_NOBEGIN(intervals[i].start) ? "-infinity"
+				 : DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(intervals[i].start))),
+				 TIMESTAMP_IS_NOEND(intervals[i].end) ? "+infinity"
+				 : DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(intervals[i].end))));
+
 			cagg_refresh_one_interval(&info,
 									  intervals[i].start,
 									  intervals[i].end);
@@ -1257,7 +1519,7 @@ cagg_refresh(PG_FUNCTION_ARGS)
 
 			initStringInfo(&max_sql);
 			appendStringInfo(&max_sql,
-				"SELECT time_bucket($1, %s) "
+				"SELECT time_series.time_bucket($1, %s) "
 				"FROM %s ORDER BY 1 DESC NULLS LAST LIMIT 1",
 				quote_identifier(info.bucket_column),
 				quote_qualified_identifier(
@@ -1286,33 +1548,110 @@ cagg_refresh(PG_FUNCTION_ARGS)
 			/* else: max_end <= actual_boundary → keep max_end as-is */
 		}
 
+
 		SIMPLE_FAULT_INJECTOR("cagg_refresh_before_watermark_advance");
 
 		/*
-		 * Only advance watermark if the refresh window is contiguous
-		 * with the current watermark (window_start <= watermark).
+		 * Decide whether to advance the watermark.
 		 *
-		 * If window_start > watermark, there is an un-materialized gap
-		 * between [watermark, window_start).  Advancing the watermark
-		 * past that gap would make those buckets permanently invisible:
-		 * they'd fall into the mat branch (bucket < watermark) but have
-		 * no rows in the mat table, and the live branch won't cover them.
+		 * The mat branch of the real-time UNION ALL view returns rows
+		 * with bucket < watermark.  Advancing watermark past source
+		 * buckets that are not in the mat table would hide them (mat
+		 * branch claims coverage; live branch covers only >= watermark).
 		 *
-		 * For NULL/NULL refresh, window_start is DT_NOBEGIN (-infinity),
-		 * which is always <= any watermark, so we always advance.
+		 * Three cases:
+		 *  1. window_start <= current_watermark — window is contiguous
+		 *     with what's already materialized; safe to advance.
+		 *  2. window_start > current_watermark, but every source bucket
+		 *     in the gap [current_watermark, window_start) is present
+		 *     in the mat table — advancing hides nothing.  Safe.
+		 *  3. window_start > current_watermark and source has buckets
+		 *     in the gap not covered by mat — advancing would hide
+		 *     them.  Refuse.
+		 *
+		 * Why query mat directly: L2 (cagg_materialization_log) only
+		 * tracks invalidations of buckets that *were* materialized.
+		 * Buckets that were never materialized (e.g., on a fresh CAGG
+		 * before any prior refresh covered them) leave no L2 trace.
+		 * A LEFT JOIN of source-buckets-in-gap against mat catches
+		 * both cases.
+		 *
+		 * For NULL/NULL refresh, window_start is DT_NOBEGIN, which is
+		 * always <= any watermark, so case 1 applies and we advance.
 		 */
-		if (TIMESTAMP_IS_NOBEGIN(window_start) ||
-			window_start <= current_watermark)
+		bool		advance_ok = (TIMESTAMP_IS_NOBEGIN(window_start) ||
+								  window_start <= current_watermark);
+
+		if (!advance_ok)
+		{
+			Oid			gap_argtypes[3] = { INTERVALOID, TIMESTAMPTZOID, TIMESTAMPTZOID };
+			Datum		gap_args[3];
+			StringInfoData gap_sql;
+			int			gap_ret;
+
+			gap_args[0] = IntervalPGetDatum(info.bucket_width);
+			gap_args[1] = TimestampTzGetDatum(current_watermark);
+			gap_args[2] = TimestampTzGetDatum(window_start);
+
+			initStringInfo(&gap_sql);
+			appendStringInfo(&gap_sql,
+				"SELECT 1 FROM ("
+				"  SELECT DISTINCT time_series.time_bucket($1, %s) AS b "
+				"  FROM %s "
+				"  WHERE %s >= $2 AND %s < $3"
+				") src "
+				"WHERE NOT EXISTS ("
+				"  SELECT 1 FROM %s.%s mat WHERE mat.%s = src.b"
+				") "
+				"LIMIT 1",
+				quote_identifier(info.bucket_column),
+				quote_qualified_identifier(
+					get_namespace_name(get_rel_namespace(info.source_table_oid)),
+					get_rel_name(info.source_table_oid)),
+				quote_identifier(info.bucket_column),
+				quote_identifier(info.bucket_column),
+				quote_identifier(info.mat_table_schema),
+				quote_identifier(info.mat_table_name),
+				quote_identifier(info.mat_bucket_col));
+
+			gap_ret = SPI_execute_with_args(gap_sql.data, 3,
+											gap_argtypes, gap_args,
+											NULL, true, 1);
+			pfree(gap_sql.data);
+
+			/* All source buckets in gap are in mat → safe */
+			if (gap_ret == SPI_OK_SELECT && SPI_processed == 0)
+				advance_ok = true;
+		}
+
+		if (advance_ok)
 		{
 			cagg_advance_watermark(&info, max_end);
+			elog(DEBUG1, "cagg \"%s\": watermark advanced to %s",
+				 cagg_name_buf,
+				 TIMESTAMP_IS_NOBEGIN(max_end) ? "-infinity"
+				 : DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(max_end))));
+		}
+		else
+		{
+			elog(DEBUG1, "cagg \"%s\": watermark NOT advanced "
+				 "(unmaterialized buckets in [%s, %s))",
+				 cagg_name_buf,
+				 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(current_watermark))),
+				 DatumGetCString(DirectFunctionCall1(timestamptz_out,
+							 TimestampTzGetDatum(window_start))));
 		}
 
 		/* Trim L2 entries within the refresh window */
 		cagg_trim_l2(&info, window_start, window_end);
 	}
 
+
 	if (intervals)
 		pfree(intervals);
+
 
 	/*
 	 * Reconcile invalidation threshold with actual MAX(watermark).
@@ -1340,7 +1679,21 @@ cagg_refresh(PG_FUNCTION_ARGS)
 			1, argtypes, args, NULL, false, 0);
 	}
 
+
+	/*
+	 * Unified cleanup.  All callers (psql, run_job, BGW worker) have a
+	 * valid ActivePortal coordinating snapshot/SPI lifecycle, so a
+	 * single SPI_finish suffices.
+	 */
 	SPI_finish();
+
+		}
+		PG_FINALLY();
+		{
+			optimizer = saved_optimizer;
+		}
+		PG_END_TRY();
+	}
 
 	PG_RETURN_VOID();
 }

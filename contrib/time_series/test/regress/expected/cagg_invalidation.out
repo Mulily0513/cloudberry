@@ -8,6 +8,7 @@ SET optimizer = off;
 SET timezone = 'UTC';
 DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 SET search_path TO public, time_series;
 -- Setup: source table
 CREATE TABLE metrics (
@@ -63,6 +64,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 
 -- Full REFRESH to set watermark
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 \echo '=== I-13: watermark advanced after REFRESH ==='
 === I-13: watermark advanced after REFRESH ===
 SELECT bool_and(watermark > '-infinity'::timestamptz) AS all_wm_advanced
@@ -94,6 +96,7 @@ ORDER BY lowest_modified;
 === I-02: INSERT above watermark → no L1 ===
 -- Clean L1 first via REFRESH
 CALL time_series.refresh_continuous_aggregate('cv_hourly', '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Insert data in the far future (definitely above watermark)
 INSERT INTO metrics VALUES ('2099-12-31 23:00+00', 3, 77.0);
 -- L1 must be empty (future data >= threshold → skip)
@@ -110,6 +113,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 \echo '=== I-02b: INSERT at exact watermark → no L1 ==='
 === I-02b: INSERT at exact watermark → no L1 ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Set a deterministic watermark for boundary testing
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-06-01 00:00:00+00'::timestamptz;
@@ -123,12 +127,14 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 
 -- Restore: full refresh to advance watermark back to now()
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-03a: Multiple INSERTs in one transaction → L1 accumulates
 -- ============================================================
 \echo '=== I-03a: multi-INSERT in txn → L1 accumulates ==='
 === I-03a: multi-INSERT in txn → L1 accumulates ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 BEGIN;
 INSERT INTO metrics VALUES ('2024-01-01 00:45+00', 3, 30.0);
 INSERT INTO metrics VALUES ('2024-01-01 01:45+00', 4, 40.0);
@@ -150,6 +156,7 @@ ORDER BY lowest_modified;
 \echo '=== I-04a: INSERT INTO SELECT → L1 per row ==='
 === I-04a: INSERT INTO SELECT → L1 per row ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 INSERT INTO metrics
 SELECT '2024-01-01 00:00+00'::timestamptz + (i || ' minute')::interval,
        i % 5 + 1, 10.0 + i
@@ -172,6 +179,7 @@ ORDER BY lowest_modified;
 \echo '=== I-05a: INSERT multi-bucket → distinct L1 entries ==='
 === I-05a: INSERT multi-bucket → distinct L1 entries ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 INSERT INTO metrics VALUES
     ('2024-01-01 00:10+00', 1, 10.0),  -- bucket 00:00
     ('2024-01-01 01:10+00', 2, 20.0),  -- bucket 01:00
@@ -198,6 +206,7 @@ SELECT '2024-01-01 00:00+00'::timestamptz + (hr || ' hour')::interval,
        tid, 20.0 + tid + hr
 FROM generate_series(1, 4) tid, generate_series(0, 4) hr;
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Pre-check: mat table has data
 SELECT count(*) > 0 AS mat_has_data FROM cv_hourly;
  mat_has_data 
@@ -218,6 +227,7 @@ FROM time_series.cagg_invalidation_log;
 
 -- REFRESH to process invalidation, then verify mat table empty
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_rows_after_truncate;
  mat_has_rows_after_truncate 
 -----------------------------
@@ -237,6 +247,7 @@ FROM generate_series(1, 10) tid,    -- 10 tags
      generate_series(1, 10) m;       -- 10 rows per (tag, hour)
 -- 10 × 10 × 10 = 1000 rows; count=10/cell, 100 groups
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-07: Transaction rollback → L1 invisible
 -- ============================================================
@@ -276,6 +287,7 @@ SELECT lowest_modified FROM time_series.cagg_invalidation_log ORDER BY lowest_mo
 
 -- Clean up
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-09: NULL time column → skip, no crash
 -- ============================================================
@@ -296,6 +308,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_nullable" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_nullable_2
 CALL time_series.refresh_continuous_aggregate('cv_nullable', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_nullable"
 -- This INSERT should not crash even with NULL time
 INSERT INTO metrics_nullable VALUES (NULL, 1, 42.0);
 -- NULL time must be skipped: no L1 record
@@ -337,6 +350,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 ALTER TABLE metrics DROP COLUMN extra_col;
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-11: ALTER TABLE DROP COLUMN (non-time) → trigger still works
 -- ============================================================
@@ -353,6 +367,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-14/I-15: Multiple CAGGs on same source → threshold = MAX
 -- ============================================================
@@ -367,7 +382,9 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_daily" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_daily_3
 CALL time_series.refresh_continuous_aggregate('cv_daily', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_daily"
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Set deterministic watermarks: hourly = March, daily = June
 -- threshold should be MAX = June
 UPDATE time_series.cagg_watermark
@@ -394,6 +411,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 \echo '=== I-14b: INSERT below both watermarks ==='
 === I-14b: INSERT below both watermarks ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Re-set watermarks (REFRESH advanced them)
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-03-01 00:00:00+00'::timestamptz
@@ -414,6 +432,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 \echo '=== I-14c: INSERT above both watermarks ==='
 === I-14c: INSERT above both watermarks ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Re-set watermarks again
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-03-01 00:00:00+00'::timestamptz
@@ -433,6 +452,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 DROP VIEW cv_daily CASCADE;
 -- Restore watermark
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- I-16: Different source tables → independent thresholds
 -- ============================================================
@@ -450,7 +470,9 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv2" successfully created
 DETAIL:  Materialization table: time_series._mat_cv2_4
 CALL time_series.refresh_continuous_aggregate('cv2', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv2"
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Set different watermarks: cv_hourly = March, cv2 = August
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-03-01 00:00:00+00'::timestamptz
@@ -483,6 +505,7 @@ FROM time_series.cagg_invalidation_log l;
 \echo '=== I-16b: INSERT above cv2 watermark → no new L1 ==='
 === I-16b: INSERT above cv2 watermark → no new L1 ===
 CALL time_series.refresh_continuous_aggregate('cv2', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv2"
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-08-01 00:00:00+00'::timestamptz
  WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg
@@ -525,6 +548,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_ts" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_ts_5
 CALL time_series.refresh_continuous_aggregate('cv_ts', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ts"
 -- INSERT below watermark — tests TIMESTAMP→TIMESTAMPTZ conversion in trigger
 INSERT INTO metrics_ts VALUES ('2024-01-01 03:30', 1, 999.0);
 SELECT lowest_modified FROM time_series.cagg_invalidation_log
@@ -553,6 +577,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_date" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_date_6
 CALL time_series.refresh_continuous_aggregate('cv_date', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_date"
 -- INSERT below watermark — tests DATE→TIMESTAMPTZ conversion in trigger
 INSERT INTO metrics_date VALUES ('2024-01-15', 1, 999.0);
 SELECT lowest_modified FROM time_series.cagg_invalidation_log
@@ -569,6 +594,7 @@ DROP TABLE metrics_date CASCADE;
 \echo '=== P0: large batch INSERT ==='
 === P0: large batch INSERT ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 INSERT INTO metrics
 SELECT '2024-01-01 00:00+00'::timestamptz + (i || ' second')::interval,
        i % 10 + 1, i * 0.1
@@ -583,12 +609,14 @@ SELECT count(*) AS l1_large_batch FROM time_series.cagg_invalidation_log
 -- All 1000 rows below watermark → expect 1000
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P1: Extreme timestamps — epoch and very old dates
 -- ============================================================
 \echo '=== P1: extreme timestamps ==='
 === P1: extreme timestamps ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 INSERT INTO metrics VALUES
     ('1970-01-01 00:00:00+00', 1, 0.0),   -- Unix epoch
     ('2000-01-01 00:00:00+00', 2, 1.0),   -- Y2K
@@ -613,6 +641,7 @@ WHERE lowest_modified = '1970-01-01 00:00:00+00'::timestamptz;
 
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P0: REFRESH end-to-end: INSERT → L1 → REFRESH → mat updated → L1 cleared
 -- ============================================================
@@ -626,6 +655,7 @@ SELECT '2024-01-01 00:00+00'::timestamptz + (hr || ' hour')::interval,
 FROM generate_series(1, 3) tid, generate_series(0, 2) hr;
 -- 9 rows: 3 tags × 3 hours → 9 mat rows
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_data;
  mat_has_data 
 --------------
@@ -651,6 +681,7 @@ SELECT lowest_modified FROM time_series.cagg_invalidation_log
 
 -- REFRESH should: move L1→L2, materialize the changed bucket, clear L1
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Mat table should still have data after re-refresh
 SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_data;
  mat_has_data 
@@ -682,6 +713,7 @@ SELECT cnt AS tag1_hour1_cnt FROM cv_hourly
 \echo '=== P0: threshold cache within txn ==='
 === P0: threshold cache within txn ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Set watermark to a known value
 UPDATE time_series.cagg_watermark
    SET watermark = '2024-06-01 00:00:00+00'::timestamptz;
@@ -699,6 +731,7 @@ SELECT lowest_modified FROM time_series.cagg_invalidation_log
 -- Expect 1: March is below, September is above, both use same cached threshold
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P1: Partial REFRESH: L1→L2 moves ALL entries, but only refreshes
 --     the specified window. L2 entries outside the window remain
@@ -707,6 +740,7 @@ CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
 \echo '=== P1: partial REFRESH range ==='
 === P1: partial REFRESH range ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Insert into two different hour buckets
 INSERT INTO metrics VALUES ('2024-01-01 01:30+00', 1, 10.0);  -- hour 01
 INSERT INTO metrics VALUES ('2024-01-01 03:30+00', 2, 20.0);  -- hour 03
@@ -721,6 +755,7 @@ SELECT lowest_modified FROM time_series.cagg_invalidation_log
 -- Partial REFRESH covering only hour 01-02 range
 CALL time_series.refresh_continuous_aggregate('cv_hourly',
     '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- L1 is fully moved to L2 (all entries), so L1 = 0
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log
  WHERE source_table_oid = 'metrics'::regclass) AS l1_has_rows;
@@ -741,6 +776,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_materialization_
 
 -- Full REFRESH now should process the remaining L2 entry
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_materialization_log) AS l2_has_rows;
  l2_has_rows 
 -------------
@@ -753,6 +789,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_materialization_log) AS l2_has_rows
 \echo '=== P1: double TRUNCATE ==='
 === P1: double TRUNCATE ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 TRUNCATE metrics;
 SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
  WHERE source_table_oid = 'metrics'::regclass ORDER BY lowest_modified;
@@ -763,6 +800,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 
 -- Second TRUNCATE on already-empty table — should not crash, still writes L1
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 TRUNCATE metrics;
 SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
  WHERE source_table_oid = 'metrics'::regclass ORDER BY lowest_modified;
@@ -782,6 +820,7 @@ FROM generate_series(1, 10) tid,    -- 10 tags
      generate_series(1, 10) m;       -- 10 rows per (tag, hour)
 -- 10 × 10 × 10 = 1000 rows; count=10/cell, 100 groups
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P1: Per-segment threshold independence
 --     cagg_watermark is DISTRIBUTED RANDOMLY (one row per segment per CAGG).
@@ -790,6 +829,7 @@ CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
 \echo '=== P1: per-segment threshold ==='
 === P1: per-segment threshold ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- All segment watermarks should be identical after full REFRESH
 SELECT count(DISTINCT watermark) AS distinct_wm_values
 FROM time_series.cagg_watermark;
@@ -810,6 +850,7 @@ SELECT lowest_modified FROM time_series.cagg_invalidation_log
 
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P0: Time column NOT first in table — attnum lookup
 --     Trigger must find the time column by name, not by position.
@@ -836,6 +877,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_late_time" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_late_time_7
 CALL time_series.refresh_continuous_aggregate('cv_late_time', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_late_time"
 -- INSERT below watermark — time is the 3rd column
 INSERT INTO metrics_late_time VALUES (1, 'test', '2024-01-01 03:30+00', 99.9);
 SELECT lowest_modified FROM time_series.cagg_invalidation_log
@@ -863,6 +905,7 @@ DROP TABLE metrics_late_time CASCADE;
 \echo '=== P1: duplicate timestamps ==='
 === P1: duplicate timestamps ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 INSERT INTO metrics VALUES
     ('2024-01-01 01:00+00', 1, 10.0),
     ('2024-01-01 01:00+00', 2, 20.0),
@@ -878,6 +921,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 -- All 3 rows have same time but different tags → 3 separate L1 entries
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P1: Watermark monotonicity — partial REFRESH with earlier window
 --     should NOT decrease watermark (GREATEST semantics).
@@ -885,6 +929,7 @@ CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
 \echo '=== P1: watermark monotonicity ==='
 === P1: watermark monotonicity ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Record current watermark
 SELECT watermark AS wm_before
 FROM time_series.cagg_watermark LIMIT 1 \gset
@@ -892,6 +937,7 @@ FROM time_series.cagg_watermark LIMIT 1 \gset
 INSERT INTO metrics VALUES ('2024-01-01 01:30+00', 1, 10.0);
 CALL time_series.refresh_continuous_aggregate('cv_hourly',
     '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Watermark must NOT have decreased
 SELECT bool_and(watermark >= :'wm_before'::timestamptz) AS wm_not_decreased
 FROM time_series.cagg_watermark;
@@ -902,6 +948,7 @@ FROM time_series.cagg_watermark;
 
 -- Clean
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- ============================================================
 -- P1: REFRESH idempotent — two consecutive REFRESHes with no new data
 --     second REFRESH should be a no-op (mat unchanged, no errors).
@@ -909,6 +956,7 @@ CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
 \echo '=== P1: REFRESH idempotent ==='
 === P1: REFRESH idempotent ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_data;
  mat_has_data 
 --------------
@@ -917,6 +965,7 @@ SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_data;
 
 -- Second REFRESH with no new inserts
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 SELECT EXISTS(SELECT 1 FROM cv_hourly) AS mat_has_data;
  mat_has_data 
 --------------
@@ -943,6 +992,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_materialization_log) AS l2_has_rows
 \echo '=== P1: DROP VIEW (CAGG) → full cleanup ==='
 === P1: DROP VIEW (CAGG) → full cleanup ===
 CALL time_series.refresh_continuous_aggregate('cv_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly"
 -- Inject one L1 entry
 INSERT INTO metrics VALUES ('2024-01-01 01:00+00', 1, 50.0);
 SELECT lowest_modified FROM time_series.cagg_invalidation_log
@@ -999,6 +1049,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_hourly2" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_hourly2_8
 CALL time_series.refresh_continuous_aggregate('cv_hourly2', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_hourly2"
 INSERT INTO metrics VALUES ('2024-01-01 03:00+00', 3, 70.0);
 SELECT lowest_modified FROM time_series.cagg_invalidation_log
  WHERE source_table_oid = 'metrics'::regclass ORDER BY lowest_modified;
@@ -1047,6 +1098,7 @@ CREATE MATERIALIZED VIEW cv_upd WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_upd" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_upd_9
 CALL time_series.refresh_continuous_aggregate('cv_upd', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_upd"
 -- Verify mat data before UPDATE
 SELECT EXISTS(SELECT 1 FROM cv_upd) AS mat_has_data;
  mat_has_data 
@@ -1067,6 +1119,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 -- Should have entries for BOTH old time (01:30) and new time (02:30)
 -- Case B: UPDATE non-time column (val only) — time unchanged
 CALL time_series.refresh_continuous_aggregate('cv_upd', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_upd"
 UPDATE upd_src SET val = 999.0
 WHERE time = '2024-01-01 03:00+00' AND tags_id = 1;
 SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log ORDER BY lowest_modified;
@@ -1078,6 +1131,7 @@ SELECT lowest_modified, greatest_modified FROM time_series.cagg_invalidation_log
 -- Should have entry for the row's time (03:00) — trigger fires on UPDATE
 -- Case C: UPDATE above watermark — should NOT write L1
 CALL time_series.refresh_continuous_aggregate('cv_upd', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_upd"
 INSERT INTO upd_src VALUES ('2099-06-01 00:00+00', 1, 42.0);
 UPDATE upd_src SET val = 100.0 WHERE time = '2099-06-01 00:00+00';
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
@@ -1089,6 +1143,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 -- Should be 0 (time >= watermark → skip)
 -- REFRESH and verify EXCEPT = 0 (UPDATE was correctly tracked)
 CALL time_series.refresh_continuous_aggregate('cv_upd', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_upd"
 SELECT count(*) AS diff_after_upd FROM (
   (  SELECT bucket, tags_id, cnt, round(avg_val::numeric, 10) FROM cv_upd
    EXCEPT
@@ -1138,6 +1193,7 @@ CREATE MATERIALIZED VIEW cv_trim WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_trim" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_trim_10
 CALL time_series.refresh_continuous_aggregate('cv_trim', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_trim"
 -- Manually insert L2 entries covering different overlap patterns
 -- with a REFRESH window of [06:00, 12:00)
 -- First, backfill data to create L1 entries spanning various ranges
@@ -1151,6 +1207,7 @@ INSERT INTO trim_src VALUES
 -- Actually, we need to trigger L1→L2 migration first
 CALL time_series.refresh_continuous_aggregate('cv_trim',
   '2024-01-01 06:00+00', '2024-01-01 12:00+00');
+NOTICE:  refreshing continuous aggregate "cv_trim"
 -- Check L2 after partial refresh — entries outside [06:00, 12:00) should remain
 SELECT lowest_modified, greatest_modified FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_trim')
@@ -1187,6 +1244,7 @@ SELECT count(*) AS diff_trim FROM (
 
 -- Now REFRESH the remaining ranges to clean up
 CALL time_series.refresh_continuous_aggregate('cv_trim', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_trim"
 -- Final EXCEPT = 0 (everything materialized correctly)
 SELECT count(*) AS diff_trim_final FROM (
   (  SELECT bucket, tags_id, cnt FROM cv_trim
@@ -1239,6 +1297,7 @@ CREATE MATERIALIZED VIEW cv_merge WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_merge" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_merge_11
 CALL time_series.refresh_continuous_aggregate('cv_merge', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_merge"
 -- Insert scattered backfill: hours 01, 02, 03, 05 (gap at 04)
 INSERT INTO merge_src VALUES
   ('2024-01-01 01:10+00', 1, 200),
@@ -1249,6 +1308,7 @@ INSERT INTO merge_src VALUES
 -- and keep [05] as separate (or merge [01-03]+[05] depending on alignment)
 CALL time_series.refresh_continuous_aggregate('cv_merge',
   '2024-01-01 00:00+00', '2024-01-01 06:00+00');
+NOTICE:  refreshing continuous aggregate "cv_merge"
 -- EXCEPT = 0 in refreshed range
 SELECT count(*) AS diff_merge FROM (
   (  SELECT bucket, tags_id, cnt FROM cv_merge
@@ -1275,6 +1335,7 @@ SELECT count(*) AS diff_merge FROM (
 
 -- Full EXCEPT = 0
 CALL time_series.refresh_continuous_aggregate('cv_merge', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_merge"
 SELECT count(*) AS diff_merge_full FROM (
   SELECT bucket, tags_id, cnt FROM cv_merge EXCEPT
   SELECT time_bucket('1 hour'::interval, time), tags_id, count(*)
@@ -1309,6 +1370,7 @@ CREATE MATERIALIZED VIEW cv_trunc_mid WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_trunc_mid" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_trunc_mid_12
 CALL time_series.refresh_continuous_aggregate('cv_trunc_mid', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_trunc_mid"
 SELECT EXISTS(SELECT 1 FROM cv_trunc_mid) AS mat_has_data;
  mat_has_data 
 --------------
@@ -1329,6 +1391,7 @@ SELECT EXISTS(SELECT 1 FROM cv_trunc_mid) AS mat_has_data;
 -- Now REFRESH → CAGG should be empty
 ALTER VIEW cv_trunc_mid SET (time_series.materialized_only = false);
 CALL time_series.refresh_continuous_aggregate('cv_trunc_mid', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_trunc_mid"
 SELECT EXISTS(SELECT 1 FROM cv_trunc_mid) AS mat_has_data;
  mat_has_data 
 --------------
@@ -1358,6 +1421,7 @@ CREATE MATERIALIZED VIEW cv_tc WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_tc" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_tc_13
 CALL time_series.refresh_continuous_aggregate('cv_tc', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_tc"
 SELECT EXISTS(SELECT 1 FROM cv_tc) AS mat_has_data;
  mat_has_data 
 --------------
@@ -1394,6 +1458,7 @@ CREATE MATERIALIZED VIEW cv_del WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_del" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_del_14
 CALL time_series.refresh_continuous_aggregate('cv_del', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_del"
 SELECT EXISTS(SELECT 1 FROM cv_del) AS mat_has_data;
  mat_has_data 
 --------------
@@ -1413,6 +1478,7 @@ SELECT count(*) > 0 AS has_l1_delete FROM time_series.cagg_invalidation_log;
 -- Incremental REFRESH
 CALL time_series.refresh_continuous_aggregate('cv_del',
   '2024-01-01 03:00+00', '2024-01-01 04:00+00');
+NOTICE:  refreshing continuous aggregate "cv_del"
 -- EXCEPT = 0 (deleted rows should be gone from CAGG)
 SELECT count(*) AS diff_delete FROM (
   (  SELECT bucket, tags_id, cnt, round(avg_val::numeric, 10) FROM cv_del
@@ -1466,6 +1532,7 @@ DETAIL:  Materialization table: time_series._mat_cv_mb_15
 -- Insert a single row at exact minute boundary
 INSERT INTO mb_src VALUES ('2024-01-01 00:05:00+00', 1, 10.0);
 CALL time_series.refresh_continuous_aggregate('cv_mb', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_mb"
 SELECT EXISTS(SELECT 1 FROM cv_mb) AS mat_has_data;
  mat_has_data 
 --------------
@@ -1482,6 +1549,7 @@ SELECT avg_val AS mb_avg1 FROM cv_mb WHERE bucket = '2024-01-01 00:05:00+00';
 INSERT INTO mb_src VALUES ('2024-01-01 00:05:30+00', 1, 20.0);
 CALL time_series.refresh_continuous_aggregate('cv_mb',
   '2024-01-01 00:05:00+00', '2024-01-01 00:06:00+00');
+NOTICE:  refreshing continuous aggregate "cv_mb"
 SELECT avg_val AS mb_avg2 FROM cv_mb WHERE bucket = '2024-01-01 00:05:00+00';
  mb_avg2 
 ---------
@@ -1493,6 +1561,7 @@ SELECT avg_val AS mb_avg2 FROM cv_mb WHERE bucket = '2024-01-01 00:05:00+00';
 INSERT INTO mb_src VALUES ('2024-01-01 00:06:00+00', 1, 30.0);
 CALL time_series.refresh_continuous_aggregate('cv_mb',
   '2024-01-01 00:06:00+00', '2024-01-01 00:07:00+00');
+NOTICE:  refreshing continuous aggregate "cv_mb"
 -- Full EXCEPT = 0
 SELECT count(*) AS diff_mb FROM (
   (  SELECT bucket, tags_id, cnt, round(avg_val::numeric, 10) FROM cv_mb
@@ -1541,6 +1610,7 @@ DETAIL:  Materialization table: time_series._mat_cv_wm_16
 -- REFRESH beyond data range — should not crash
 CALL time_series.refresh_continuous_aggregate('cv_wm',
   '2024-01-01 00:00+00', '2024-12-31 00:00+00');
+NOTICE:  refreshing continuous aggregate "cv_wm"
 -- EXCEPT = 0
 SELECT count(*) AS diff_wm FROM (
   SELECT bucket, tags_id, cnt FROM cv_wm EXCEPT
@@ -1555,6 +1625,7 @@ SELECT count(*) AS diff_wm FROM (
 -- REFRESH with start after all data — should be no-op
 CALL time_series.refresh_continuous_aggregate('cv_wm',
   '2025-01-01 00:00+00', '2025-12-31 00:00+00');
+NOTICE:  refreshing continuous aggregate "cv_wm"
 -- Mat table should still have data
 SELECT EXISTS(SELECT 1 FROM cv_wm) AS mat_has_data;
  mat_has_data 
@@ -1585,6 +1656,7 @@ CREATE MATERIALIZED VIEW cv_pl WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_pl" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_pl_17
 CALL time_series.refresh_continuous_aggregate('cv_pl', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_pl"
 -- PL/pgSQL function that calls cagg_watermark()
 CREATE FUNCTION get_wm(cid int) RETURNS timestamptz
 LANGUAGE plpgsql AS $$
@@ -1650,6 +1722,7 @@ SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
 \echo '=== INV-10: L1 cleared after REFRESH ==='
 === INV-10: L1 cleared after REFRESH ===
 CALL time_series.refresh_continuous_aggregate('cv_b3', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3"
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
  l1_has_rows 
 -------------
@@ -1670,6 +1743,7 @@ CREATE MATERIALIZED VIEW cv_b3_daily WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_b3_daily" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_b3_daily_19
 CALL time_series.refresh_continuous_aggregate('cv_b3_daily', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3_daily"
 -- Backfill: insert rows that land in different bucket ranges
 INSERT INTO b3_src VALUES
   ('2024-01-01 02:30+00', 1, 100),   -- hourly bucket: 02:00
@@ -1683,6 +1757,7 @@ INSERT INTO b3_src VALUES
 --   4. cv_b3_daily's L2 should still have entries (not touched)
 CALL time_series.refresh_continuous_aggregate('cv_b3',
   '2024-01-01 02:00+00', '2024-01-01 06:00+00');
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- cv_b3_daily should still have L2 entries (untouched by hourly REFRESH)
 SELECT lowest_modified, greatest_modified FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_b3_daily')
@@ -1704,6 +1779,7 @@ ORDER BY lowest_modified;
 -- Stepwise cleanup (INV-17): REFRESH the remaining range
 CALL time_series.refresh_continuous_aggregate('cv_b3',
   '2024-01-01 08:00+00', '2024-01-01 09:00+00');
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- cv_b3 L2 should now be empty
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_b3')) AS l2_has_rows;
@@ -1714,6 +1790,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 
 -- REFRESH daily to consume its L2
 CALL time_series.refresh_continuous_aggregate('cv_b3_daily', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3_daily"
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_b3_daily')) AS l2_has_rows;
  l2_has_rows 
@@ -1757,6 +1834,7 @@ INSERT INTO b3_src VALUES
   ('2024-01-01 01:10+00', 1, 20.0),
   ('2024-01-01 02:10+00', 1, 30.0);
 CALL time_series.refresh_continuous_aggregate('cv_b3', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- Backfill: modify all 3 buckets
 INSERT INTO b3_src VALUES
   ('2024-01-01 00:20+00', 1, 15.0),
@@ -1764,8 +1842,11 @@ INSERT INTO b3_src VALUES
   ('2024-01-01 02:20+00', 1, 35.0);
 -- Sequential: refresh bucket by bucket
 CALL time_series.refresh_continuous_aggregate('cv_b3', '2024-01-01 00:00+00', '2024-01-01 01:00+00');
+NOTICE:  refreshing continuous aggregate "cv_b3"
 CALL time_series.refresh_continuous_aggregate('cv_b3', '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_b3"
 CALL time_series.refresh_continuous_aggregate('cv_b3', '2024-01-01 02:00+00', '2024-01-01 03:00+00');
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- Capture sequential result
 CREATE TEMP TABLE seq_result AS SELECT * FROM cv_b3 ORDER BY bucket, tags_id;
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'tags_id' as the Apache Cloudberry data distribution key for this table.
@@ -1780,6 +1861,7 @@ INSERT INTO b3_src VALUES
   ('2024-01-01 01:20+00', 1, 25.0),
   ('2024-01-01 02:20+00', 1, 35.0);
 CALL time_series.refresh_continuous_aggregate('cv_b3', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- Batch: all at once
 CREATE TEMP TABLE batch_result AS SELECT * FROM cv_b3 ORDER BY bucket, tags_id;
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'tags_id' as the Apache Cloudberry data distribution key for this table.
@@ -1801,6 +1883,7 @@ DROP TABLE batch_result;
 \echo '=== INV-44~45: NULL refresh threshold ==='
 === INV-44~45: NULL refresh threshold ===
 CALL time_series.refresh_continuous_aggregate('cv_b3', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- After full NULL refresh, L1 and L2 should both be empty
 SELECT EXISTS(SELECT 1 FROM time_series.cagg_invalidation_log) AS l1_has_rows;
  l1_has_rows 
@@ -1840,6 +1923,7 @@ HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sur
 DELETE FROM b3_src WHERE time > '2024-01-01 01:00+00';
 -- REFRESH
 CALL time_series.refresh_continuous_aggregate('cv_b3', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b3"
 -- Watermark should be >= before (GREATEST semantics, never decreases)
 SELECT bool_and(w.watermark >= b.watermark) AS wm_not_decreased
 FROM time_series.cagg_watermark w, wm_before b
@@ -1899,6 +1983,7 @@ CREATE MATERIALIZED VIEW cv_prep WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_prep" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_prep_20
 CALL time_series.refresh_continuous_aggregate('cv_prep', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_prep"
 -- PREPARE a query on the CAGG
 PREPARE cagg_query AS SELECT count(*) FROM cv_prep;
 -- Execute: should return data
@@ -1912,6 +1997,7 @@ EXECUTE cagg_query;
 INSERT INTO prep_src SELECT '2024-01-02'::timestamptz + (i * interval '1 hour'), 1, i
 FROM generate_series(1, 5) i;
 CALL time_series.refresh_continuous_aggregate('cv_prep', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_prep"
 -- Execute again: should reflect new data (more rows)
 EXECUTE cagg_query;
  count 
@@ -1980,13 +2066,14 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 00:00+00', '2024-01-01 05:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- Watermark should have advanced (no longer -inf)
 SELECT bool_and(watermark > '-infinity'::timestamptz) AS wm_advanced
 FROM time_series.cagg_watermark
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_a');
  wm_advanced 
 -------------
- f
+ t
 (1 row)
 
 -- ============================================================
@@ -2002,6 +2089,8 @@ SELECT count(*) AS cnt_before FROM cv_a;
 
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 00:00+00', '2024-01-01 05:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
+NOTICE:  continuous aggregate "cv_a" is already up-to-date
 SELECT count(*) AS cnt_after FROM cv_a;
  cnt_after 
 -----------
@@ -2014,6 +2103,7 @@ SELECT count(*) AS cnt_after FROM cv_a;
 \echo '=== V-04: sub-window refresh no watermark move ==='
 === V-04: sub-window refresh no watermark move ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- Record watermark
 CREATE TEMP TABLE saved_wm AS
   SELECT MAX(watermark) AS wm FROM time_series.cagg_watermark
@@ -2023,6 +2113,8 @@ HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sur
 -- Refresh a sub-window well below watermark
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 00:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
+NOTICE:  continuous aggregate "cv_a" is already up-to-date
 -- Watermark should not have decreased
 SELECT bool_and(w.watermark >= s.wm) AS wm_not_decreased
 FROM time_series.cagg_watermark w, saved_wm s
@@ -2049,6 +2141,7 @@ NOTICE:  continuous aggregate "cv_other" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_other_23
 -- Refresh cv_other only
 CALL time_series.refresh_continuous_aggregate('cv_other', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_other"
 -- cv_a's watermark should be unchanged from before
 SELECT bool_and(w.watermark > '2024-01-01'::timestamptz) AS cva_wm_unchanged
 FROM time_series.cagg_watermark w
@@ -2070,12 +2163,15 @@ NOTICE:  view "cv_other" does not exist, skipping
 \echo '=== V-06: same-source CAGG L2 independence ==='
 === V-06: same-source CAGG L2 independence ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 CALL time_series.refresh_continuous_aggregate('cv_b', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b"
 -- Insert backfill
 INSERT INTO tsdb_src VALUES ('2024-01-01 01:30+00', 1, 999.0);
 -- Refresh only cv_a
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- cv_a should be correct
 SELECT count(*) AS diff_a FROM (
   (  SELECT bucket, tags_id, cnt, round(avg_val::numeric, 10) FROM cv_a
@@ -2104,6 +2200,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 
 -- Now refresh cv_b
 CALL time_series.refresh_continuous_aggregate('cv_b', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b"
 SELECT count(*) AS diff_b FROM (
   (  SELECT bucket, cnt FROM cv_b
    EXCEPT
@@ -2128,12 +2225,15 @@ SELECT count(*) AS diff_b FROM (
 \echo '=== V-06b: DROP one CAGG, other L2 preserved ==='
 === V-06b: DROP one CAGG, other L2 preserved ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 CALL time_series.refresh_continuous_aggregate('cv_b', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b"
 -- Insert backfill so both CAGGs get L2 entries
 INSERT INTO tsdb_src VALUES ('2024-01-01 02:30+00', 1, 777.0);
 -- Trigger L1→L2 migration for both (partial refresh cv_a only)
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 02:00+00', '2024-01-01 03:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- cv_b should have L2 entries (from migration)
 SELECT count(*) AS cvb_l2_before_drop FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_b');
@@ -2157,6 +2257,7 @@ WHERE cagg_id = :cvb_id;
 
 -- cv_b should still be queryable and refreshable
 CALL time_series.refresh_continuous_aggregate('cv_b', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_b"
 SELECT count(*) AS diff_b_after_drop FROM (
   (  SELECT bucket, cnt FROM cv_b
    EXCEPT
@@ -2188,6 +2289,7 @@ DETAIL:  Materialization table: time_series._mat_cv_a_24
 \echo '=== V-07: L2 trimming exact verification ==='
 === V-07: L2 trimming exact verification ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- Insert in 3 distinct hour-buckets
 INSERT INTO tsdb_src VALUES
   ('2024-01-01 01:30+00', 1, 10.0),
@@ -2196,6 +2298,7 @@ INSERT INTO tsdb_src VALUES
 -- Narrow refresh: only bucket 03:00-04:00
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 03:00+00', '2024-01-01 04:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- L2 should have residuals for hour-01 and hour-05 (bucket-03 consumed)
 SELECT count(*) AS l2_residual FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_a');
@@ -2228,6 +2331,7 @@ SELECT count(*) AS diff_mid FROM (
 
 -- Full refresh to consume residuals
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS l2_clean FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_a');
  l2_clean 
@@ -2241,6 +2345,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 \echo '=== V-08: mid-invalidation residual ==='
 === V-08: mid-invalidation residual ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- Two invalidation ranges: hour-01 and hour-03 to hour-06
 INSERT INTO tsdb_src VALUES ('2024-01-01 01:15+00', 1, 1.0);
 INSERT INTO tsdb_src VALUES ('2024-01-01 03:15+00', 2, 2.0);
@@ -2249,6 +2354,7 @@ INSERT INTO tsdb_src VALUES ('2024-01-01 05:15+00', 1, 4.0);
 -- Refresh [00:00, 04:00) — covers hour-01 fully, covers hour-03 but NOT hour-04,05
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 00:00+00', '2024-01-01 04:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- L2 should have residual for hour-04 and hour-05
 SELECT count(*) AS l2_mid_residual FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_a');
@@ -2276,18 +2382,22 @@ SELECT count(*) AS diff_partial FROM (
 (1 row)
 
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- ============================================================
 -- V-09: Merge from pure L1→L2 migration without refresh overlap (#14)
 -- ============================================================
 \echo '=== V-09: merge from migration ==='
 === V-09: merge from migration ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- Insert overlapping ranges that will merge in L2
 INSERT INTO tsdb_src VALUES ('2024-01-01 01:10+00', 1, 1.0);
 INSERT INTO tsdb_src VALUES ('2024-01-01 01:50+00', 2, 2.0);
 -- Refresh a NON-overlapping window (far future) to trigger L1→L2 without trimming
 CALL time_series.refresh_continuous_aggregate('cv_a',
   '2024-01-01 10:00+00', '2024-01-01 11:00+00');
+NOTICE:  refreshing continuous aggregate "cv_a"
+NOTICE:  continuous aggregate "cv_a" is already up-to-date
 -- L2 entries for hour-01 should exist (merged)
 SELECT count(*) AS l2_merged FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_a');
@@ -2297,6 +2407,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 (1 row)
 
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 -- ============================================================
 -- V-10: NULL refresh empties both L1 and L2 (#15)
 -- ============================================================
@@ -2304,6 +2415,7 @@ CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
 === V-10: NULL refresh clears all ===
 INSERT INTO tsdb_src VALUES ('2024-01-01 02:30+00', 1, 50.0);
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS l1_empty FROM time_series.cagg_invalidation_log;
  l1_empty 
 ----------
@@ -2323,6 +2435,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 \echo '=== V-11: TRUNCATE round-trip ==='
 === V-11: TRUNCATE round-trip ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS before_trunc FROM cv_a;
  before_trunc 
 --------------
@@ -2348,6 +2461,7 @@ SELECT count(*) AS stale_rows FROM cv_a;
 ALTER VIEW cv_a SET (time_series.materialized_only = false);
 -- REFRESH → CAGG empty
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS after_trunc_refresh FROM cv_a;
  after_trunc_refresh 
 ---------------------
@@ -2360,6 +2474,7 @@ SELECT '2024-01-01 00:00+00'::timestamptz + (i * interval '10 min'),
        (i % 3) + 1, i * 1.5
 FROM generate_series(1, 50) i;
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS diff_restored FROM (
   (  SELECT bucket, tags_id, cnt, round(avg_val::numeric, 10) FROM cv_a
    EXCEPT
@@ -2390,11 +2505,14 @@ CREATE MATERIALIZED VIEW cv_sec WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_sec" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_sec_25
 CALL time_series.refresh_continuous_aggregate('cv_sec', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_sec"
 -- Insert at exact second=5
 INSERT INTO sec_src VALUES ('2024-01-01 00:00:05+00', 2, 200.0);
 -- Refresh MISS: window [04, 05) doesn't include second=5
 CALL time_series.refresh_continuous_aggregate('cv_sec',
   '2024-01-01 00:00:04+00', '2024-01-01 00:00:05+00');
+NOTICE:  refreshing continuous aggregate "cv_sec"
+NOTICE:  continuous aggregate "cv_sec" is already up-to-date
 SELECT a AS avg_miss FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
  avg_miss 
 ----------
@@ -2404,6 +2522,7 @@ SELECT a AS avg_miss FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
 -- Refresh HIT: window [05, 06)
 CALL time_series.refresh_continuous_aggregate('cv_sec',
   '2024-01-01 00:00:05+00', '2024-01-01 00:00:06+00');
+NOTICE:  refreshing continuous aggregate "cv_sec"
 SELECT a AS avg_hit FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
  avg_hit 
 ---------
@@ -2413,6 +2532,7 @@ SELECT a AS avg_hit FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
 -- Refresh EXTENDED LEFT: [-inf, 06)
 INSERT INTO sec_src VALUES ('2024-01-01 00:00:05+00', 3, 300.0);
 CALL time_series.refresh_continuous_aggregate('cv_sec', NULL, '2024-01-01 00:00:06+00');
+NOTICE:  refreshing continuous aggregate "cv_sec"
 SELECT a AS avg_left_ext FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
  avg_left_ext 
 --------------
@@ -2422,6 +2542,7 @@ SELECT a AS avg_left_ext FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
 -- Refresh EXTENDED RIGHT: [05, +inf)
 INSERT INTO sec_src VALUES ('2024-01-01 00:00:05+00', 4, 400.0);
 CALL time_series.refresh_continuous_aggregate('cv_sec', '2024-01-01 00:00:05+00', NULL);
+NOTICE:  refreshing continuous aggregate "cv_sec"
 SELECT a AS avg_right_ext FROM cv_sec WHERE bucket = '2024-01-01 00:00:05+00';
  avg_right_ext 
 ---------------
@@ -2450,6 +2571,7 @@ NOTICE:  continuous aggregate "cv_two" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_two_26
 -- Batch: refresh whole range
 CALL time_series.refresh_continuous_aggregate('cv_two', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_two"
 CREATE TEMP TABLE batch_result AS SELECT bucket, a FROM cv_two ORDER BY bucket;
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'bucket' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
@@ -2463,8 +2585,10 @@ DETAIL:  Materialization table: time_series._mat_cv_two_27
 -- Sequential: one bucket at a time
 CALL time_series.refresh_continuous_aggregate('cv_two',
   '2024-01-01 00:00+00', '2024-01-01 01:00+00');
+NOTICE:  refreshing continuous aggregate "cv_two"
 CALL time_series.refresh_continuous_aggregate('cv_two',
   '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_two"
 -- Compare
 SELECT count(*) AS seq_vs_batch_diff FROM (
   SELECT bucket, a FROM cv_two EXCEPT SELECT bucket, a FROM batch_result
@@ -2497,6 +2621,7 @@ CREATE MATERIALIZED VIEW cv_split WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_split" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_split_28
 CALL time_series.refresh_continuous_aggregate('cv_split', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_split"
 -- Backfill all 3 buckets
 INSERT INTO split_src VALUES
   ('2024-01-01 00:45+00', 1, 100.0),
@@ -2505,6 +2630,7 @@ INSERT INTO split_src VALUES
 -- Refresh ONLY the middle bucket
 CALL time_series.refresh_continuous_aggregate('cv_split',
   '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_split"
 -- L2 should have residuals for hour-00 and hour-02
 SELECT count(*) AS l2_split_count FROM time_series.cagg_materialization_log
 WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_name = 'cv_split');
@@ -2535,6 +2661,7 @@ SELECT count(*) AS diff_split_mid FROM (
 
 -- Full refresh cleans up
 CALL time_series.refresh_continuous_aggregate('cv_split', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_split"
 SELECT count(*) AS diff_split_full FROM (
   (  SELECT bucket, a FROM cv_split
    EXCEPT
@@ -2574,6 +2701,7 @@ DETAIL:  Materialization table: time_series._mat_cv_cap_29
 -- Step 1: Partial refresh [01:00, 02:00)
 CALL time_series.refresh_continuous_aggregate('cv_cap',
   '2024-01-01 01:00+00', '2024-01-01 02:00+00');
+NOTICE:  refreshing continuous aggregate "cv_cap"
 SELECT count(*) AS mat_step1 FROM cv_cap;
  mat_step1 
 -----------
@@ -2583,6 +2711,7 @@ SELECT count(*) AS mat_step1 FROM cv_cap;
 -- Step 2: Refresh far beyond data [10:00, 20:00) → no crash, no extra rows
 CALL time_series.refresh_continuous_aggregate('cv_cap',
   '2024-01-01 10:00+00', '2024-01-01 20:00+00');
+NOTICE:  refreshing continuous aggregate "cv_cap"
 SELECT count(*) AS mat_step2 FROM cv_cap;
  mat_step2 
 -----------
@@ -2591,6 +2720,7 @@ SELECT count(*) AS mat_step2 FROM cv_cap;
 
 -- Step 3: Full refresh → all 3 rows
 CALL time_series.refresh_continuous_aggregate('cv_cap', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_cap"
 SELECT count(*) AS mat_step3 FROM cv_cap;
  mat_step3 
 -----------
@@ -2619,6 +2749,7 @@ CREATE MATERIALIZED VIEW cv_del WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_del" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_del_30
 CALL time_series.refresh_continuous_aggregate('cv_del', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_del"
 SELECT count(*) AS before_del FROM cv_del;
  before_del 
 ------------
@@ -2638,6 +2769,7 @@ SELECT count(*) AS stale_del FROM cv_del;
 ALTER VIEW cv_del SET (time_series.materialized_only = false);
 -- REFRESH → synced (2 buckets)
 CALL time_series.refresh_continuous_aggregate('cv_del', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_del"
 SELECT count(*) AS after_del FROM cv_del;
  after_del 
 -----------
@@ -2647,6 +2779,7 @@ SELECT count(*) AS after_del FROM cv_del;
 -- Re-insert beyond old range
 INSERT INTO del_src VALUES ('2024-01-01 05:30+00', 4, 50.0);
 CALL time_series.refresh_continuous_aggregate('cv_del', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_del"
 SELECT count(*) AS after_reinsert FROM cv_del;
  after_reinsert 
 ----------------
@@ -2696,6 +2829,7 @@ INSERT INTO merge_src VALUES ('2024-01-01 03:30+00', 3, 3.0);
 INSERT INTO merge_src VALUES ('2024-01-01 05:30+00', 4, 4.0);
 -- Full REFRESH: should process all, result correct
 CALL time_series.refresh_continuous_aggregate('cv_merge', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_merge"
 SELECT count(*) AS diff_merge_gap FROM (
   (  SELECT bucket, cnt FROM cv_merge
    EXCEPT
@@ -2745,6 +2879,7 @@ DETAIL:  Materialization table: time_series._mat_cv_upd_32
 -- Set watermark to hour-05
 CALL time_series.refresh_continuous_aggregate('cv_upd',
   '2024-01-01 00:00+00', '2024-01-01 05:00+00');
+NOTICE:  refreshing continuous aggregate "cv_upd"
 -- Case A: UPDATE val below watermark (time unchanged) → L1
 UPDATE upd_src SET val = 11.0 WHERE v = 1;
 -- Case B: UPDATE time below→above watermark (cross up) → L1 for old time
@@ -2757,11 +2892,12 @@ UPDATE upd_src SET time = '2024-01-01 03:30+00' WHERE v = 4;
 SELECT count(*) AS l1_upd_cross FROM time_series.cagg_invalidation_log;
  l1_upd_cross 
 --------------
-            0
+            3
 (1 row)
 
 -- REFRESH and verify correctness
 CALL time_series.refresh_continuous_aggregate('cv_upd', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_upd"
 SELECT count(*) AS diff_upd_cross FROM (
   (  SELECT bucket, v, round(a::numeric, 10) FROM cv_upd
    EXCEPT
@@ -2800,6 +2936,7 @@ CREATE MATERIALIZED VIEW cv_tp WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_tp" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_tp_33
 CALL time_series.refresh_continuous_aggregate('cv_tp', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_tp"
 PREPARE tp_query AS SELECT count(*) FROM cv_tp;
 EXECUTE tp_query;
  count 
@@ -2818,6 +2955,7 @@ EXECUTE tp_query;
 
 -- REFRESH → empty
 CALL time_series.refresh_continuous_aggregate('cv_tp', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_tp"
 EXECUTE tp_query;
  count 
 -------
@@ -2837,6 +2975,7 @@ NOTICE:  view "cv_tp" does not exist, skipping
 \echo '=== V-20: ABORT no L1 ==='
 === V-20: ABORT no L1 ===
 CALL time_series.refresh_continuous_aggregate('cv_a', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_a"
 SELECT count(*) AS l1_before_abort FROM time_series.cagg_invalidation_log;
  l1_before_abort 
 -----------------
@@ -2869,6 +3008,7 @@ CREATE MATERIALIZED VIEW cv_mpp WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_mpp" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_mpp_34
 CALL time_series.refresh_continuous_aggregate('cv_mpp', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_mpp"
 -- INSERT multiple devices → trigger writes L1 to different segments
 INSERT INTO mpp_src VALUES ('2024-01-01 00:45+00', 1, 11.0);
 INSERT INTO mpp_src VALUES ('2024-01-01 00:45+00', 2, 22.0);
@@ -2892,6 +3032,7 @@ SELECT count(*) AS l1_total FROM time_series.cagg_invalidation_log;
 
 -- REFRESH gathers ALL L1 from ALL segments
 CALL time_series.refresh_continuous_aggregate('cv_mpp', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_mpp"
 -- L1 should be empty (all consumed)
 SELECT count(*) AS l1_after_gather FROM time_series.cagg_invalidation_log;
  l1_after_gather 
@@ -2968,6 +3109,7 @@ WHERE source_table_oid = 'th_src'::regclass;
 \echo '=== TH-02: threshold after REFRESH ==='
 === TH-02: threshold after REFRESH ===
 CALL time_series.refresh_continuous_aggregate('cv_th1', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th1"
 -- Threshold should now be > -infinity (close to now())
 SELECT bool_and(threshold > '2024-01-01'::timestamptz) AS th_advanced
 FROM time_series.cagg_invalidation_threshold
@@ -3014,7 +3156,9 @@ WHERE source_table_oid = 'th_src'::regclass;
 === TH-04: multi-CAGG threshold = MAX ===
 -- Refresh both
 CALL time_series.refresh_continuous_aggregate('cv_th1', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th1"
 CALL time_series.refresh_continuous_aggregate('cv_th2', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th2"
 -- Threshold = MAX of both CAGGs' watermarks
 SELECT bool_and(t.threshold = w.max_wm) AS th_is_max
 FROM time_series.cagg_invalidation_threshold t,
@@ -3043,6 +3187,7 @@ WHERE source_table_oid = 'th_src'::regclass;
 
 -- cv_th2 still works
 CALL time_series.refresh_continuous_aggregate('cv_th2', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th2"
 SELECT count(*) AS diff_th5 FROM (
   SELECT bucket, a FROM cv_th2 EXCEPT
   SELECT time_bucket('2 hour'::interval, time), avg(val)
@@ -3079,6 +3224,7 @@ CREATE MATERIALIZED VIEW cv_th_trig WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_th_trig" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_th_trig_37
 CALL time_series.refresh_continuous_aggregate('cv_th_trig', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th_trig"
 -- Verify threshold is high (> source data)
 SELECT bool_and(threshold > '2024-12-31'::timestamptz) AS th_high
 FROM time_series.cagg_invalidation_threshold
@@ -3098,6 +3244,7 @@ SELECT count(*) > 0 AS l1_below_th FROM time_series.cagg_invalidation_log;
 
 -- Clear L1
 CALL time_series.refresh_continuous_aggregate('cv_th_trig', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_th_trig"
 -- INSERT above threshold (far future) → no L1
 INSERT INTO th_src VALUES ('2099-01-01 00:00+00', 3, 30.0);
 SELECT count(*) AS l1_above_th FROM time_series.cagg_invalidation_log;
@@ -3158,6 +3305,7 @@ WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "subxact_hourly" successfully created
 DETAIL:  Materialization table: time_series._mat_subxact_hourly_38
 CALL time_series.refresh_continuous_aggregate('subxact_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "subxact_hourly"
 -- I-17: Basic subtransaction rollback, A/C in different buckets
 DO $$
 BEGIN
@@ -3178,6 +3326,7 @@ SELECT count(*) > 0 AS l1_exists FROM time_series.cagg_invalidation_log;
 (1 row)
 
 CALL time_series.refresh_continuous_aggregate('subxact_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "subxact_hourly"
 -- Bucket 00:00: 1770 + 9003 = 10773
 SELECT CASE WHEN total = 10773 THEN 'OK' ELSE 'FAIL: ' || total::text END AS i17_bucket_00
 FROM subxact_hourly WHERE bucket = '2026-01-01 00:00:00+00';
@@ -3214,6 +3363,7 @@ BEGIN
 END;
 $$;
 CALL time_series.refresh_continuous_aggregate('subxact_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "subxact_hourly"
 -- Bucket 00:00: 10773 + 8001 = 18774
 SELECT CASE WHEN total = 18774 THEN 'OK' ELSE 'FAIL: ' || total::text END AS i18_bucket_00
 FROM subxact_hourly WHERE bucket = '2026-01-01 00:00:00+00';
@@ -3249,6 +3399,7 @@ SELECT count(*) AS should_be_zero FROM subxact_src WHERE val = 7777;
 (1 row)
 
 CALL time_series.refresh_continuous_aggregate('subxact_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "subxact_hourly"
 SELECT CASE WHEN total = 18774 THEN 'OK' ELSE 'FAIL: ' || total::text END AS i19_bucket_00
 FROM subxact_hourly WHERE bucket = '2026-01-01 00:00:00+00';
  i19_bucket_00 
@@ -3271,6 +3422,7 @@ BEGIN
 END;
 $$;
 CALL time_series.refresh_continuous_aggregate('subxact_hourly', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "subxact_hourly"
 -- Bucket 00:00: 18774 + 6003 = 24777
 SELECT CASE WHEN total = 24777 THEN 'OK' ELSE 'FAIL: ' || total::text END AS i20_bucket_00
 FROM subxact_hourly WHERE bucket = '2026-01-01 00:00:00+00';

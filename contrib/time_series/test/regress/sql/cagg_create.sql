@@ -1983,6 +1983,176 @@ CREATE MATERIALIZED VIEW e29_dup WITH (time_series.continuous) AS
 DROP VIEW e29_dup CASCADE;
 
 -- ============================================================
+-- E29b: same source, different time column → ERROR
+--
+-- cagg_invalidation_trigfn picks ONE bucket_column per source table
+-- (cagg_get_time_attnum: takes the first matching CAGG and breaks).
+-- A second CAGG on the same source with a different time column would
+-- silently under-count back-filled rows in buckets the trigger doesn't
+-- know to invalidate.  Reject at create time.
+-- ============================================================
+\echo '=== E29b: same source, different time column → ERROR ==='
+-- Note: E29 leaves ON_ERROR_STOP at 0; we keep that throughout E29b
+-- and let E30 inherit 0 too.  Setting it to 1 mid-flow caused E30's
+-- expected ERROR to abort the psql session prematurely.
+CREATE TABLE e29b_evts (
+    created_at TIMESTAMPTZ NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL,
+    v INT NOT NULL DEFAULT 1
+) DISTRIBUTED BY (v);
+
+CREATE MATERIALIZED VIEW e29b_cv1 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, created_at) AS bucket, count(*) AS c
+  FROM e29b_evts GROUP BY bucket;
+
+\echo --- attempt: different time column on same source ---
+CREATE MATERIALIZED VIEW e29b_cv2 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, processed_at) AS bucket, count(*) AS c
+  FROM e29b_evts GROUP BY bucket;
+
+\echo --- same time column with different bucket_width: still allowed ---
+CREATE MATERIALIZED VIEW e29b_cv3 WITH (time_series.continuous) AS
+  SELECT time_bucket('15 minutes'::interval, created_at) AS bucket, count(*) AS c
+  FROM e29b_evts GROUP BY bucket;
+
+\echo --- catalog should have cv1 and cv3, both on created_at ---
+SELECT user_view_name, bucket_column
+FROM time_series.continuous_agg
+WHERE source_table_name = 'e29b_evts'
+ORDER BY user_view_name;
+
+DROP TABLE e29b_evts CASCADE;
+
+-- ============================================================
+-- E29c: mutable function in WHERE / HAVING → ERROR (P2-N1)
+--
+-- now() / current_timestamp / etc. are STABLE.  A WHERE clause
+-- filtering on now() makes the materialization output depend on
+-- when refresh runs, leaving "ghost rows" past refreshes wrote that
+-- the live branch can no longer see.  HAVING has the same issue.
+-- ============================================================
+\echo '=== E29c: mutable function in WHERE → ERROR ==='
+CREATE TABLE e29c_evts (time TIMESTAMPTZ NOT NULL, val FLOAT, v INT NOT NULL DEFAULT 1)
+  DISTRIBUTED BY (v);
+
+\set ON_ERROR_STOP 0
+\echo --- WHERE now() — STABLE function rejected ---
+CREATE MATERIALIZED VIEW e29c_cv1 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS c
+    FROM e29c_evts
+   WHERE time > now() - interval '7 days'
+   GROUP BY bucket;
+
+\echo --- HAVING with now() — STABLE function rejected ---
+CREATE MATERIALIZED VIEW e29c_cv2 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS c
+    FROM e29c_evts
+   GROUP BY bucket
+  HAVING max(time) > now() - interval '1 day';
+\set ON_ERROR_STOP 1
+
+\echo --- WHERE with constant — accepted ---
+CREATE MATERIALIZED VIEW e29c_cv3 WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS c
+    FROM e29c_evts
+   WHERE time > '2020-01-01'::timestamptz
+   GROUP BY bucket;
+
+DROP TABLE e29c_evts CASCADE;
+
+-- ============================================================
+-- E29d: cross-schema same-name CAGG resolves via search_path (P2-N2)
+--
+-- Pre-fix: add/remove/validate did `WHERE user_view_name = cagg_name`
+-- which is ambiguous when two schemas hold a CAGG with the same view
+-- name — SELECT INTO would silently pick whichever sorted first.
+-- _resolve_cagg_id routes through to_regclass to apply PG's standard
+-- search_path resolution.  Verify both forms work:
+--   - schema.name             → exact match
+--   - bare name + search_path → first-match-on-path
+-- ============================================================
+\echo '=== E29d: cross-schema same-name CAGG resolution ==='
+CREATE SCHEMA e29d_a;
+CREATE SCHEMA e29d_b;
+CREATE TABLE e29d_a.src(time TIMESTAMPTZ NOT NULL, v INT NOT NULL DEFAULT 1) DISTRIBUTED BY (v);
+CREATE TABLE e29d_b.src(time TIMESTAMPTZ NOT NULL, v INT NOT NULL DEFAULT 1) DISTRIBUTED BY (v);
+CREATE MATERIALIZED VIEW e29d_a.cv_dup WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS c
+  FROM e29d_a.src GROUP BY bucket;
+CREATE MATERIALIZED VIEW e29d_b.cv_dup WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS c
+  FROM e29d_b.src GROUP BY bucket;
+
+\echo --- schema-qualified name picks the right cagg ---
+SELECT add_continuous_aggregate_policy('e29d_a.cv_dup',
+       '7 days'::interval, '0'::interval, '10 seconds'::interval) AS jid_a \gset
+SELECT user_view_schema FROM time_series.continuous_agg ca
+  JOIN time_series.bgw_job j ON j.hypertable_id = ca.cagg_id
+ WHERE j.id = :jid_a;
+
+SELECT add_continuous_aggregate_policy('e29d_b.cv_dup',
+       '7 days'::interval, '0'::interval, '10 seconds'::interval) AS jid_b \gset
+SELECT user_view_schema FROM time_series.continuous_agg ca
+  JOIN time_series.bgw_job j ON j.hypertable_id = ca.cagg_id
+ WHERE j.id = :jid_b;
+
+\echo --- search_path with e29d_b first → unqualified resolves to b ---
+-- Remove existing policies first; one-policy-per-CAGG.
+SELECT remove_continuous_aggregate_policy('e29d_a.cv_dup');
+SELECT remove_continuous_aggregate_policy('e29d_b.cv_dup');
+SET search_path TO e29d_b, e29d_a, public, time_series;
+SELECT add_continuous_aggregate_policy('cv_dup',
+       '7 days'::interval, '0'::interval, '10 seconds'::interval) AS jid_search \gset
+SELECT user_view_schema AS resolved_schema
+  FROM time_series.continuous_agg ca
+  JOIN time_series.bgw_job j ON j.hypertable_id = ca.cagg_id
+ WHERE j.id = :jid_search;
+SELECT remove_continuous_aggregate_policy('cv_dup');
+RESET search_path;
+SET search_path TO public, time_series;
+
+DROP SCHEMA e29d_a CASCADE;
+DROP SCHEMA e29d_b CASCADE;
+
+-- ============================================================
+-- E29e: bgw_job_stat_history_purge (P2-N3)
+--
+-- The audit-log table grows unbounded; bgw_job_stat_history_purge
+-- gives DBAs a one-call cleanup.  Verify it deletes old rows by
+-- execution_finish, leaves recent rows alone, leaves NULL
+-- execution_finish (still-running) rows untouched, and refuses
+-- non-positive intervals.
+-- ============================================================
+\echo '=== E29e: bgw_job_stat_history_purge ==='
+TRUNCATE time_series.bgw_job_stat_history;
+
+-- Insert 3 rows: one old finished, one recent finished, one still-running
+INSERT INTO time_series.bgw_job_stat_history(job_id, pid, execution_start, execution_finish, succeeded)
+VALUES (9991, 1, now() - interval '40 days', now() - interval '40 days', true),
+       (9991, 2, now() - interval '1 hour',   now() - interval '1 hour',   true),
+       (9991, 3, now() - interval '5 minutes', NULL,                       NULL);
+
+\echo --- purge older than 30 days: deletes 1 (the 40-day-old row) ---
+SELECT time_series.bgw_job_stat_history_purge('30 days'::interval) AS deleted;
+
+\echo --- after purge: recent finished + still-running remain ---
+SELECT count(*) AS remaining FROM time_series.bgw_job_stat_history;
+SELECT pid FROM time_series.bgw_job_stat_history ORDER BY pid;
+
+\echo --- non-positive interval rejected ---
+\set VERBOSITY terse
+\set ON_ERROR_STOP 0
+SELECT time_series.bgw_job_stat_history_purge('0'::interval);
+SELECT time_series.bgw_job_stat_history_purge('-1 day'::interval);
+SELECT time_series.bgw_job_stat_history_purge(NULL);
+\set VERBOSITY default
+
+TRUNCATE time_series.bgw_job_stat_history;
+-- NOTE: keep ON_ERROR_STOP at 0 (do NOT reset to 1) — E30 immediately
+-- below relies on this state for its expected ERROR (CAGG on matview
+-- without time column).  Same issue as the P1-F lesson; learned twice.
+
+-- ============================================================
 -- E30: CAGG on materialized view (without time column — old test)
 -- ============================================================
 \echo '=== E30: CAGG on matview ==='
@@ -2098,6 +2268,178 @@ CALL time_series.refresh_continuous_aggregate('cv_renamed', NULL, NULL);
 SELECT count(*) AS renamed_refreshed FROM cv_renamed;
 
 DROP TABLE rename_src CASCADE;
+
+-- ============================================================
+-- T56b: ALTER TABLE source RENAME COLUMN (the time/bucket column)
+--
+-- continuous_agg.bucket_column stores the source-table time column
+-- by NAME.  The dependent _partial_view_/_direct_view_ track columns
+-- by attnum (PG view internals), so they auto-survive a column rename.
+-- But cagg_invalidation_trigfn looks up the column by NAME via
+-- cagg_get_time_attnum, so without a hook to sync continuous_agg,
+-- the next INSERT on the source raises "could not find time column"
+-- and the source table becomes effectively read-only.
+--
+-- Our ProcessUtility post-hook (cagg_create.c) catches RENAME COLUMN
+-- and updates continuous_agg.bucket_column to follow.  Verify both
+-- the catalog sync and that subsequent INSERT goes through cleanly.
+-- ============================================================
+\echo '=== T56b: ALTER TABLE source RENAME COLUMN time ==='
+CREATE TABLE col_rename_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO col_rename_src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+CREATE MATERIALIZED VIEW cv_col_rename
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM col_rename_src GROUP BY bucket;
+
+\echo --- bucket_column before rename ---
+SELECT bucket_column FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_col_rename';
+
+ALTER TABLE col_rename_src RENAME COLUMN time TO ts;
+
+\echo --- bucket_column after rename: should be 'ts' ---
+SELECT bucket_column FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_col_rename';
+
+\echo --- INSERT after rename: must succeed (regression for P1-E) ---
+INSERT INTO col_rename_src(ts, v, val) VALUES ('2024-01-01 01:30+00', 2, 20.0);
+
+\echo --- Round-trip: rename back, INSERT still works ---
+ALTER TABLE col_rename_src RENAME COLUMN ts TO time;
+SELECT bucket_column FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_col_rename';
+INSERT INTO col_rename_src(time, v, val) VALUES ('2024-01-01 02:30+00', 3, 30.0);
+
+\echo --- REFRESH still works after column rename ---
+CALL time_series.refresh_continuous_aggregate('cv_col_rename', NULL, NULL);
+SELECT count(*) AS materialized FROM cv_col_rename;
+
+DROP TABLE col_rename_src CASCADE;
+
+-- ============================================================
+-- T56c: Defense-in-depth — block RENAME COLUMN on internal CAGG objects
+--
+-- A CAGG creates four objects: the user view (cv) plus three internal
+-- objects in the time_series schema — _mat_<name>_<N> (materialization
+-- table), _partial_view_<N> (partial-aggregate over source), and
+-- _direct_view_<N> (final aggregate over mat table).  Users should
+-- never touch the internals directly, but PG itself doesn't stop them.
+--
+-- Without protection, ALTER TABLE _mat_cv_1 RENAME COLUMN bucket TO mb
+-- silently succeeds; cagg_refresh's hard-coded SQL still references the
+-- old name and fails with an opaque "column does not exist" hours later.
+--
+-- Mirror TSDB's process_utility.c (block columns on materialization
+-- tables and internal views): fail fast at RENAME time so the cause
+-- is visible at the point of error.  Renames on user-facing objects
+-- (source table, user view) continue to work as before.
+-- ============================================================
+\echo '=== T56c: defense-in-depth on internal CAGG objects ==='
+CREATE TABLE internal_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO internal_src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+CREATE MATERIALIZED VIEW cv_internal
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM internal_src GROUP BY bucket;
+
+-- Look up the actual internal object names; the _N suffix follows
+-- continuous_agg.cagg_id which depends on prior tests in the file.
+SELECT mat_table_schema || '.' || mat_table_name AS mat_qual,
+       partial_view_schema || '.' || partial_view_name AS pv_qual,
+       direct_view_schema || '.' || direct_view_name AS dv_qual
+  FROM time_series.continuous_agg
+ WHERE user_view_name = 'cv_internal' \gset
+
+\echo --- 56c.1: rename column of materialization table → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER TABLE :mat_qual RENAME COLUMN bucket TO mb;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.2: rename column of _partial_view_ → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER VIEW :pv_qual RENAME COLUMN bucket TO pb;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.3: rename column of _direct_view_ → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER VIEW :dv_qual RENAME COLUMN bucket TO db;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.4: rename non-time column of source still works ---
+ALTER TABLE internal_src RENAME COLUMN val TO value;
+INSERT INTO internal_src(time, v, value) VALUES ('2024-01-01 01:30+00', 2, 20.0);
+
+\echo --- 56c.5: rename column of user view (cv_internal) still works ---
+ALTER MATERIALIZED VIEW cv_internal RENAME COLUMN cnt TO total;
+
+\echo --- 56c.6: REFRESH still works after legitimate renames ---
+CALL time_series.refresh_continuous_aggregate('cv_internal', NULL, NULL);
+SELECT count(*) AS materialized FROM cv_internal;
+
+\echo --- 56c.7: RENAME TO on materialization table → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER TABLE :mat_qual RENAME TO _mat_other;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.8: RENAME TO on _partial_view_ → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER VIEW :pv_qual RENAME TO _pv_other;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.9: RENAME TO on _direct_view_ → ERROR ---
+\set ON_ERROR_STOP 0
+ALTER VIEW :dv_qual RENAME TO _dv_other;
+\set ON_ERROR_STOP 1
+
+\echo --- 56c.10: RENAME user view (ALTER VIEW) still works ---
+ALTER VIEW cv_internal RENAME TO cv_internal2;
+SELECT user_view_name FROM time_series.continuous_agg
+WHERE user_view_name = 'cv_internal2';
+ALTER VIEW cv_internal2 RENAME TO cv_internal;
+
+DROP TABLE internal_src CASCADE;
+
+-- ============================================================
+-- T56d: quoted user_view_name → mat_table_name needs quote_identifier
+--
+-- Regression for P2-1: cagg_create.c builds CREATE TABLE / CREATE
+-- INDEX / CREATE VIEW SQL by appending mat_table_name (=
+-- "_mat_<user_view_name>_<id>") into the statement.  If user_view_name
+-- contains a character that would normally require quoting (e.g. a
+-- hyphen — accepted by PG inside quoted identifiers), the resulting
+-- mat_table_name does too.  Without quote_identifier wrapping at
+-- those four call sites, CREATE TABLE time_series._mat_cv-with-dash_1
+-- parses as a subtraction and the CAGG creation fails partway —
+-- leaving an inconsistent catalog (cagg row written, mat table
+-- missing).
+-- ============================================================
+\echo '=== T56d: quoted CAGG name with hyphen — mat_table SQL builders ==='
+CREATE TABLE quoted_src (time TIMESTAMPTZ NOT NULL, v INT NOT NULL, val FLOAT8)
+  DISTRIBUTED BY (v);
+INSERT INTO quoted_src VALUES ('2024-01-01 00:30+00', 1, 10.0);
+
+-- "cv-with-dash" is valid only as a quoted identifier.  Pre-fix this
+-- would fail in the CREATE TABLE / CREATE INDEX / CREATE VIEW step
+-- with "syntax error at or near \"-\"".
+CREATE MATERIALIZED VIEW "cv-with-dash" WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket, count(*) AS cnt
+  FROM quoted_src GROUP BY bucket;
+
+\echo --- catalog reflects the quoted name ---
+SELECT user_view_name, mat_table_name FROM time_series.continuous_agg
+WHERE user_view_name = 'cv-with-dash';
+
+\echo --- INSERT triggers fire (mat_table_name in trigger SQL is quoted) ---
+INSERT INTO quoted_src VALUES ('2024-01-01 01:30+00', 2, 20.0);
+
+\echo --- REFRESH works (refresh SQL also references mat_table_name) ---
+CALL time_series.refresh_continuous_aggregate('cv-with-dash', NULL, NULL);
+SELECT count(*) AS materialized FROM "cv-with-dash";
+
+DROP TABLE quoted_src CASCADE;
 
 -- ============================================================
 -- T57: DROP source CASCADE → all catalog artifacts cleaned
@@ -2393,6 +2735,318 @@ SELECT count(*) AS fake_after_trunc FROM _mat_fake_table;
 DROP TABLE _mat_fake_table;
 
 DROP TABLE trunc_src CASCADE;
+
+-- ============================================================
+-- T-DROP-EXT-TRUNCATE: utility commands still work after
+--                     DROP EXTENSION CASCADE (P2-W1)
+--
+-- The shared library stays loaded across DROP EXTENSION (PG never
+-- unloads preloaded libs once they're loaded) so the
+-- ProcessUtility_hook pointer still points at our function.
+-- Pre-fix, every utility command after DROP EXTENSION CASCADE went
+-- through the hook and any path that ran SPI against
+-- time_series.continuous_agg / bgw_job / etc. (TruncateStmt branch
+-- being the most reachable from typical workflows) would error with
+-- "relation does not exist", effectively breaking utility commands
+-- for the rest of the session.
+--
+-- The hook now bails out at the top when continuous_agg is not
+-- visible, falling through to prev_ProcessUtility / standard
+-- handler.
+-- ============================================================
+-- ============================================================
+-- T-MATONLY-OWNER: ALTER VIEW SET (time_series.materialized_only)
+--    enforces owner check (P3-1).  Non-owners cannot flip the
+--    mode of someone else's CAGG.
+-- ============================================================
+\echo '=== T-MATONLY-OWNER: non-owner cannot flip materialized_only ==='
+
+CREATE TABLE matonly_src (ts timestamptz NOT NULL, k int NOT NULL, v int)
+    DISTRIBUTED BY (k);
+INSERT INTO matonly_src
+SELECT '2024-01-01'::timestamptz + (i || ' min')::interval, i % 4, i
+FROM generate_series(0, 9) i;
+
+CREATE MATERIALIZED VIEW matonly_cv
+WITH (time_series.continuous) AS
+SELECT time_bucket('5 min'::interval, ts) AS b, k, count(*) c
+FROM matonly_src GROUP BY b, k;
+
+DROP ROLE IF EXISTS ts_matonly_user;
+CREATE ROLE ts_matonly_user LOGIN;
+GRANT USAGE ON SCHEMA public TO ts_matonly_user;
+GRANT USAGE ON SCHEMA time_series TO ts_matonly_user;
+
+SET ROLE ts_matonly_user;
+\set ON_ERROR_STOP 0
+ALTER VIEW matonly_cv SET (time_series.materialized_only = true);
+\set ON_ERROR_STOP 1
+RESET ROLE;
+
+-- Owner can still flip.
+ALTER VIEW matonly_cv SET (time_series.materialized_only = true);
+ALTER VIEW matonly_cv SET (time_series.materialized_only = false);
+
+REVOKE USAGE ON SCHEMA time_series FROM ts_matonly_user;
+REVOKE USAGE ON SCHEMA public FROM ts_matonly_user;
+DROP ROLE ts_matonly_user;
+
+DROP VIEW matonly_cv CASCADE;
+DROP TABLE matonly_src CASCADE;
+
+-- ============================================================
+-- T-CREATE-REJECT-EXTRA: query-flag rejections at CAGG create
+--    time (R3-P2).  Exercises the four newly-added flag checks.
+-- ============================================================
+\echo '=== T-CREATE-REJECT-EXTRA: more query-flag rejections ==='
+
+CREATE TABLE rxsrc (ts timestamptz NOT NULL, k int NOT NULL, v int)
+    DISTRIBUTED BY (k);
+INSERT INTO rxsrc
+SELECT '2024-01-01'::timestamptz + (i || ' min')::interval, i % 4, i
+FROM generate_series(0, 9) i;
+
+\set ON_ERROR_STOP 0
+
+-- WITH RECURSIVE rejected.
+CREATE MATERIALIZED VIEW rx_rec
+WITH (time_series.continuous) AS
+WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 5)
+SELECT time_bucket('5 min'::interval, ts) b, count(*) c
+FROM rxsrc, r GROUP BY b;
+
+-- Set-returning function in target list rejected.
+CREATE MATERIALIZED VIEW rx_srf
+WITH (time_series.continuous) AS
+SELECT time_bucket('5 min'::interval, ts) b, generate_series(1,3),
+       count(*) c
+FROM rxsrc GROUP BY b;
+
+\set ON_ERROR_STOP 1
+DROP TABLE rxsrc CASCADE;
+
+-- ============================================================
+-- T-REFRESH-OWNER: refresh_continuous_aggregate enforces owner
+--    check (R3-P1).  A non-owner role attempting to refresh
+--    must get ACL error.
+-- ============================================================
+\echo '=== T-REFRESH-OWNER: non-owner cannot refresh ==='
+
+CREATE TABLE roacl_src (ts timestamptz NOT NULL, k int NOT NULL, v int)
+    DISTRIBUTED BY (k);
+INSERT INTO roacl_src
+SELECT '2024-01-01'::timestamptz + (i || ' min')::interval, i % 4, i
+FROM generate_series(0, 9) i;
+
+CREATE MATERIALIZED VIEW roacl_cv
+WITH (time_series.continuous) AS
+SELECT time_bucket('5 min'::interval, ts) AS b, k, count(*) c
+FROM roacl_src GROUP BY b, k;
+
+-- Owner can refresh fine.
+CALL time_series.refresh_continuous_aggregate('roacl_cv', NULL, NULL);
+
+-- Spin up a fresh role and try as non-owner.
+DROP ROLE IF EXISTS ts_acl_user;
+CREATE ROLE ts_acl_user LOGIN;
+GRANT USAGE ON SCHEMA time_series TO ts_acl_user;
+GRANT EXECUTE ON PROCEDURE time_series.refresh_continuous_aggregate(
+    text, timestamptz, timestamptz, boolean) TO ts_acl_user;
+GRANT SELECT ON roacl_cv TO ts_acl_user;
+
+SET ROLE ts_acl_user;
+\set ON_ERROR_STOP 0
+CALL time_series.refresh_continuous_aggregate('roacl_cv', NULL, NULL);
+\set ON_ERROR_STOP 1
+RESET ROLE;
+
+REVOKE EXECUTE ON PROCEDURE time_series.refresh_continuous_aggregate(
+    text, timestamptz, timestamptz, boolean) FROM ts_acl_user;
+REVOKE USAGE ON SCHEMA time_series FROM ts_acl_user;
+REVOKE SELECT ON roacl_cv FROM ts_acl_user;
+DROP ROLE ts_acl_user;
+
+DROP VIEW roacl_cv CASCADE;
+DROP TABLE roacl_src CASCADE;
+
+-- ============================================================
+-- T-DDL-GUARD: block dangerous ALTER TABLE on the bucket column
+--              of a CAGG source table (P1-A).
+--
+--   * DROP COLUMN / ALTER COLUMN TYPE on the bucket_column are
+--     blocked by the C ProcessUtility guard — refresh references
+--     the column by name and would silently break.
+--   * RENAME COLUMN of the bucket_column is FOLLOWED, not
+--     blocked: an existing handler in cagg_create.c rewrites
+--     continuous_agg.bucket_column to the new name so refresh
+--     keeps working transparently.
+--   * Operations on non-bucket columns are NOT blocked; PG's
+--     pg_depend machinery already errors when a referenced
+--     column is dropped without CASCADE, and unreferenced
+--     columns can be safely dropped (T16/T16b above already
+--     exercise this case).
+--   * ADD COLUMN, DROP non-referenced column, and RENAME TABLE
+--     remain unaffected.
+-- ============================================================
+\echo '=== T-DDL-GUARD: bucket-column ALTER blocked on CAGG sources ==='
+
+CREATE TABLE ddl_src (
+    ts        timestamptz NOT NULL,
+    device_id int NOT NULL,
+    val       float8,
+    extra     text
+) DISTRIBUTED BY (device_id);
+
+INSERT INTO ddl_src
+SELECT '2024-01-01 00:00:00+00'::timestamptz + (i || ' min')::interval,
+       i % 4, i, 'x' FROM generate_series(0, 29) i;
+
+CREATE MATERIALIZED VIEW ddl_cagg
+WITH (time_series.continuous) AS
+SELECT time_bucket('5 min'::interval, ts) AS bucket,
+       device_id, count(*) AS c
+FROM ddl_src GROUP BY bucket, device_id;
+
+\set ON_ERROR_STOP 0
+
+-- DROP COLUMN of bucket_column (ts) → C guard blocks.
+ALTER TABLE ddl_src DROP COLUMN ts;
+
+-- ALTER COLUMN TYPE of bucket_column → C guard blocks.
+ALTER TABLE ddl_src ALTER COLUMN ts TYPE timestamp;
+
+\set ON_ERROR_STOP 1
+
+-- RENAME COLUMN of bucket_column → followed (NOTICE prints
+-- the catalog update).  ddl_cagg refresh continues to work.
+ALTER TABLE ddl_src RENAME COLUMN ts TO time;
+SELECT bucket_column FROM time_series.continuous_agg
+ WHERE user_view_name = 'ddl_cagg';
+-- Rename it back so the rest of the test reads naturally.
+ALTER TABLE ddl_src RENAME COLUMN time TO ts;
+SELECT bucket_column FROM time_series.continuous_agg
+ WHERE user_view_name = 'ddl_cagg';
+
+-- DROP an unreferenced column should pass.
+ALTER TABLE ddl_src DROP COLUMN extra;
+
+-- ADD COLUMN must succeed.
+ALTER TABLE ddl_src ADD COLUMN extra2 text;
+ALTER TABLE ddl_src DROP COLUMN extra2;
+
+-- RENAME of a non-bucket column must succeed.
+ALTER TABLE ddl_src RENAME COLUMN val TO value;
+ALTER TABLE ddl_src RENAME COLUMN value TO val;
+
+-- RENAME TABLE must succeed.
+ALTER TABLE ddl_src RENAME TO ddl_src_renamed;
+ALTER TABLE ddl_src_renamed RENAME TO ddl_src;
+
+DROP VIEW ddl_cagg CASCADE;
+DROP TABLE ddl_src CASCADE;
+
+-- ============================================================
+-- T-RESTORING: time_series.restoring suppresses the cagg row
+--              trigger so pg_dump/pg_restore can replay a logical
+--              dump cleanly (mirrors timescaledb.restoring).  G2.
+--
+-- Strategy: build a CAGG, full-REFRESH to advance the watermark,
+-- then issue two INSERTs below the watermark (which is where the
+-- L1 trigger would normally fire).  The first INSERT runs under
+-- restoring=on and must NOT grow L1; the second runs without the
+-- GUC and MUST grow L1, proving the trigger is otherwise alive.
+-- ============================================================
+\echo '=== T-RESTORING: invalidation trigger yields under SET restoring=on ==='
+
+CREATE TABLE restoring_src (
+    ts        timestamptz NOT NULL,
+    device_id int NOT NULL,
+    val       float8
+) DISTRIBUTED BY (device_id);
+
+INSERT INTO restoring_src
+SELECT '2024-01-01 00:00:00+00'::timestamptz + (i || ' minute')::interval,
+       i % 4, i
+FROM generate_series(0, 59) i;
+
+CREATE MATERIALIZED VIEW restoring_cagg
+WITH (time_series.continuous) AS
+SELECT time_bucket('10 min'::interval, ts) AS bucket,
+       device_id,
+       avg(val) AS avg_val
+FROM restoring_src
+GROUP BY bucket, device_id;
+
+-- Full REFRESH so cagg_invalidation_threshold advances to the
+-- max source time (00:59).  Subsequent INSERTs strictly below
+-- that threshold will exercise the L1 trigger path.
+CALL time_series.refresh_continuous_aggregate('restoring_cagg', NULL, NULL);
+
+-- Baseline: L1 should be empty post-REFRESH.
+SELECT count(*) AS l1_rows_before FROM time_series.cagg_invalidation_log;
+
+-- INSERT under SET time_series.restoring = on must NOT grow L1:
+-- the row trigger yields at the top before SPI / heap writes.
+SET time_series.restoring = on;
+INSERT INTO restoring_src VALUES
+    ('2024-01-01 00:15:00+00'::timestamptz, 0, 999),
+    ('2024-01-01 00:25:00+00'::timestamptz, 1, 999);
+RESET time_series.restoring;
+
+SELECT count(*) AS l1_rows_after_restoring_insert
+FROM time_series.cagg_invalidation_log;
+
+-- Sanity: a normal below-threshold INSERT DOES grow L1, proving
+-- the trigger is otherwise functional.  Distinct (device,time)
+-- so we don't collide with anything cached above.
+INSERT INTO restoring_src VALUES
+    ('2024-01-01 00:35:00+00'::timestamptz, 2, 1000);
+
+SELECT (count(*) > 0) AS l1_has_rows_after_normal_insert
+FROM time_series.cagg_invalidation_log;
+
+DROP VIEW restoring_cagg CASCADE;
+DROP TABLE restoring_src CASCADE;
+
+-- ============================================================
+-- T-DROP-EXT-TRUNCATE: planner + ProcessUtility hooks must
+--                      pass through cleanly after DROP EXTENSION
+--                      CASCADE (P2-W1 + G1).  An aggregate query
+--                      exercises create_upper_paths_hook so this
+--                      now also covers G1.
+-- ============================================================
+\echo '=== T-DROP-EXT-TRUNCATE: TRUNCATE works after DROP EXTENSION CASCADE ==='
+DROP EXTENSION IF EXISTS time_series CASCADE;
+
+-- Run an unrelated table's TRUNCATE — must not error out on
+-- "time_series.continuous_agg does not exist".
+CREATE TABLE drop_ext_unrelated (id int) DISTRIBUTED BY (id);
+INSERT INTO drop_ext_unrelated VALUES (1), (2), (3);
+TRUNCATE drop_ext_unrelated;
+SELECT count(*) AS empty_after_truncate FROM drop_ext_unrelated;
+
+-- An aggregate query exercises create_upper_paths_hook
+-- (UPPERREL_GROUP_AGG).  Must not touch time_series.* catalogs.
+CREATE TABLE drop_ext_agg (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO drop_ext_agg
+SELECT i % 5, i FROM generate_series(1, 100) i;
+SELECT count(*) AS rows_in_agg, sum(v) AS sum_in_agg
+FROM drop_ext_agg;
+SELECT k, count(*) FROM drop_ext_agg GROUP BY k ORDER BY k;
+DROP TABLE drop_ext_agg;
+DROP TABLE drop_ext_unrelated;
+
+-- Other utility paths should also pass through cleanly.
+CREATE TABLE drop_ext_alter (id int) DISTRIBUTED BY (id);
+ALTER TABLE drop_ext_alter ADD COLUMN val text;
+ALTER TABLE drop_ext_alter RENAME COLUMN val TO value;
+ALTER TABLE drop_ext_alter RENAME TO drop_ext_alter_renamed;
+DROP TABLE drop_ext_alter_renamed;
+
+-- Re-create extension so subsequent tests in the session (if any)
+-- still have it.  Keep this last so the cleanup section has the
+-- extension available for `DROP TABLE conditions CASCADE`.
+CREATE EXTENSION time_series;
 
 -- Cleanup
 \set ON_ERROR_STOP 1

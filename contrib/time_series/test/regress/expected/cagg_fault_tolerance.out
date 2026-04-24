@@ -17,6 +17,7 @@ SET timezone = 'UTC';
 CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
 DROP EXTENSION IF EXISTS time_series CASCADE;
 CREATE EXTENSION time_series;
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 SET search_path TO public, time_series;
 -- Setup: source table + CAGG + initial data
 CREATE TABLE ft_src (time TIMESTAMPTZ NOT NULL, device INT NOT NULL, val FLOAT8)
@@ -30,6 +31,7 @@ CREATE MATERIALIZED VIEW cv_ft WITH (time_series.continuous) AS
 NOTICE:  continuous aggregate "cv_ft" successfully created
 DETAIL:  Materialization table: time_series._mat_cv_ft_1
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 -- Baseline: fully materialized, EXCEPT = 0
 SELECT count(*) AS baseline_rows FROM cv_ft;
  baseline_rows 
@@ -78,6 +80,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 -- This REFRESH will crash after TX1 (L1→L2 done) but before TX2
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 ERROR:  fault triggered, fault name:'cagg_refresh_after_commit_and_chain' fault type:'error'
 \set ON_ERROR_STOP 1
 -- No reconnect needed (ERROR doesn't kill the backend)
@@ -101,6 +104,7 @@ WHERE cagg_id = (SELECT cagg_id FROM time_series.continuous_agg WHERE user_view_
 -- Mat table is stale (TX2 never ran) — but data should be recoverable
 -- Another REFRESH should fix it
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS diff_after_recovery FROM (
   (  SELECT bucket, device, cnt, round(avg_val::numeric, 10) FROM cv_ft
    EXCEPT
@@ -147,6 +151,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 ERROR:  fault triggered, fault name:'cagg_refresh_before_watermark_advance' fault type:'error'
 \set ON_ERROR_STOP 1
 -- Reset fault
@@ -161,6 +166,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 -- (TX1 committed L1→L2, but TX2 error might have rolled back the SPI context)
 -- Next REFRESH should fix it
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS diff_after_seg_error FROM (
   (  SELECT bucket, device, cnt, round(avg_val::numeric, 10) FROM cv_ft
    EXCEPT
@@ -198,6 +204,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 ERROR:  fault triggered, fault name:'cagg_refresh_before_commit_and_chain' fault type:'error'
 \set ON_ERROR_STOP 1
 SELECT gp_inject_fault('cagg_refresh_before_commit_and_chain', 'reset', dbid)
@@ -216,6 +223,7 @@ SELECT count(*) > 0 AS l1_preserved FROM time_series.cagg_invalidation_log;
 
 -- Next REFRESH from scratch should succeed
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS diff_after_tx1_error FROM (
   (  SELECT bucket, device, cnt, round(avg_val::numeric, 10) FROM cv_ft
    EXCEPT
@@ -252,6 +260,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 ERROR:  fault triggered, fault name:'cagg_refresh_after_commit_and_chain' fault type:'error'
 \set ON_ERROR_STOP 1
 SELECT gp_inject_fault('cagg_refresh_after_commit_and_chain', 'reset', dbid)
@@ -273,6 +282,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 \set ON_ERROR_STOP 0
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 ERROR:  fault triggered, fault name:'cagg_refresh_after_commit_and_chain' fault type:'error'
 \set ON_ERROR_STOP 1
 SELECT gp_inject_fault('cagg_refresh_after_commit_and_chain', 'reset', dbid)
@@ -284,6 +294,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
 
 -- Recovery: single REFRESH should fix everything
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS diff_double_crash FROM (
   (  SELECT bucket, device, cnt, round(avg_val::numeric, 10) FROM cv_ft
    EXCEPT
@@ -311,6 +322,7 @@ SELECT count(*) AS diff_double_crash FROM (
 \echo '=== FT-05: trigger error ==='
 === FT-05: trigger error ===
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS rows_before_trigger_err FROM ft_src;
  rows_before_trigger_err 
 -------------------------
@@ -329,7 +341,7 @@ FROM gp_segment_configuration WHERE role = 'p' AND content >= 0;
 
 \set ON_ERROR_STOP 0
 INSERT INTO ft_src VALUES ('2024-01-01 00:15+00', 1, 111.0);
-ERROR:  fault triggered, fault name:'cagg_trigger_before_l1_write' fault type:'error'  (seg1 172.19.0.2:7003 pid=23129)
+ERROR:  fault triggered, fault name:'cagg_trigger_before_l1_write' fault type:'error'  (seg1 172.19.0.3:7003 pid=51601)
 \set ON_ERROR_STOP 1
 SELECT gp_inject_fault('cagg_trigger_before_l1_write', 'reset', dbid)
 FROM gp_segment_configuration WHERE role = 'p' AND content >= 0;
@@ -350,6 +362,7 @@ SELECT count(*) AS rows_after_trigger_err FROM ft_src;
 -- Normal INSERT should work now
 INSERT INTO ft_src VALUES ('2024-01-01 00:15+00', 1, 111.0);
 CALL time_series.refresh_continuous_aggregate('cv_ft', NULL, NULL);
+NOTICE:  refreshing continuous aggregate "cv_ft"
 SELECT count(*) AS diff_trigger_err FROM (
   (  SELECT bucket, device, cnt, round(avg_val::numeric, 10) FROM cv_ft
    EXCEPT

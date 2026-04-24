@@ -219,7 +219,12 @@ time_datum_to_int64(Datum d, Oid typoid)
 		if (entry->typoid == typoid)
 			return entry->convert(d);
 
-	elog(ERROR, "time_series gapfill: unsupported time type %u", typoid);
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("unsupported time type for gapfill: type OID %u",
+					typoid),
+			 errhint("Supported types: timestamp, timestamptz, date, "
+					 "smallint, integer, bigint.")));
 	return 0;
 }
 
@@ -254,7 +259,12 @@ int64_to_time_datum(int64 usec, Oid typoid)
 		if (entry->typoid == typoid)
 			return entry->convert(usec);
 
-	elog(ERROR, "time_series gapfill: unsupported time type %u", typoid);
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("unsupported time type for gapfill: type OID %u",
+					typoid),
+			 errhint("Supported types: timestamp, timestamptz, date, "
+					 "smallint, integer, bigint.")));
 	return (Datum) 0;
 }
 
@@ -375,8 +385,12 @@ month_advance_int64(int64 ts, int32 months, Oid time_type, Datum tz_datum)
 		}
 
 		default:
-			elog(ERROR, "time_series gapfill: month interval not supported for type %u",
-				 time_type);
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("month/year interval not supported for "
+							"gapfill on type OID %u", time_type),
+					 errhint("Use a fixed-duration interval such as "
+							 "'30 days' instead of '1 month'.")));
 			return 0;	/* unreachable */
 	}
 }
@@ -442,7 +456,12 @@ numeric_datum_to_double(Datum d, Oid typoid)
 		case NUMERICOID:
 			return DatumGetFloat8(DirectFunctionCall1(numeric_float8, d));
 		default:
-			elog(ERROR, "time_series interpolate: unsupported type %u", typoid);
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("unsupported value type for interpolate: "
+							"type OID %u", typoid),
+					 errhint("Supported types: smallint, integer, "
+							 "bigint, real, double precision, numeric.")));
 			return 0.0;
 	}
 }
@@ -481,7 +500,12 @@ double_to_numeric_datum(double val, Oid typoid)
 		case NUMERICOID:
 			return DirectFunctionCall1(float8_numeric, Float8GetDatum(val));
 		default:
-			elog(ERROR, "time_series interpolate: unsupported type %u", typoid);
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("unsupported value type for interpolate: "
+							"type OID %u", typoid),
+					 errhint("Supported types: smallint, integer, "
+							 "bigint, real, double precision, numeric.")));
 			return (Datum) 0;
 	}
 }

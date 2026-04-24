@@ -1,0 +1,188 @@
+-- ============================================================
+-- cagg_bgw_mock.sql
+--
+-- BGW worker / scheduler tests driven by the mock-time framework
+-- ported from TimescaleDB (Apache 2.0).  Every case uses a virtual
+-- clock so each tick is deterministic and runs in <1 second.
+--
+-- Test infrastructure (created in this file's setup section, dropped
+-- at the end):
+--   - public.bgw_dsm_handle_store : single-row table holding the dsm
+--                                    handle of the test params block
+--   - public.bgw_log              : append-only log of every elog() in
+--                                    the mock-scheduler context
+--   - public.sorted_bgw_log       : ORDER BY mock_time view
+--
+-- Mock framework SQL surface (declared by extension):
+--   time_series.ts_bgw_params_create()
+--   time_series.ts_bgw_params_destroy()
+--   time_series.ts_bgw_params_reset_time(int8 microseconds, bool set_latch)
+--   time_series.ts_bgw_params_mock_wait_returns_immediately(int4 mode)
+--   time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(int4 ttl_ms)
+--   time_series.ts_bgw_db_scheduler_test_run(int4 ttl_ms)
+--   time_series.ts_bgw_db_scheduler_test_wait_for_scheduler_finish()
+-- ============================================================
+
+SET optimizer = off;
+SET timezone = 'UTC';
+
+DROP EXTENSION IF EXISTS time_series CASCADE;
+DROP TABLE IF EXISTS public.bgw_log CASCADE;
+DROP TABLE IF EXISTS public.bgw_dsm_handle_store CASCADE;
+DROP TABLE IF EXISTS m_mock CASCADE;
+
+CREATE EXTENSION time_series;
+SET search_path TO public, time_series;
+
+-- ============================================================
+-- Test infrastructure tables
+-- ============================================================
+CREATE TABLE public.bgw_dsm_handle_store(handle BIGINT) DISTRIBUTED REPLICATED;
+INSERT INTO public.bgw_dsm_handle_store VALUES (0);
+
+CREATE TABLE public.bgw_log(
+    msg_no INT,
+    mock_time BIGINT,
+    application_name TEXT,
+    msg TEXT
+) DISTRIBUTED REPLICATED;
+
+-- Sorted view: deterministic ordering of log events.  We mask numbers in
+-- the message body so dynamically-allocated PIDs / addresses / xids don't
+-- show up in the diff.
+CREATE VIEW public.sorted_bgw_log AS
+    SELECT msg_no,
+           mock_time,
+           application_name,
+           regexp_replace(msg, '0x[0-9a-f]+', '0xPTR', 'g') AS msg
+    FROM public.bgw_log
+    ORDER BY mock_time, application_name, msg_no;
+
+-- ============================================================
+-- Source data + CAGG used by all mock test cases
+-- ============================================================
+CREATE TABLE m_mock (
+    time TIMESTAMPTZ NOT NULL,
+    tags_id INT NOT NULL,
+    v INT
+) DISTRIBUTED BY (tags_id);
+
+-- 24 hours of synthetic data anchored at 2024-01-01 (matches the mock clock).
+INSERT INTO m_mock
+SELECT '2024-01-01'::timestamptz - (h * interval '1 hour'), (h % 5) + 1, h
+FROM generate_series(1, 24) h;
+
+CREATE MATERIALIZED VIEW cv_mock
+WITH (time_series.continuous) AS
+  SELECT time_bucket('1 hour'::interval, time) AS bucket,
+         tags_id, count(*) AS c
+  FROM m_mock GROUP BY bucket, tags_id;
+
+-- ============================================================
+-- BGW-MOCK-01: mock framework basic plumbing
+-- ============================================================
+\echo '=== BGW-MOCK-01: ts_bgw_params_create + reset_time idempotent ==='
+SELECT time_series.ts_bgw_params_create();
+
+-- Reset the mock clock to 2024-01-01 00:00:00 UTC (microseconds since epoch)
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-01 00:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+
+-- IMMEDIATELY_SET_UNTIL: when the mock scheduler waits, advance the clock
+-- to "until" rather than blocking on real walltime.
+SELECT time_series.ts_bgw_params_mock_wait_returns_immediately(1);
+
+-- ============================================================
+-- BGW-MOCK-02: scheduler with no jobs returns cleanly under mock time
+-- ============================================================
+\echo '=== BGW-MOCK-02: scheduler exits within ttl when no jobs ==='
+TRUNCATE public.bgw_log;
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(1000);
+
+-- "DB Scheduler" application_name should appear; no worker logs.
+SELECT count(*) > 0 AS scheduler_logged
+  FROM public.bgw_log WHERE application_name = 'DB Scheduler';
+
+-- ============================================================
+-- BGW-MOCK-03: scheduler picks up a CAGG policy and fires the worker
+-- ============================================================
+\echo '=== BGW-MOCK-03: mock scheduler runs CAGG refresh policy ==='
+SELECT add_continuous_aggregate_policy('cv_mock',
+       '7 days'::interval, '0'::interval, '1 second'::interval) AS jid \gset
+
+-- Set next_start to a moment before the mock clock so the scheduler
+-- fires it on its first iteration.
+UPDATE time_series.bgw_job_stat
+   SET next_start = '2023-12-31 23:00:00+00'::timestamptz
+ WHERE job_id = :jid;
+
+TRUNCATE public.bgw_log;
+
+-- Reset mock clock to a fresh 2024-01-01 and tick for 60 virtual seconds.
+SELECT time_series.ts_bgw_params_reset_time(
+    extract(epoch from '2024-01-01 00:00:00+00'::timestamptz)::bigint * 1000000,
+    false);
+SELECT time_series.ts_bgw_db_scheduler_test_run_and_wait_for_scheduler_finish(60000);
+
+-- Assert: worker fired at least once, no crashes, last_run_success.
+SELECT total_runs >= 1   AS at_least_one_run,
+       total_successes >= 1 AS at_least_one_success,
+       total_crashes  = 0 AS no_crashes,
+       last_run_success   AS last_ok
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- All scheduler-side log lines carry the mock clock origin (1704067200000000
+-- microseconds = 2024-01-01 UTC) — we assert at least one such line exists.
+SELECT count(*) > 0 AS has_mock_time_log
+  FROM public.bgw_log
+ WHERE mock_time = 1704067200000000
+   AND application_name = 'DB Scheduler';
+
+-- ============================================================
+-- BGW-MOCK-04: alter_job + mock scheduler — schedule_interval change
+-- takes effect on next tick
+-- ============================================================
+\echo '=== BGW-MOCK-04: alter_job changes schedule_interval, mock scheduler honours it ==='
+SELECT (alter_job(:jid, schedule_interval => '5 minutes'::interval)).schedule_interval;
+SELECT schedule_interval FROM time_series.bgw_job WHERE id = :jid;
+
+-- Verify next_start was recomputed to (now() + 5 minutes); we don't pin
+-- the real clock, just check that next_start is in the future relative
+-- to real now().
+SELECT next_start > now() AS next_start_in_future
+  FROM time_series.bgw_job_stat WHERE job_id = :jid;
+
+-- ============================================================
+-- BGW-MOCK-05: deterministic mock-time log ordering
+-- ============================================================
+\echo '=== BGW-MOCK-05: sorted_bgw_log preserves mock-time order ==='
+-- Re-trigger and check that within each BGW process (application_name),
+-- mock_time is non-decreasing along its own msg_no sequence.
+--
+-- PARTITION BY application_name: msg_no is a per-process static counter,
+-- so a single ORDER BY msg_no across all rows interleaves processes
+-- arbitrarily.  Partitioning by process keeps each one's monotonicity
+-- check separate, which is the actual invariant we want to verify.
+WITH ordered AS (
+    SELECT mock_time, application_name,
+           LAG(mock_time, 1, mock_time)
+             OVER (PARTITION BY application_name ORDER BY msg_no) AS prev_time
+      FROM public.bgw_log
+)
+SELECT bool_and(mock_time >= prev_time) AS mock_time_monotonic FROM ordered;
+
+-- Cleanup the policy created in MOCK-03; framework objects are dropped at
+-- the end of the file.
+SELECT remove_continuous_aggregate_policy('cv_mock');
+
+-- ============================================================
+-- Final cleanup
+-- ============================================================
+SELECT time_series.ts_bgw_params_destroy();
+DROP VIEW public.sorted_bgw_log;
+DROP TABLE public.bgw_log;
+DROP TABLE public.bgw_dsm_handle_store;
+DROP VIEW cv_mock;
+DROP TABLE m_mock;
+DROP EXTENSION time_series CASCADE;
