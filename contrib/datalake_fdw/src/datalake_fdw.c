@@ -60,6 +60,9 @@
 #include "utils/sampling.h"
 #include "utils/typcache.h"
 #include "utils/acl.h"
+#include "utils/syscache.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "tcop/utility.h"
 #include "src/common/fileMetadata.h"
 #include "dlproxy/protocol.h"
@@ -412,6 +415,50 @@ _PG_init(void)
 	FDWRecvProtocol = RecvMetaMethod;
 }
 
+/*
+ * Return true iff rels is non-empty and every VacuumRelation in it resolves
+ * to an existing relation whose access method is the Iceberg table AM.
+ * Used to short-circuit ANALYZE against Iceberg tables in the plugin
+ * instead of letting the kernel dispatch pg_relation_size() to QEs.
+ */
+static bool
+all_vacuum_rels_are_iceberg(List *rels)
+{
+	ListCell   *lc;
+
+	if (rels == NIL)
+		return false;
+
+	foreach(lc, rels)
+	{
+		VacuumRelation *vrel = lfirst_node(VacuumRelation, lc);
+		Oid			relid;
+		HeapTuple	tup;
+		bool		is_iceberg;
+
+		if (OidIsValid(vrel->oid))
+			relid = vrel->oid;
+		else if (vrel->relation != NULL)
+			relid = RangeVarGetRelid(vrel->relation, NoLock, true);
+		else
+			return false;
+
+		if (!OidIsValid(relid))
+			return false;
+
+		tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+		if (!HeapTupleIsValid(tup))
+			return false;
+
+		is_iceberg = (((Form_pg_class) GETSTRUCT(tup))->relam == ICEBERG_AM_OID);
+		ReleaseSysCache(tup);
+
+		if (!is_iceberg)
+			return false;
+	}
+	return true;
+}
+
 static void
 datalake_ProcessUtility(PlannedStmt *pstmt,
 						const char *queryString,
@@ -451,6 +498,30 @@ datalake_ProcessUtility(PlannedStmt *pstmt,
 			 */
 			if (pg_iceberg_handle_extensible_utility(pstmt->utilityStmt))
 				return;
+			break;
+		}
+		case T_VacuumStmt:
+		{
+			VacuumStmt *vacstmt = (VacuumStmt *) pstmt->utilityStmt;
+
+			/*
+			 * Plain ANALYZE on Iceberg relations is a no-op: planner
+			 * cardinality comes from iceberg_estimate_rel_size, which reads
+			 * recordCount/bytesInDataFile directly from the Iceberg catalog
+			 * on the QD.  Short-circuit here so the kernel never dispatches
+			 * pg_relation_size() to QEs (which cannot reach the Iceberg
+			 * catalog service).  VACUUM — with or without ANALYZE — still
+			 * goes through the default path where iceberg_relation_vacuum
+			 * handles the AM work via ExtensibleNode dispatch.
+			 */
+			if (Gp_role == GP_ROLE_DISPATCH &&
+				!vacstmt->is_vacuumcmd &&
+				all_vacuum_rels_are_iceberg(vacstmt->rels))
+			{
+				ereport(NOTICE,
+						(errmsg("ANALYZE is a no-op for Iceberg tables; planner stats come from Iceberg catalog metadata")));
+				return;
+			}
 			break;
 		}
 		default:

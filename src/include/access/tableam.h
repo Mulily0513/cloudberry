@@ -760,16 +760,6 @@ typedef struct TableAmRoutine
 												 double *totalrows,
 												 double *totaldeadrows);
 
-	/*
-	 * Return the authoritative total size, in bytes, of the relation when
-	 * ANALYZE is running on the QD.  Non-NULL means the AM's size is
-	 * maintained centrally (e.g. in a QD-only catalog) and must be obtained
-	 * locally on the QD; dispatching pg_relation_size() to QEs would either
-	 * fail (QE lacks access to the catalog) or return wrong totals.  NULL
-	 * means use the default path that sums per-segment pg_relation_size().
-	 */
-	int64		(*relation_total_bytes_for_analyze_on_qd) (Relation rel);
-
 	/* see table_index_build_range_scan for reference about parameters */
 	double		(*index_build_range_scan) (Relation table_rel,
 										   Relation index_rel,

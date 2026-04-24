@@ -703,17 +703,6 @@ iceberg_relation_size(Relation rel, ForkNumber forkNumber)
 	return pg_iceberg_relation_size(rel, forkNumber);
 }
 
-/*
- * Iceberg's authoritative table size lives in the (QD-only) Iceberg catalog.
- * ANALYZE on the QD must read it locally; dispatching pg_relation_size() to
- * QEs would fail because QEs cannot reach the Iceberg catalog service.
- */
-static int64
-iceberg_relation_total_bytes_for_analyze_on_qd(Relation rel)
-{
-	return (int64) pg_iceberg_relation_size(rel, MAIN_FORKNUM);
-}
-
 static BlockSequence *
 iceberg_relation_get_block_sequences(Relation rel, int *numSequences)
 {
@@ -795,7 +784,6 @@ static const TableAmRoutine iceberg_am_methods = {
 	.scan_analyze_next_block = iceberg_scan_analyze_next_block,
 	.scan_analyze_next_tuple = iceberg_scan_analyze_next_tuple,
 	.relation_acquire_sample_rows = iceberg_relation_acquire_sample_rows,
-	.relation_total_bytes_for_analyze_on_qd = iceberg_relation_total_bytes_for_analyze_on_qd,
 	.index_build_range_scan = iceberg_index_build_range_scan,
 	.index_validate_scan = iceberg_index_validate_scan,
 

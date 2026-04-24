@@ -93,7 +93,6 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/print.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_relation.h"
 #include "pgstat.h"
@@ -2394,18 +2393,6 @@ AcquireNumberOfBlocks(Relation onerel)
 	if (Gp_role == GP_ROLE_DISPATCH &&
 		onerel->rd_cdbpolicy && !GpPolicyIsEntry(onerel->rd_cdbpolicy))
 	{
-		/*
-		 * Some AMs maintain authoritative relation size in a QD-only catalog
-		 * (e.g. centralized external-storage metadata) and must answer
-		 * locally rather than via per-segment pg_relation_size().  If the AM
-		 * provides this callback, trust it and skip the QE dispatch.
-		 */
-		if (onerel->rd_tableam->relation_total_bytes_for_analyze_on_qd)
-		{
-			totalbytes = onerel->rd_tableam->relation_total_bytes_for_analyze_on_qd(onerel);
-			return RelationGuessNumberOfBlocksFromSize(totalbytes);
-		}
-
 		/* Query the segments using pg_relation_size(<rel>). */
 		char		relsize_sql[100];
 

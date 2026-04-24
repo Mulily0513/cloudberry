@@ -414,9 +414,11 @@ pg_iceberg_resolve_modify_location(Relation rel, CmdType operation)
  * QD, so detailed pg_statistic entries for individual columns are not
  * collected here.
  *
- * Returning 0 samples keeps the ANALYZE command a no-op for Iceberg tables
- * (both on QD and on any QE the kernel dispatcher still visits) while
- * leaving pg_class.relpages populated via relation_total_bytes_for_analyze_on_qd.
+ * datalake_ProcessUtility short-circuits ANALYZE on Iceberg relations before
+ * it reaches do_analyze_rel, so this callback is effectively unreachable for
+ * plain ANALYZE statements.  It is retained as a defensive no-op in case a
+ * partitioned parent's ANALYZE path drags an Iceberg partition into the
+ * kernel sampler.
  */
 int
 pg_iceberg_acquire_sample_rows(Relation relation, int elevel,

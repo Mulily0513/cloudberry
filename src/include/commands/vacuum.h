@@ -440,7 +440,6 @@ extern double anl_get_next_S(double t, int n, double *stateptr);
 
 /* in commands/analyzefuncs.c */
 extern Datum gp_acquire_sample_rows(PG_FUNCTION_ARGS);
-extern Datum gp_acquire_sample_rows_ext(PG_FUNCTION_ARGS);
 extern Datum gp_acquire_correlations(PG_FUNCTION_ARGS);
 extern Oid gp_acquire_sample_rows_col_type(Oid typid);
 

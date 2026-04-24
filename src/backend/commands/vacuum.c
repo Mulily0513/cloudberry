@@ -123,7 +123,7 @@ static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 
-static void dispatchVacuum(VacuumParams *params, Relation onerel,
+static void dispatchVacuum(VacuumParams *params, Oid relid,
 						   VacuumStatsContext *ctx);
 static List *vacuum_params_to_options_list(VacuumParams *params);
 static void vacuum_combine_stats(VacuumStatsContext *stats_context,
@@ -2852,15 +2852,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 
 		if (Gp_role == GP_ROLE_DISPATCH)
 		{
-			Relation	vac_rel;
-
-			vac_rel = relation_open(relid, lmode);
-
 			stats_context.updated_stats = NIL;
-			dispatchVacuum(params, vac_rel, &stats_context);
+			dispatchVacuum(params, relid, &stats_context);
 			vac_update_relstats_from_list(&stats_context);
-
-			relation_close(vac_rel, NoLock);
 		}
 
 		/* Also update pg_stat_last_operation */
@@ -3105,7 +3099,7 @@ get_vacoptval_from_boolean(DefElem *def)
  * Dispatch a Vacuum command.
  */
 static void
-dispatchVacuum(VacuumParams *params, Relation onerel, VacuumStatsContext *ctx)
+dispatchVacuum(VacuumParams *params, Oid relid, VacuumStatsContext *ctx)
 {
 	CdbPgResults cdb_pgresults;
 	VacuumStmt *vacstmt = makeNode(VacuumStmt);
@@ -3138,7 +3132,7 @@ dispatchVacuum(VacuumParams *params, Relation onerel, VacuumStatsContext *ctx)
 
 	rel = makeNode(VacuumRelation);
 	rel->relation = NULL;
-	rel->oid = RelationGetRelid(onerel);
+	rel->oid = relid;
 	rel->va_cols = NIL;
 
 	vacstmt->rels = list_make1(rel);
@@ -3285,11 +3279,7 @@ vacuum_combine_stats(VacuumStatsContext *stats_context, CdbPgResults *cdb_pgresu
 	{
 		struct pg_result *pgresult = cdb_pgresults->pg_results[result_no];
 
-		if (pgresult->extras == NULL)
-			continue;
-
-
-		if (pgresult->extraType != PGExtraTypeVacuumStats)
+		if (pgresult->extras == NULL || pgresult->extraType != PGExtraTypeVacuumStats)
 			continue;
 
 		Assert(pgresult->extraslen > sizeof(int));

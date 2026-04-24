@@ -17,7 +17,6 @@
 #include "cdb/cdbvars.h"
 #include "commands/vacuum.h"
 #include "nodes/makefuncs.h"
-#include "nodes/readfuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -359,12 +358,6 @@ gp_acquire_sample_rows(PG_FUNCTION_ARGS)
 	funcctx->user_fctx = NULL;
 
 	SRF_RETURN_DONE(funcctx);
-}
-
-Datum
-gp_acquire_sample_rows_ext(PG_FUNCTION_ARGS)
-{
-	return gp_acquire_sample_rows(fcinfo);
 }
 
 /*
