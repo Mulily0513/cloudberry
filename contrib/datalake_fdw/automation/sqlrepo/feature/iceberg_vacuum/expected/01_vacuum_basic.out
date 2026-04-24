@@ -158,6 +158,7 @@ NOTICE:  [TEST] Test 5: ANALYZE table
 (1 row)
 
 ANALYZE vb_compact;
+NOTICE:  ANALYZE is a no-op for Iceberg tables; planner stats come from Iceberg catalog metadata
 -- ============================================================
 -- Test 6: Continue INSERT + SELECT after VACUUM
 -- ============================================================
