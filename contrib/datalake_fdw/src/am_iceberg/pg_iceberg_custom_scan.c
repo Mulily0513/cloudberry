@@ -224,6 +224,15 @@ replace_iceberg_seqscan(Plan *plan, List *rtable)
 		sub->subplan = replace_iceberg_seqscan(sub->subplan, rtable);
 	}
 	/*
+	 * GPDB ORCA generates Sequence nodes for CTEs and shared input scans;
+	 * its child plan trees live in Sequence.subplans rather than the generic
+	 * lefttree/righttree slots, so we must recurse into them explicitly or
+	 * Iceberg SeqScans inside CTEs end up un-rewritten and crash at
+	 * BeginForeignScan with a truncated fdw_private list.
+	 */
+	else if (IsA(plan, Sequence))
+		replace_iceberg_seqscan_list(((Sequence *) plan)->subplans, rtable);
+	/*
 	 * ModifyTable in this GPDB branch carries its single child subplan in
 	 * plan->lefttree; no additional handling needed beyond the generic
 	 * lefttree/righttree recursion above.
