@@ -7,12 +7,16 @@
 -- Create required extensions
 CREATE EXTENSION IF NOT EXISTS datalake_fdw;
 CREATE EXTENSION IF NOT EXISTS hive_connector;
--- gp_exttable_delimiter may not be available in all environments
+-- gp_exttable_delimiter may not be available in all environments.
+-- Silence the "already exists, skipping" NOTICE emitted in CI where the
+-- extension has been created by an earlier test or initdb step.
+SET client_min_messages = WARNING;
 DO $$ BEGIN
     CREATE EXTENSION IF NOT EXISTS gp_exttable_delimiter;
 EXCEPTION WHEN OTHERS THEN
     -- Extension not available, skip silently
 END $$;
+RESET client_min_messages;
 -- Create foreign data wrapper if not already present
 -- Note: CREATE FOREIGN DATA WRAPPER does not support IF NOT EXISTS syntax
 DO $$ BEGIN
