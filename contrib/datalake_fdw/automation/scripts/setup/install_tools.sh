@@ -550,10 +550,18 @@ ensure_tools() {
     install_spark   || failures=$((failures + 1))
     configure_spark
 
-    # 6. Export environment for child processes
+    # 6. TPC tools (opt-in): dbgen for TPC-H, dsdgen for TPC-DS. Gated by
+    #    INSTALL_TPC_TOOLS=1 because the scale-tpc suites are the only
+    #    consumers; hive/hudi/s3 smoke flows do not need them and clones
+    #    + builds add ~15-30s even when cached.
+    if [ "${INSTALL_TPC_TOOLS:-0}" = "1" ]; then
+        bash "${SCRIPT_DIR}/install_tpc_tools.sh" || failures=$((failures + 1))
+    fi
+
+    # 7. Export environment for child processes
     export_tool_env
 
-    # 7. Persist environment for future login sessions
+    # 8. Persist environment for future login sessions
     persist_tool_env
 
     log_info "==================================================================="

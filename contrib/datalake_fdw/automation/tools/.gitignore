@@ -3,3 +3,11 @@ bin/
 hadoop-*/
 apache-hive-*/
 conf/
+spark-*/
+
+# TPC tool source clones and build artifacts
+# (dbgen/dsdgen sources are cloned by scripts/setup/install_tpc_tools.sh;
+# never vendor them into the repo — TPC license covers derived works.)
+tpc/tpch-dbgen/
+tpc/tpcds-kit/
+tpc/bin/
