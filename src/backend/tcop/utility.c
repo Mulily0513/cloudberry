@@ -67,6 +67,7 @@
 #include "commands/vacuum.h"
 #include "commands/view.h"
 #include "miscadmin.h"
+#include "nodes/extensible.h"
 #include "parser/parse_utilcmd.h"
 #include "postmaster/bgwriter.h"
 #include "rewrite/rewriteDefine.h"
@@ -4119,7 +4120,19 @@ CreateCommandTag(Node *parsetree)
 			break;
 
 		case T_ExtensibleNode:
-			tag = CMDTAG_VACUUM;
+			{
+				ExtensibleNode *enode = (ExtensibleNode *) parsetree;
+
+				/*
+				 * Plugin-defined utility nodes. Iceberg VACUUM is dispatched
+				 * through an ExtensibleNode by the datalake_fdw plugin.
+				 */
+				if (enode->extnodename &&
+					strcmp(enode->extnodename, "PgIcebergVacuumDispatch") == 0)
+					tag = CMDTAG_VACUUM;
+				else
+					tag = CMDTAG_UNKNOWN;
+			}
 			break;
 
 		default:

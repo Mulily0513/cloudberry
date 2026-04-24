@@ -63,7 +63,6 @@
 #include "catalog/pg_directory_table.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_foreign_table_seg.h"
-#include "catalog/pg_lake_table.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"

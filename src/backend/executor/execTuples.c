@@ -85,7 +85,6 @@ static void tts_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, bool sho
 
 const TupleTableSlotOps TTSOpsVirtual;
 const TupleTableSlotOps TTSOpsHeapTuple;
-const TupleTableSlotOps TTSOpsFdwHeapTuple;
 const TupleTableSlotOps TTSOpsMinimalTuple;
 const TupleTableSlotOps TTSOpsBufferHeapTuple;
 
@@ -387,31 +386,6 @@ tts_heap_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 
 	return heap_getsysattr(hslot->tuple, attnum,
 						   slot->tts_tupleDescriptor, isnull);
-}
-
-static Datum
-tts_fdw_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
-{
-	Datum result;
-
-	Assert(!TTS_EMPTY(slot));
-
-	if (attnum == SelfItemPointerAttributeNumber)
-	{
-		*isnull = false;
-		result = PointerGetDatum(&slot->tts_tid);
-	}
-	else if (attnum == GpSegmentIdAttributeNumber)
-	{
-		*isnull = false;
-		result = Int32GetDatum(GpIdentity.segindex);
-	}
-	else
-	{
-		elog(ERROR, "invalid attnum: %d", attnum);
-		result = 0;
-	}
-	return result;
 }
 
 static void
@@ -1107,23 +1081,6 @@ const TupleTableSlotOps TTSOpsHeapTuple = {
 	.clear = tts_heap_clear,
 	.getsomeattrs = tts_heap_getsomeattrs,
 	.getsysattr = tts_heap_getsysattr,
-	.materialize = tts_heap_materialize,
-	.copyslot = tts_heap_copyslot,
-	.get_heap_tuple = tts_heap_get_heap_tuple,
-
-	/* A heap tuple table slot can not "own" a minimal tuple. */
-	.get_minimal_tuple = NULL,
-	.copy_heap_tuple = tts_heap_copy_heap_tuple,
-	.copy_minimal_tuple = tts_heap_copy_minimal_tuple
-};
-
-const TupleTableSlotOps TTSOpsFdwHeapTuple = {
-	.base_slot_size = sizeof(HeapTupleTableSlot),
-	.init = tts_heap_init,
-	.release = tts_heap_release,
-	.clear = tts_heap_clear,
-	.getsomeattrs = tts_heap_getsomeattrs,
-	.getsysattr = tts_fdw_getsysattr,
 	.materialize = tts_heap_materialize,
 	.copyslot = tts_heap_copyslot,
 	.get_heap_tuple = tts_heap_get_heap_tuple,

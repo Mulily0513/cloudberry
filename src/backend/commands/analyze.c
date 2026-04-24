@@ -1668,7 +1668,7 @@ gp_acquire_sample_rows_func(Relation onerel, int elevel,
 											  totalrows, totaldeadrows);
 	}
 
-	/*
+	/* 
 	 * if relation_acquire_sample_rows exist, we use it directly.
 	 * Otherwise, use the acquire_sample_rows by default.
 	 */
@@ -1753,7 +1753,6 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 * the relation should not be an AO/CO table.
 	 */
 	Assert(!RelationIsAppendOptimized(onerel));
-
 	if (RelationIsPax(onerel))
 	{
 		/* PAX use non-fixed block layout */
