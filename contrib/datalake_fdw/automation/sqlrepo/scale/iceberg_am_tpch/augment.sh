@@ -101,12 +101,18 @@ for i in $(seq 1 60); do
     [[ "$P" == "0" ]] && break
 done
 N_AFTER_S1=$(psql_c "SELECT count(*) FROM scratch_orders;" 2>/dev/null | awk 'NR==3')
-EXP_S1=$(( N0 + 200000 ))
-if [[ "$N_AFTER_S1" == "$EXP_S1" ]]; then
+# Each session inserts ~25000 rows at SF=10 (sparse orderkey distribution
+# in dbgen output; orderkey ≤ 100000 maps to ~25000 orders). Disjoint key
+# ranges mean that if both sessions' commits land, delta = 50000 from
+# baseline. If we observe baseline+25000, one writer's CAS commit lost.
+EXP_S1=$(( N0 + 50000 ))
+if [[ "${N_AFTER_S1// /}" == "${EXP_S1// /}" ]]; then
     ok "S1: both sessions committed, rows=$N_AFTER_S1 (expected $EXP_S1)"
 else
-    fail "S1: row mismatch rows=$N_AFTER_S1 expected=$EXP_S1"
-    cat /tmp/augment_s1*.log >> "$REPORT_DIR/s1.log"
+    fail "S1: row mismatch rows=$N_AFTER_S1 expected=$EXP_S1 (concurrency race — one commit lost?)"
+    docker exec "$CONTAINER" bash -c \
+        'for f in /tmp/augment_s1a.log /tmp/augment_s1b.log; do echo "=== $f ==="; cat "$f" 2>/dev/null; done' \
+        >> "$REPORT_DIR/s1.log" 2>&1
 fi
 check_cores S1
 
