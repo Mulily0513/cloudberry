@@ -21,6 +21,49 @@ make feature-test
 bash scripts/test/run_all_tests.sh
 ```
 
+## TPC-H / TPC-DS scale tests for Iceberg AM
+
+Two scale categories — `sqlrepo/scale/iceberg_am_tpch/` and
+`sqlrepo/scale/iceberg_am_tpcds/` — exercise the Iceberg access method
+with real dbgen / dsdgen data at configurable scale factors.
+
+```bash
+# Build the TPC tools once (opt-in; slows down stock install_tools.sh).
+# Run from inside the CBDB container to avoid glibc / compiler drift
+# with the host; the source tree is visible there at /workspace.
+INSTALL_TPC_TOOLS=1 bash scripts/setup/install_tools.sh
+
+# Convenience launcher. Handles DB creation, dbgen/dsdgen invocation,
+# staging COPY + INSERT into Iceberg, and per-query PASS / FAIL / CRASH.
+./scripts/test/run_tpc.sh <tpch|tpcds> [scale] [mode]
+
+# Examples:
+./scripts/test/run_tpc.sh tpch 1            # TPC-H SF=1 full run
+./scripts/test/run_tpc.sh tpcds 10 query    # re-run DS queries against an existing SF=10 DB
+./scripts/test/run_tpc.sh tpch 100 clean    # drop SF=100 database and raw data
+
+# Or integrate via the Makefile:
+TPC_SCALE=1 make scale-test CATEGORIES="iceberg_am_tpch iceberg_am_tpcds"
+```
+
+Per-run summaries land in `reports/scale/<timestamp>/iceberg_am_<bench>/sf<N>/summary.tsv`
+with one row per query: `query  status  latency_ms  note`.
+
+**Scale-factor tiers**
+
+| SF | Data volume (raw) | Recommended use |
+|----|-------------------|-----------------|
+| 1    | ~1 GB   | CI / per-PR smoke |
+| 10   | ~10 GB  | nightly |
+| 100  | ~100 GB | release gating / on-demand |
+| 1000 | ~1 TB   | quarterly on an XL-disk runner (the driver exits 77 if local disk can't fit the raw + Iceberg copy) |
+
+**TPC licensing note.** `dbgen` (TPC-H) and `dsdgen` (TPC-DS) are TPC
+derivative works. The installer clones their upstream repos into
+`tools/tpc/` on demand but never vendors the sources into this repo,
+and generated `.tbl` / `.dat` data files are kept outside the build tree
+(default `../../../../.tpc-data/`). Do not publish generated data.
+
 ## Directory Structure
 
 ```
