@@ -197,3 +197,6 @@ test: run_utility_gpexpand_phase1
 test: create_extension_fail
 
 # end of tests
+
+# vectorized cross-slice ShareInputScan (producer notify / reader wait, squelch, ExecEnd guards)
+test: shared_scan_vec
