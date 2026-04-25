@@ -364,7 +364,13 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         Table table = catalog.loadTable(context.getDataSource());
         healLegacyTableProperties(table);
 
-        // Transaction wrapper: commit() only writes manifest, does NOT update catalog
+        // See onlyBatchAppend() for the rationale: builtin catalog wants the
+        // deferred-commit pattern (CBDB tracker advances pg_iceberg_metadata
+        // via CAS); external catalogs (Polaris/Hive) own their own pointer
+        // and need a real commitTransaction(), otherwise UPDATE/DELETE never
+        // becomes visible to any reader through the catalog.
+        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
+
         Transaction txn = table.newTransaction();
         RowDelta rowDelta = txn.newRowDelta();
         for (Fragment fragment : context.getFragments()) {
@@ -379,13 +385,15 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         }
         rowDelta.commit(); // writes manifest only
 
-        // Extract metadata and write metadata.json to object storage
+        if (!builtinCatalog) {
+            txn.commitTransaction();
+            Table refreshed = catalog.loadTable(context.getDataSource());
+            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
+        }
+
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
-        String metadataLocation = writeMetadataFile(table, updatedMetadata);
-
-        // Do NOT call txn.commitTransaction() — catalog remains unchanged
-        return metadataLocation;
+        return writeMetadataFile(table, updatedMetadata);
     }
 
     /**
@@ -424,7 +432,16 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         // Commit to transaction only (writes manifest files, NOT metadata.json)
         rewrite.commit();
 
-        // Extract updated metadata from transaction (don't commit to table/catalog)
+        // External catalogs need their pointer advanced too; see onlyBatchAppend
+        // for the deferred-vs-real-commit rationale.
+        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
+        if (!builtinCatalog) {
+            txn.commitTransaction();
+            Table refreshed = catalog.loadTable(context.getDataSource());
+            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
+        }
+
+        // Builtin: extract updated metadata from transaction (don't commit to catalog)
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
 
