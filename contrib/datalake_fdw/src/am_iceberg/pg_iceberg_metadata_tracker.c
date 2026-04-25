@@ -59,11 +59,14 @@
 #include "common/jsonapi.h"
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
+#include "miscadmin.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/json.h"
 #include "utils/jsonfuncs.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 #include "include/pg_iceberg_metadata_tracker.h"
 #include "include/pg_iceberg_metadata.h"
@@ -597,6 +600,46 @@ tracker_commit_all(void)
 				 "metadata tracker: concurrent update detected for "
 				 "table %u, rebasing (attempt %d/%d)",
 				 state->relid, retries, TRACKER_MAX_COMMIT_RETRIES);
+
+			/*
+			 * Force the next pg_iceberg_tracker_apply_updates_with_rebase()
+			 * to actually re-read the latest pg_iceberg_metadata.metadata_location
+			 * from the catalog rather than reuse a stale snapshot. Two pieces
+			 * are required:
+			 *
+			 *   1. Bump the command counter so any update we performed in
+			 *      this transaction (or any committed concurrent xact whose
+			 *      results are not yet visible to our catalog snapshot) is
+			 *      visible to a subsequent systable_beginscan().
+			 *   2. Invalidate the catalog snapshot so the next read picks
+			 *      up the freshly-committed concurrent winner instead of
+			 *      our cached "initial" view of pg_iceberg_metadata.
+			 *
+			 * Without these calls, apply_updates_with_rebase() reads the
+			 * same stale latest_global_location on every retry, and its
+			 * fast-path optimisation (last_base == latest && no new files)
+			 * returns the un-rebased current_metadata_location. The CAS
+			 * then loops forever or — under the wait=true heap_update path
+			 * inside pg_iceberg_update_metadata_cas() — silently overwrites
+			 * the concurrent winner's metadata_location, orphaning the
+			 * loser's data files. Manifests as ~25% data loss on
+			 * concurrent INSERTs against the same iceberg table.
+			 */
+			CommandCounterIncrement();
+			InvalidateCatalogSnapshot();
+
+			/*
+			 * Drop our cached last_base so the rebase optimisation cannot
+			 * trigger. The next apply_updates_with_rebase() will go through
+			 * the full agent path with the freshly-read latest_global,
+			 * picking up the concurrent winner's snapshot before we layer
+			 * our accumulated data_files on top.
+			 */
+			if (state->last_base_metadata_location)
+			{
+				pfree(state->last_base_metadata_location);
+				state->last_base_metadata_location = NULL;
+			}
 		}
 
 		if (table_info != NULL)
