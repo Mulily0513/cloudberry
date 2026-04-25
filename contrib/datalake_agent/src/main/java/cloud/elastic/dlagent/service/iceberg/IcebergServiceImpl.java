@@ -33,6 +33,7 @@ import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,8 +59,24 @@ public class IcebergServiceImpl implements IcebergService {
     @Autowired(required = false)
     private IcebergCatalogFactory icebergCatalogFactory;
 
+    /**
+     * IcebergMetadataFetcher is declared with prototype scope (see
+     * IcebergPluginConfig). Inject an ObjectProvider so we obtain a fresh
+     * instance for each request and never share the mutable RequestContext
+     * across concurrent threads. Sharing a single fetcher caused concurrent
+     * INSERTs into the same iceberg AM table to silently overwrite each
+     * other's fragments — one writer's parquet would appear twice in the
+     * manifest, the other's would be lost — because both threads raced on
+     * setRequestContext().
+     */
     @Autowired
-    private IcebergMetadataFetcher icebergMetadataFetcher;
+    private ObjectProvider<IcebergMetadataFetcher> icebergMetadataFetcherProvider;
+
+    private IcebergMetadataFetcher newFetcher(RequestContext context) {
+        IcebergMetadataFetcher fetcher = icebergMetadataFetcherProvider.getObject();
+        fetcher.setRequestContext(context);
+        return fetcher;
+    }
 
     @Autowired
     private IcebergCatalogWrapper icebergCatalogWrapper;
@@ -177,7 +194,7 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public String getTableFragment(String namespace, String tableName, Map<String, String> properties,
             RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
+        IcebergMetadataFetcher fetcher = newFetcher(context);
 
         // Check for uncommitted metadata location (deferred commit Read-Your-Own-Writes)
         String uncommittedLocation = properties != null
@@ -187,9 +204,9 @@ public class IcebergServiceImpl implements IcebergService {
         FragmentDescription fragmentDescription;
         if (uncommittedLocation != null && !uncommittedLocation.isEmpty()) {
             log.debug("Scanning with uncommitted metadata location: {}", uncommittedLocation);
-            fragmentDescription = icebergMetadataFetcher.getFragmentsByUncommittedMetadata(uncommittedLocation);
+            fragmentDescription = fetcher.getFragmentsByUncommittedMetadata(uncommittedLocation);
         } else {
-            fragmentDescription = icebergMetadataFetcher.getFragments(null);
+            fragmentDescription = fetcher.getFragments(null);
         }
 
         String result = objectMapper.writeValueAsString(fragmentDescription);
@@ -202,8 +219,8 @@ public class IcebergServiceImpl implements IcebergService {
         // For the logic of the AM, appending data should not involve creating tables.
         // The Iceberg AM is already different
         // from the FDW approach. Therefore, we should directly call appendTable here.
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.onlyBatchAppend();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.onlyBatchAppend();
 
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
@@ -212,8 +229,8 @@ public class IcebergServiceImpl implements IcebergService {
     }
 
     public Map<String, Object> rowUpdate(String namespace, String tableName, Map<String, String> properties, RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.rowUpdateAndReturnLocation();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.rowUpdateAndReturnLocation();
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
         return result;
@@ -270,8 +287,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public String planFileGroups(String namespace, String tableName, Map<String, String> properties,
             RequestContext context, int minInputFiles, int targetFileSizeMb) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        FragmentDescription fragmentDescription = icebergMetadataFetcher.planFileGroups(minInputFiles, targetFileSizeMb);
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        FragmentDescription fragmentDescription = fetcher.planFileGroups(minInputFiles, targetFileSizeMb);
         String result = objectMapper.writeValueAsString(fragmentDescription);
         return result;
     }
@@ -279,8 +296,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public Map<String, Object> commitFileGroups(String namespace, String tableName,
             Map<String, String> properties, RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.commitFileGroups();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.commitFileGroups();
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
         return result;
@@ -289,8 +306,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public Map<String, Object> commitAppend(String namespace, String tableName,
             Map<String, String> properties, RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.commitAppend();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.commitAppend();
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
         return result;
@@ -299,8 +316,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public Map<String, Object> commitUpdate(String namespace, String tableName,
             Map<String, String> properties, RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.commitUpdate();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.commitUpdate();
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
         return result;
@@ -309,8 +326,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public Map<String, Object> commitRewrite(String namespace, String tableName,
             Map<String, String> properties, RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        String metadataLocation = icebergMetadataFetcher.commitRewrite();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        String metadataLocation = fetcher.commitRewrite();
         Map<String, Object> result = new HashMap<>();
         result.put("metadata-location", metadataLocation);
         return result;
@@ -319,8 +336,8 @@ public class IcebergServiceImpl implements IcebergService {
     @Override
     public String getTableStatistics(String namespace, String tableName, Map<String, String> properties,
             RequestContext context) throws Exception {
-        icebergMetadataFetcher.setRequestContext(context);
-        Map<String, String> summary = icebergMetadataFetcher.getCurrentSnapshotSummary();
+        IcebergMetadataFetcher fetcher = newFetcher(context);
+        Map<String, String> summary = fetcher.getCurrentSnapshotSummary();
         if (summary == null) {
             summary = Collections.emptyMap();
         }
