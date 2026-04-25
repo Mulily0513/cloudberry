@@ -372,7 +372,16 @@ pg_iceberg_create_table_with_catalog(Relation rel, bool *is_internal)
 		{
 			/*
 			 * Hive/Polaris: refresh from catalog to capture the
-			 * catalog-assigned table location.
+			 * catalog-assigned table-location (the table root URI).
+			 *
+			 * The location ltoption stores the table root (e.g.
+			 * "s3://bucket/db/table"), which parseVolumeUri() later
+			 * combines with "/data" to derive the parquet write path.
+			 * It must NOT be set to metadata_location (the
+			 * "<root>/metadata/00000-xxx.metadata.json" file URI),
+			 * otherwise parquet files end up under
+			 * "<root>/metadata/00000-xxx.metadata.json/data/", which
+			 * corrupts the warehouse layout and breaks reads.
 			 */
 			IcebergLoadTableResult *refresh_result;
 
@@ -383,9 +392,20 @@ pg_iceberg_create_table_with_catalog(Relation rel, bool *is_internal)
 												   table_info->catalog_name,
 												   table_info->volume_server_name,
 												   table_info->volume_name);
-			if (refresh_result != NULL && refresh_result->metadata_location != NULL)
+			if (refresh_result != NULL)
+			{
+				if (refresh_result->location == NULL ||
+					refresh_result->location[0] == '\0')
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("external catalog \"%s\" returned empty table location for \"%s.%s\"",
+									table_info->catalog_name,
+									nameSpace,
+									tableName)));
 				pg_iceberg_upsert_location_option(RelationGetRelid(rel),
-												  refresh_result->metadata_location);
+												  refresh_result->location);
+				pg_iceberg_free_load_table_result(refresh_result);
+			}
 		}
 		*is_internal = true;
 	}
