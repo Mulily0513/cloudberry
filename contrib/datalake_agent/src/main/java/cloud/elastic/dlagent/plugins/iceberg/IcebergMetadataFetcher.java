@@ -267,7 +267,20 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         Table table = catalog.loadTable(context.getDataSource());
         healLegacyTableProperties(table);
 
-        // Transaction wrapper: commit() only writes manifest, does NOT update catalog
+        // For builtin catalog the deferred-commit pattern (write manifest +
+        // metadata.json to object storage, but do NOT advance the catalog
+        // pointer) is required: CBDB's pg_iceberg_metadata holds the
+        // authoritative current-metadata pointer and advances it via
+        // optimistic CAS in pg_iceberg_metadata_tracker.
+        //
+        // For external catalogs (Polaris/Hive/...) we MUST advance the catalog
+        // pointer here, otherwise subsequent loadTable() calls keep returning
+        // the pre-INSERT metadata (current-snapshot-id=-1, snapshots=[]) and
+        // reads see "Scanning empty table" — the data files exist on object
+        // storage and are referenced by manifests, but no client (the agent
+        // itself, Spark, Trino, ...) can ever observe them.
+        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
+
         Transaction txn = table.newTransaction();
         AppendFiles batchAppend = txn.newAppend();
         for (Fragment fragment : context.getFragments()) {
@@ -276,13 +289,21 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         }
         batchAppend.commit(); // writes manifest only
 
-        // Extract metadata and write metadata.json to object storage
+        if (!builtinCatalog) {
+            // External catalog: the catalog itself atomically writes the new
+            // metadata.json and advances its pointer. We then read the now-
+            // committed metadata file location back from the catalog.
+            txn.commitTransaction();
+            Table refreshed = catalog.loadTable(context.getDataSource());
+            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
+        }
+
+        // Builtin path: extract the in-memory updated metadata and write the
+        // metadata.json file ourselves; the C side (tracker_commit_all) then
+        // CAS-advances pg_iceberg_metadata to this location.
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
-        String metadataLocation = writeMetadataFile(table, updatedMetadata);
-
-        // Do NOT call txn.commitTransaction() — catalog remains unchanged
-        return metadataLocation;
+        return writeMetadataFile(table, updatedMetadata);
     }
 
 
