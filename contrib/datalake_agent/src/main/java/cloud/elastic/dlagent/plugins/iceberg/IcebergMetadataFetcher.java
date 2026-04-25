@@ -267,20 +267,13 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         Table table = catalog.loadTable(context.getDataSource());
         healLegacyTableProperties(table);
 
-        // For builtin catalog the deferred-commit pattern (write manifest +
-        // metadata.json to object storage, but do NOT advance the catalog
-        // pointer) is required: CBDB's pg_iceberg_metadata holds the
-        // authoritative current-metadata pointer and advances it via
-        // optimistic CAS in pg_iceberg_metadata_tracker.
-        //
-        // For external catalogs (Polaris/Hive/...) we MUST advance the catalog
-        // pointer here, otherwise subsequent loadTable() calls keep returning
-        // the pre-INSERT metadata (current-snapshot-id=-1, snapshots=[]) and
-        // reads see "Scanning empty table" — the data files exist on object
-        // storage and are referenced by manifests, but no client (the agent
-        // itself, Spark, Trino, ...) can ever observe them.
-        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
-
+        // Transaction wrapper: commit() only writes manifest, does NOT update catalog.
+        // This deferred-commit pattern is intentional and applies to ALL catalog
+        // types: the C-side tracker calls this method potentially several times
+        // per DML statement (per-statement rebase + final commit-time rebase) and
+        // the per-call invocations must be idempotent. The actual catalog commit
+        // happens in a separate PRE_COMMIT step that calls commitAppend() on
+        // this fetcher, which goes through the catalog atomically.
         Transaction txn = table.newTransaction();
         AppendFiles batchAppend = txn.newAppend();
         for (Fragment fragment : context.getFragments()) {
@@ -289,18 +282,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         }
         batchAppend.commit(); // writes manifest only
 
-        if (!builtinCatalog) {
-            // External catalog: the catalog itself atomically writes the new
-            // metadata.json and advances its pointer. We then read the now-
-            // committed metadata file location back from the catalog.
-            txn.commitTransaction();
-            Table refreshed = catalog.loadTable(context.getDataSource());
-            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
-        }
-
-        // Builtin path: extract the in-memory updated metadata and write the
-        // metadata.json file ourselves; the C side (tracker_commit_all) then
-        // CAS-advances pg_iceberg_metadata to this location.
+        // Extract metadata and write metadata.json to object storage
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
         return writeMetadataFile(table, updatedMetadata);
@@ -364,13 +346,9 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         Table table = catalog.loadTable(context.getDataSource());
         healLegacyTableProperties(table);
 
-        // See onlyBatchAppend() for the rationale: builtin catalog wants the
-        // deferred-commit pattern (CBDB tracker advances pg_iceberg_metadata
-        // via CAS); external catalogs (Polaris/Hive) own their own pointer
-        // and need a real commitTransaction(), otherwise UPDATE/DELETE never
-        // becomes visible to any reader through the catalog.
-        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
-
+        // Transaction wrapper: commit() only writes manifest, does NOT update catalog.
+        // See onlyBatchAppend() for the rationale — this method must be idempotent
+        // across the C-side per-statement and commit-time rebase cycles.
         Transaction txn = table.newTransaction();
         RowDelta rowDelta = txn.newRowDelta();
         for (Fragment fragment : context.getFragments()) {
@@ -385,12 +363,7 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         }
         rowDelta.commit(); // writes manifest only
 
-        if (!builtinCatalog) {
-            txn.commitTransaction();
-            Table refreshed = catalog.loadTable(context.getDataSource());
-            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
-        }
-
+        // Extract metadata and write metadata.json to object storage
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
         return writeMetadataFile(table, updatedMetadata);
@@ -429,19 +402,11 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
             rewrite.addFile(dataFile);
         }
 
-        // Commit to transaction only (writes manifest files, NOT metadata.json)
+        // Commit to transaction only (writes manifest files, NOT metadata.json).
+        // Deferred for all catalog types — see onlyBatchAppend() for rationale.
         rewrite.commit();
 
-        // External catalogs need their pointer advanced too; see onlyBatchAppend
-        // for the deferred-vs-real-commit rationale.
-        boolean builtinCatalog = "builtin".equals(context.getCatalogType());
-        if (!builtinCatalog) {
-            txn.commitTransaction();
-            Table refreshed = catalog.loadTable(context.getDataSource());
-            return ((HasTableOperations) refreshed).operations().current().metadataFileLocation();
-        }
-
-        // Builtin: extract updated metadata from transaction (don't commit to catalog)
+        // Extract updated metadata from transaction (don't commit to table/catalog)
         HasTableOperations txnTableOps = (HasTableOperations) txn.table();
         TableMetadata updatedMetadata = txnTableOps.operations().current();
 

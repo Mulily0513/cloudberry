@@ -425,6 +425,7 @@ tracker_commit_external_table(TableMetadataState *state,
 	CmdType		commit_cmd_type;
 	char	   *data_locations_json;
 	const char *committed_metadata_location;
+	Relation	rel = NULL;
 
 	data_locations_json = serialize_files_to_data_locations(state->data_files,
 															state->delete_files,
@@ -432,11 +433,25 @@ tracker_commit_external_table(TableMetadataState *state,
 	if (data_locations_json == NULL)
 		return NULL;
 
+	/*
+	 * For internal tables on a non-builtin catalog (Polaris/Hive used as
+	 * iceberg_default_catalog), table_info->opts->table is NULL because the
+	 * table was created without explicit OPTIONS. The commit endpoint then
+	 * needs the relation to derive namespace + table name. External tables
+	 * with explicit OPTIONS keep the existing path and never open the rel.
+	 */
+	if (table_info->opts == NULL || table_info->opts->table == NULL)
+		rel = table_open(state->relid, AccessShareLock);
+
 	committed_metadata_location = pg_iceberg_commit_data_with_catalog(
+		rel,
 		table_info,
 		data_locations_json,
 		final_metadata_location,
 		commit_cmd_type);
+
+	if (rel != NULL)
+		table_close(rel, AccessShareLock);
 
 	pfree(data_locations_json);
 
@@ -521,19 +536,40 @@ tracker_commit_all(void)
 		IcebergTableInfo *table_info = NULL;
 		int			retries = 0;
 		bool		external_committed = false;
+		bool		non_builtin_catalog = false;
 
 		/* Skip tables with no pending changes */
 		if (!table_has_pending_changes(state))
 			continue;
 
-		if (!state->is_internal)
-			table_info = pg_iceberg_get_table_info(state->relid);
+		/*
+		 * Look up table_info whenever we need to know which catalog backs
+		 * this table. We need it for two cases now:
+		 *   - is_internal=false: external table (existing logic)
+		 *   - is_internal=true with a non-builtin catalog (Polaris/Hive used
+		 *     as the engine's default catalog): apply_updates_with_rebase
+		 *     calls the agent's append endpoint, which on non-builtin
+		 *     catalogs commits to the catalog atomically. Re-running rebase
+		 *     on a CAS retry would re-append the same parquet files and
+		 *     duplicate the snapshot.
+		 */
+		table_info = pg_iceberg_get_table_info(state->relid);
+		non_builtin_catalog = !pg_iceberg_is_builtin_catalog(
+			table_info->catalog_server_name);
 
 		/*
 		 * CAS commit loop: rebase + conditional catalog update.
 		 *
-		 * Internal tables keep full CAS-retry behavior.
-		 * External tables must be committed to external catalog at most once.
+		 * Internal tables on builtin catalog keep full CAS-retry behavior:
+		 *   apply_updates_with_rebase only writes a fresh metadata.json,
+		 *   the CAS happens locally on pg_iceberg_metadata, and retries are
+		 *   safe because no catalog state has been advanced yet.
+		 *
+		 * Tables on non-builtin catalogs (whether is_internal or not) must
+		 * not retry the agent call: by the time apply_updates_with_rebase
+		 * (or tracker_commit_external_table) returns successfully, the
+		 * external catalog (Polaris/Hive) has already committed the new
+		 * snapshot. Any further retry would duplicate appends.
 		 */
 		for (;;)
 		{
@@ -541,19 +577,23 @@ tracker_commit_all(void)
 
 			final_metadata_location = pg_iceberg_tracker_apply_updates_with_rebase(
 				state->relid, NULL, 0, NULL, 0);
-			if (!state->is_internal)
+
+			/*
+			 * Non-builtin catalogs (Polaris/Hive) own the current-metadata
+			 * pointer via their own atomic update. Commit through the
+			 * dedicated commitAppend endpoint exactly once per pre-commit
+			 * pass: subsequent local-CAS retries must NOT re-call the agent
+			 * or each retry would re-append the same parquet files into a
+			 * fresh snapshot. This applies regardless of is_internal: the
+			 * "explicit OPTIONS" external table path and the
+			 * "iceberg_default_catalog points at non-builtin" internal-table
+			 * path both go through here.
+			 */
+			if (non_builtin_catalog && !external_committed)
 			{
-				/*
-				 * External tables:
-				 *   - Perform rebase + external commit only once.
-				 *   - On local CAS retry, reuse the committed external location.
-				 */
-				if (!external_committed)
-				{
-					final_metadata_location = tracker_commit_external_table(
-						state, table_info, state->last_base_metadata_location);
-					external_committed = true;
-				}
+				final_metadata_location = tracker_commit_external_table(
+					state, table_info, state->last_base_metadata_location);
+				external_committed = true;
 			}
 
 			/*
@@ -577,10 +617,10 @@ tracker_commit_all(void)
 			}
 
 			/*
-			 * External table path: external commit already succeeded once.
-			 * Do not re-commit externally; only repair local metadata mirror.
+			 * Non-builtin catalog path: the external commit already succeeded
+			 * once. Do NOT re-call the agent; only repair the local mirror.
 			 */
-			if (!state->is_internal && external_committed)
+			if (non_builtin_catalog && external_committed)
 			{
 				tracker_sync_local_metadata_after_external_commit(state,
 																  table_info);

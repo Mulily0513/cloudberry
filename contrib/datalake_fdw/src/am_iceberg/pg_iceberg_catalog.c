@@ -671,7 +671,8 @@ pg_iceberg_modify_data_with_catalog(Relation rel,
 }
 
 char *
-pg_iceberg_commit_data_with_catalog(IcebergTableInfo *table_info,
+pg_iceberg_commit_data_with_catalog(Relation rel,
+									IcebergTableInfo *table_info,
 									const char *data_locations,
 									const char *metadata_location,
 									CmdType operation)
@@ -697,16 +698,32 @@ pg_iceberg_commit_data_with_catalog(IcebergTableInfo *table_info,
 			return NULL;
 	}
 
+	/*
+	 * Resolve namespace / table / catalog. Tables created with explicit
+	 * OPTIONS (catalog, namespace, table) carry the names in opts; tables
+	 * created against the engine's default catalog (iceberg_default_catalog
+	 * pointing at a non-builtin server) leave opts->table NULL and we fall
+	 * back to the relation's own namespace + name, mirroring what
+	 * pg_iceberg_modify_data_with_catalog already does.
+	 */
 	if (table_info->opts == NULL || table_info->opts->table == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("pg_iceberg_commit_data_with_catalog requires an external iceberg table")));
+	{
+		if (rel == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("pg_iceberg_commit_data_with_catalog requires either an external iceberg table or a relation")));
+		nameSpace = get_namespace_name(rel->rd_rel->relnamespace);
+		tableName = pstrdup(RelationGetRelationName(rel));
+		catalogName = NULL;
+	}
+	else
+	{
+		nameSpace = table_info->opts->namespace;
+		tableName = table_info->opts->table;
+		catalogName = table_info->opts->catalog;
+	}
 
-	nameSpace = table_info->opts->namespace;
-	tableName = table_info->opts->table;
-	catalogName = table_info->opts->catalog;
-
-	return pg_iceberg_catalog_op(NULL,
+	return pg_iceberg_catalog_op(rel,
 								 op,
 								 catalogName,
 								 nameSpace,
