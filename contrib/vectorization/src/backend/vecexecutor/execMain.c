@@ -3499,9 +3499,25 @@ build_topk_node(PlanState *planstate, GArrowExecutePlan *plan,
 			AttrNumber table_attno = InvalidAttrNumber;
 			{
 				Plan *scan_plan = outerPlan(sort);
-				/* Skip Result node if present */
+				/*
+				 * If a Result node sits between Sort and SeqScan, sort_attno
+				 * is a resno in Result's output, not SeqScan's. Remap it
+				 * through Result's targetlist before descending — Var.varattno
+				 * inside Result's tlist is the resno in SeqScan's output, so
+				 * it can be reused as the new sort_attno. If the entry is an
+				 * expression (not a Var), we cannot map to a physical column
+				 * and must bail out.
+				 */
 				if (scan_plan && IsA(scan_plan, Result))
+				{
+					TargetEntry *res_tle =
+						get_tle_by_resno(scan_plan->targetlist, sort_attno);
+					if (res_tle && IsA(res_tle->expr, Var))
+						sort_attno = ((Var *) res_tle->expr)->varattno;
+					else
+						goto skip_topk_rf;
 					scan_plan = outerPlan(scan_plan);
+				}
 
 				if (scan_plan)
 				{
