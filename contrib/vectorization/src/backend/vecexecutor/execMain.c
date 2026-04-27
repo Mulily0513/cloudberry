@@ -3455,7 +3455,7 @@ build_topk_node(PlanState *planstate, GArrowExecutePlan *plan,
 	sortoption = garrow_sort_options_new(sort_keys, 0, take_thread_num, two_phase_take);
 
 	/* Create TopKNode */
-	topk_options = garrow_topk_node_options_new(topk_bound, sortoption);
+	topk_options = garrow_topk_node_options_new(topk_bound, sortoption, NULL);
 	topk_node = garrow_execute_plan_build_topk_node(plan, input,
 													topk_options, &error);
 	if (error)
