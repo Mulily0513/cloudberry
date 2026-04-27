@@ -61,6 +61,7 @@ public final class IcebergConfigConstants {
     public static final String CATALOG_TYPE_HIVE = "hive";
     public static final String CATALOG_TYPE_S3A = "s3a";
     public static final String CATALOG_TYPE_S3 = "s3";
+    public static final String CATALOG_TYPE_HADOOP = "hadoop";
     public static final String CATALOG_TYPE_BUILDIN = "builtin";
     public static final String CATALOG_TYPE_POLARIS = "polaris";
 

@@ -1792,7 +1792,7 @@ public class IcebergRestController {
             volume_server_type.equals(IcebergConfigConstants.VOLUME_TYPE_ABFSS)) {
             processVolumeS3Resource(configuration, properties);
         } else if (volume_server_type.equals(IcebergConfigConstants.VOLUME_TYPE_HDFS)) {
-            //TODO(liuxiaoyu): need support volume type is hdfs
+            processVolumeHdfsResource(configuration, properties);
         } else {
             String key = IcebergConfigConstants.ICEBERG_VOLUME_CONFIG.ICEBERG_VOLUME_CONFIG_STRING + "." + IcebergConfigConstants.ICEBERG_VOLUME_CONFIG.VOLUME_SERVER_TYPE;
             throw new UnsupportedOperationException(key + " '" + volume_server_type + "' is not supported yet. " +
@@ -1800,6 +1800,43 @@ public class IcebergRestController {
                     IcebergConfigConstants.VOLUME_TYPE_S3 + ", " +
                     IcebergConfigConstants.VOLUME_TYPE_HDFS + ", " +
                     IcebergConfigConstants.VOLUME_TYPE_ABFSS + "]");
+        }
+    }
+
+    /**
+     * Configure Hadoop {@link Configuration} for an HDFS-backed volume.
+     *
+     * The user-facing OPTIONS surface is:
+     *   CREATE SERVER ... FOREIGN DATA WRAPPER iceberg_volume_fdw
+     *     OPTIONS (type 'hdfs', endpoint 'hdfs://namenode:8020' [, hdfs_auth_method 'simple|kerberos'] ...);
+     *
+     * The C side ships these through as IcebergVolumeConfig.volume_endpoint
+     * (and potentially auth-related keys for Kerberos).  We translate them
+     * into the standard Hadoop keys here so HadoopFileIO and DistributedFileSystem
+     * pick them up.  Simple auth is the default to match the C side's
+     * iceberg_volume_fdw.parseVolumeOption fallback.
+     */
+    private void processVolumeHdfsResource(Configuration configuration, Map<String, String> properties) {
+        String endpointKey = IcebergConfigConstants.ICEBERG_VOLUME_CONFIG.ICEBERG_VOLUME_CONFIG_STRING + "."
+            + IcebergConfigConstants.ICEBERG_VOLUME_CONFIG.VOLUME_ENDPOINT;
+        String endpoint = properties.getOrDefault(endpointKey, "");
+
+        if (!endpoint.isEmpty()) {
+            // Accept "hdfs://host:port" or just "host:port".
+            String defaultFS = endpoint.startsWith("hdfs://") ? endpoint : "hdfs://" + endpoint;
+            // fs.defaultFS already set by processS3OrHadoopServerResource for hadoop
+            // catalog; only set when not already configured (e.g. builtin/hive
+            // catalog with hdfs volume).
+            if (configuration.get("fs.defaultFS") == null
+                || configuration.get("fs.defaultFS").isEmpty()) {
+                configuration.set("fs.defaultFS", defaultFS);
+            }
+        }
+
+        // Default to simple auth when caller didn't specify; matches
+        // the C-side iceberg_volume_fdw default in parseVolumeOption.
+        if (configuration.get("hadoop.security.authentication") == null) {
+            configuration.set("hadoop.security.authentication", "simple");
         }
     }
 
@@ -1852,13 +1889,78 @@ public class IcebergRestController {
         processVolumePolarisS3FileIO(configuration, properties);
     }
 
+    /**
+     * Initialize Configuration for s3/s3a/hadoop catalog servers from the
+     * single user-facing warehouse_location_prefix property.
+     *
+     * The two iceberg-side catalog implementations have different warehouse
+     * computation contracts that must be preserved here:
+     *
+     *   IcebergS3Catalog     warehouse = fs.defaultFS + "/" + fs.prefix
+     *   IcebergHadoopCatalog warehouse = fs.defaultFS + catalogLocation
+     *                        (catalogLocation = RequestContext.path)
+     *
+     * This helper splits the URL once and writes whichever Configuration keys
+     * the target catalog reads. The hadoop case only needs fs.defaultFS here;
+     * the path component is stamped into RequestContext.path by
+     * {@link #createRequestContext}.
+     *
+     * Required because the original s3/s3a branch of processServerResource
+     * was a no-op, so warehouse_location_prefix never reached the catalog
+     * and IcebergS3Catalog computed warehouse as the literal "null/".
+     */
+    private void processS3OrHadoopServerResource(Configuration configuration,
+                                                  Map<String, String> properties,
+                                                  boolean isHadoopCatalog) {
+        String warehouse = getCatalogWarehouseLocationPrefix(properties);
+        if (warehouse == null || warehouse.isEmpty()) {
+            String key = IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.ICEBERG_CATALOG_CONFIG_STRING
+                + "." + IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.WAREHOUSE_LOCATION_PERFIX;
+            throw new IllegalArgumentException(
+                key + " is required for s3/hadoop catalog server");
+        }
+        int schemeEnd = warehouse.indexOf("://");
+        if (schemeEnd < 0) {
+            throw new IllegalArgumentException(
+                "warehouse_location_prefix must be a URL like scheme://host/path: " + warehouse);
+        }
+        int pathStart = warehouse.indexOf('/', schemeEnd + 3);
+        String defaultFS;
+        String pathPart; // includes leading '/'
+        if (pathStart < 0) {
+            defaultFS = warehouse;
+            pathPart = "";
+        } else {
+            defaultFS = warehouse.substring(0, pathStart);
+            pathPart = warehouse.substring(pathStart);
+        }
+        configuration.set("fs.defaultFS", defaultFS);
+
+        if (!isHadoopCatalog) {
+            // S3Catalog: warehouse = fs.defaultFS + "/" + fs.prefix.
+            // The convention is no leading slash on fs.prefix. Strip
+            // trailing slashes too to avoid double "//".
+            String prefix = pathPart.startsWith("/") ? pathPart.substring(1) : pathPart;
+            while (prefix.endsWith("/")) {
+                prefix = prefix.substring(0, prefix.length() - 1);
+            }
+            configuration.set("fs.prefix", prefix);
+        }
+
+        // Both s3 and hadoop catalogs delegate to processHiveVolumeServerResource
+        // for the volume-side credentials (s3a access keys, HDFS auth, etc.).
+        processHiveVolumeServerResource(configuration, properties);
+    }
+
     private void processServerResource(Configuration configuration, Map<String, String> properties) {
         String catalogServerTypeKey = IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.ICEBERG_CATALOG_CONFIG_STRING + "." + IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.SERVER_TYPE;
         String catalog_server_type = properties.getOrDefault(catalogServerTypeKey, "");
 
         if (catalog_server_type.equals(IcebergConfigConstants.CATALOG_TYPE_S3A) ||
             catalog_server_type.equals(IcebergConfigConstants.CATALOG_TYPE_S3)) {
-            // S3-compatible catalog specific configuration (if needed)
+            processS3OrHadoopServerResource(configuration, properties, false);
+        } else if (catalog_server_type.equals(IcebergConfigConstants.CATALOG_TYPE_HADOOP)) {
+            processS3OrHadoopServerResource(configuration, properties, true);
         } else if (catalog_server_type.equals(IcebergConfigConstants.CATALOG_TYPE_HIVE)) {
             processHiveServerResource(configuration, properties);
         } else if (catalog_server_type.equals(IcebergConfigConstants.CATALOG_TYPE_BUILDIN)) {
@@ -1869,6 +1971,7 @@ public class IcebergRestController {
             throw new UnsupportedOperationException("This server type '" + catalog_server_type + "' is not supported yet. " +
                     "Supported types are: [" + IcebergConfigConstants.CATALOG_TYPE_S3A + ", " +
                     IcebergConfigConstants.CATALOG_TYPE_S3 + ", " +
+                    IcebergConfigConstants.CATALOG_TYPE_HADOOP + ", " +
                     IcebergConfigConstants.CATALOG_TYPE_HIVE + ", " + IcebergConfigConstants.CATALOG_TYPE_BUILDIN + ", " +
                     IcebergConfigConstants.CATALOG_TYPE_POLARIS + "]");
         }
@@ -1961,7 +2064,15 @@ public class IcebergRestController {
                                     IcebergConfigConstants.ICEBERG_CATALOG_CONFIG.SERVER_TYPE;
         String catalogServerType = properties.getOrDefault(catalogServerTypeKey, "");
 
-        if (catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_HIVE)) {
+        if (catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_HIVE)
+                || catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_S3A)
+                || catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_S3)
+                || catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_HADOOP)) {
+            // For path-based and Hive catalogs the agent identifies tables by
+            // <namespace>.<table>. RequestContext.getDataSource() falls back to
+            // RequestContext.path when dataSource is null, which would incorrectly
+            // hand the warehouse URL to IcebergUtilities.getIcebergTableIdentifier
+            // and produce "default.<warehouse-url>" as the table identifier.
             String dataSource = namespace + "." + table;
             context.setDataSource(dataSource);
         } else if (catalogServerType.equals(IcebergConfigConstants.CATALOG_TYPE_POLARIS)) {
@@ -1993,8 +2104,24 @@ public class IcebergRestController {
         Configuration configuration = getConfiguration(properties);
         context.setConfiguration(configuration);
 
-        // Get warehouse location and set it as path
+        // Get warehouse location and set it as path.
+        //
+        // For most catalog types this is the full URL.  For type='hadoop' the
+        // path is consumed by IcebergHadoopCatalog as `catalogLocation` in the
+        // formula `WAREHOUSE_LOCATION = fs.defaultFS + catalogLocation`, so we
+        // store only the path component here (with leading '/').  fs.defaultFS
+        // for hadoop catalog is set in processS3OrHadoopServerResource.
         String warehouseLocation = getCatalogWarehouseLocationPrefix(properties);
+        if (server_type.equals(IcebergConfigConstants.CATALOG_TYPE_HADOOP)
+                && warehouseLocation != null && !warehouseLocation.isEmpty()) {
+            int schemeEnd = warehouseLocation.indexOf("://");
+            if (schemeEnd >= 0) {
+                int pathStart = warehouseLocation.indexOf('/', schemeEnd + 3);
+                warehouseLocation = (pathStart >= 0)
+                    ? warehouseLocation.substring(pathStart)
+                    : "";
+            }
+        }
         context.setPath(warehouseLocation);
 
         if (server_type.equalsIgnoreCase(IcebergConfigConstants.CATALOG_TYPE_BUILDIN)) {

@@ -53,6 +53,13 @@ public class IcebergS3Catalog implements IcebergCatalog {
         this.configuration = configuration;
         this.hadoopCatalog = new HadoopCatalog();
 
+        // Hadoop's S3AFileSystem stages object uploads through hadoop.tmp.dir.
+        // IcebergBuildInCatalog / IcebergHiveCatalog set this same key.
+        if (configuration.get("hadoop.tmp.dir") == null) {
+            configuration.set("hadoop.tmp.dir",
+                "/tmp/hadoop-" + System.getProperty("user.name"));
+        }
+
         Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
 
         String fsPrefix = configuration.get("fs.prefix");
@@ -77,7 +84,12 @@ public class IcebergS3Catalog implements IcebergCatalog {
             PartitionSpec spec,
             String location,
             Map<String, String> tableProps) throws Exception {
-        return hadoopCatalog.createTable(identifier, schema, spec, location,
+        // Iceberg's path-based HadoopCatalog rejects any non-null custom
+        // location (it enforces <warehouse>/<ns>/<table>). The volume URL
+        // forwarded from IcebergRestController.createTable would trip that
+        // check; pass null and let iceberg compute the standard layout from
+        // CatalogProperties.WAREHOUSE_LOCATION (set in initialize).
+        return hadoopCatalog.createTable(identifier, schema, spec, null,
                 IcebergUtilities.stripInternalProperties(tableProps));
     }
 

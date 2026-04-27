@@ -56,6 +56,13 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
         this.configuration = configuration;
         this.hadoopCatalog = new HadoopCatalog();
 
+        // Hadoop's S3AFileSystem stages object uploads through hadoop.tmp.dir
+        // and HDFS clients use it for local intermediate buffers.
+        if (configuration.get("hadoop.tmp.dir") == null) {
+            configuration.set("hadoop.tmp.dir",
+                "/tmp/hadoop-" + System.getProperty("user.name"));
+        }
+
         Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
 
         // Use gopher:// URI when Gopher is enabled, otherwise use standard hdfs:// URI for HadoopFileIO
@@ -138,6 +145,12 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
         this.configuration = configuration;
         this.hadoopCatalog = new HadoopCatalog();
 
+        // See createDefaultHadoopCatalog for rationale.
+        if (configuration.get("hadoop.tmp.dir") == null) {
+            configuration.set("hadoop.tmp.dir",
+                "/tmp/hadoop-" + System.getProperty("user.name"));
+        }
+
         Map<String, String> props = icebergUtilities.composeCatalogProperties(this.configuration);
 
         // Use gopher:// URI when Gopher is enabled, otherwise use standard hdfs:// URI for HadoopFileIO
@@ -183,7 +196,13 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
             PartitionSpec spec,
             String location,
             Map<String, String> tableProps) throws Exception {
-        return hadoopCatalog.createTable(identifier, schema, spec, location,
+        // Iceberg's path-based HadoopCatalog rejects any non-null custom
+        // location (it enforces <warehouse>/<ns>/<table>). The volume URL
+        // forwarded from IcebergRestController.createTable would trip that
+        // check; pass null and let iceberg compute the standard layout from
+        // CatalogProperties.WAREHOUSE_LOCATION (set in initialize via the
+        // fs.defaultFS + catalogLocation contract).
+        return hadoopCatalog.createTable(identifier, schema, spec, null,
                 IcebergUtilities.stripInternalProperties(tableProps));
     }
 

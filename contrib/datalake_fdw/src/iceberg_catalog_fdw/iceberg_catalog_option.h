@@ -64,6 +64,9 @@ typedef struct IcebergCatalogOptions
 #define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE "type"
 #define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE_HIVE "hive"
 #define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE_POLARIS "polaris"
+#define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE_HADOOP "hadoop"
+#define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE_S3 "s3"
+#define DATALAKE_ICEBERG_CATALOG_SERVER_TYPE_S3A "s3a"
 
 IcebergCatalogOptions *getIcebergCatalogOptions(const char* catalogServerName, const char* catalogName);
 
