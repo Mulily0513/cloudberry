@@ -28,6 +28,7 @@
 #include "utils/vecsort.h"
 #include "vecexecutor/execslot.h"
 #include "vecexecutor/executor.h"
+#include "vecexecutor/vec_topk_bounds.h"
 #include "utils/numeric.h"
 #include "utils/guc_vec.h"
 #include "storage/fd.h"
@@ -193,6 +194,7 @@ static const char *GetHashJoinProjectName(PlanBuildContext *pcontext, const char
 static GArrowExpression *build_is_distinct_expression(DistinctExpr *dex, PlanBuildContext *pcontext);
 static GArrowExpression *build_null_if_expression(NullIfExpr *dex, PlanBuildContext *pcontext);
 static GArrowExecuteNode*build_orderby_node(PlanState *planstate, GArrowExecutePlan *plan, GArrowExecuteNode *input);
+static GArrowExecuteNode*build_topk_node(PlanState *planstate, GArrowExecutePlan *plan, GArrowExecuteNode *input, int64 topk_bound);
 static GArrowExpression *build_literal_expression(Datum datum, bool isnull, Oid pg_type, int32 typmod);
 static void BuildMaterializePlan(PlanBuildContext *pcontext, VecExecuteState *estate);
 static GArrowStoreType to_arrow_storetype(StoreType type);
@@ -2673,8 +2675,15 @@ BuildProject(List *targetList, List *qualList, GArrowExecuteNode *input, PlanBui
 
 	if (IsA(pcontext->planstate->plan, Sort))
 	{
+		int64 k = vec_topk_bounds_lookup(pcontext->planstate->plan);
 		g_autoptr(GArrowExecuteNode) sort = NULL;
-		sort = build_orderby_node(pcontext->planstate, pcontext->plan, current);
+
+		if (k > 0)
+			sort = build_topk_node(pcontext->planstate, pcontext->plan,
+								   current, k);
+		else
+			sort = build_orderby_node(pcontext->planstate, pcontext->plan, current);
+
 		garrow_store_ptr(current, sort);
 	}
 
@@ -3426,6 +3435,46 @@ build_orderby_node(PlanState *planstate, GArrowExecutePlan *plan,  GArrowExecute
 		elog(ERROR, "Failed to create orderby node, cause: %s", error->message);
 	garrow_list_free_ptr(&sort_keys);
 	return orderby_node;
+}
+
+static GArrowExecuteNode*
+build_topk_node(PlanState *planstate, GArrowExecutePlan *plan,
+				GArrowExecuteNode *input, int64 topk_bound)
+{
+	GList *sort_keys = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GArrowSortOptions) sortoption = NULL;
+	g_autoptr(GArrowTopKNodeOptions) topk_options = NULL;
+	GArrowExecuteNode *topk_node = NULL;
+	g_autoptr(GArrowSchema) schema = NULL;
+
+	schema = garrow_execute_node_get_output_schema(input);
+
+	/* Reuse build_sort_keys to construct sort key list */
+	sort_keys = build_sort_keys(planstate, schema);
+	sortoption = garrow_sort_options_new(sort_keys, 0, take_thread_num, two_phase_take);
+
+	/* Create TopKNode */
+	topk_options = garrow_topk_node_options_new(topk_bound, sortoption);
+	topk_node = garrow_execute_plan_build_topk_node(plan, input,
+													topk_options, &error);
+	if (error)
+	{
+		garrow_list_free_ptr(&sort_keys);
+		elog(ERROR, "Failed to create topk node, cause: %s", error->message);
+	}
+
+	/*
+	 * Record the K value on the Sort's VecSortState so that show_sort_info
+	 * can emit "Vec Sort Method: TopK K: N" in EXPLAIN output.  This is the
+	 * single source of truth for whether a given Sort took the TopK path —
+	 * the EXPLAIN display and the actual Arrow node construction both happen
+	 * here.
+	 */
+	((VecSortState *) planstate)->topk_bound = topk_bound;
+
+	garrow_list_free_ptr(&sort_keys);
+	return topk_node;
 }
 
 static GArrowExecuteNode *
@@ -4265,6 +4314,20 @@ ExecVecSetTupleBound(int64 tuples_needed, PlanState *child_node, PlanState *limi
 		{
 			sortState->bounded = true;
 			sortState->bound = tuples_needed;
+
+			/*
+			 * If the new HTAB-based TopK path already built a TopKNode for
+			 * this Sort (vec_topk_bounds_set called during ExecInitVecLimit),
+			 * the Arrow plan no longer contains an outer OrderByNode.
+			 * garrow_execute_plan_make_topk_node scans the plan for the last
+			 * OrderByNode and converts it to TopK; with the outer OrderByNode
+			 * already gone it would pick up an inner sort (e.g. a GroupAgg's
+			 * sort-by-key) and truncate unrelated data.  Skip the legacy
+			 * make_topk_node when the new path owns this Sort.
+			 */
+			if (vec_topk_bounds_lookup(child_node->plan) > 0)
+				return;
+
 			GArrowExecutePlan* sort_plan = NULL;
 			GArrowSchema* schema = NULL;
 			g_autoptr(GArrowSelectKOptions) selectk_option = NULL;   

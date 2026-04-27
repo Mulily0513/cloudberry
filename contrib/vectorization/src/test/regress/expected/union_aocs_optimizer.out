@@ -1232,6 +1232,7 @@ explain (costs off)
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: ((t1.a || t1.b))
+                     Vec Sort Method:  TopK  K: 8
                      ->  Vec Append
                            ->  Vec Seq Scan on t1
                            ->  Vec Seq Scan on t1c t1_1

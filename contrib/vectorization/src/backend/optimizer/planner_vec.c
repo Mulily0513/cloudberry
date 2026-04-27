@@ -489,6 +489,7 @@ vectorize_plan_mutator(Node *node, void *context)
 			match_replace_tl(mutated->targetlist, mutated->lefttree->targetlist);
 		/* Fixme: replace for qual should be supported */
 	}
+
 	return (Node *) mutated;
 }
 

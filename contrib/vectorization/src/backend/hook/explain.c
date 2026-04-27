@@ -4553,11 +4553,69 @@ show_tablesample(TableSampleClause *tsc, PlanState *planstate,
  * upstream, it would be nice to rewrite this to avoid looping over all the
  * sort methods and instead have a _get_stats() function as in upstream.
  */
+/*
+ * plan_is_vectorized: true iff this EState's PlannedStmt was vectorized.
+ *
+ * vectorize_plan_mutator appends a VectorExtensionContext to
+ * PlannedStmt->extensionContext as a marker.  We use that marker to decide
+ * whether it is safe to cast a SortState to VecSortState — a vectorized
+ * plan guarantees every Sort was allocated as sizeof(VecSortState) via
+ * ExecInitVecSort, so reading extension fields is safe.  For a
+ * non-vectorized plan the SortState is core-sized and the cast would read
+ * past its allocation.
+ */
+static bool
+plan_is_vectorized(EState *estate)
+{
+	ListCell   *lc;
+
+	if (estate == NULL || estate->es_plannedstmt == NULL)
+		return false;
+	foreach (lc, estate->es_plannedstmt->extensionContext)
+	{
+		ExtensibleNode *en = (ExtensibleNode *) lfirst(lc);
+		if (strcmp(en->extnodename, VECTOR_EXTENSION_CONTEXT) == 0)
+			return true;
+	}
+	return false;
+}
+
 static void
 show_sort_info(SortState *sortstate, ExplainState *es)
 {
 	CdbExplain_NodeSummary *ns;
 	int			i;
+
+	/*
+	 * Emit "Vec Sort Method: TopK K: N" when the vectorization engine
+	 * replaced the OrderByNode with an Arrow TopKNode for this Sort (see
+	 * build_topk_node).  This is engine-specific and intentionally
+	 * separate from the row-engine "Sort Method: top-N heapsort" line —
+	 * the "Vec" prefix tells the user this is vectorized execution.
+	 *
+	 * Shown for plain EXPLAIN as well as EXPLAIN ANALYZE since it is a
+	 * plan-shape property set at ExecInit time (before ExecutorRun).
+	 */
+	if (plan_is_vectorized(sortstate->ss.ps.state))
+	{
+		VecSortState *vsort = (VecSortState *) sortstate;
+
+		if (vsort->topk_bound > 0)
+		{
+			if (es->format == EXPLAIN_FORMAT_TEXT)
+			{
+				appendStringInfoSpaces(es->str, es->indent * 2);
+				appendStringInfo(es->str,
+								 "Vec Sort Method:  TopK  K: " INT64_FORMAT "\n",
+								 vsort->topk_bound);
+			}
+			else
+			{
+				ExplainPropertyText("Vec Sort Method", "TopK", es);
+				ExplainPropertyInteger("TopK K", NULL, vsort->topk_bound, es);
+			}
+		}
+	}
 
 	if (!es->analyze)
 		return;

@@ -44,6 +44,7 @@ test: seqscan/aocs_table_ss_lm_varmax_2
 test: result/simple_expr
 test: sort/sort
 test: sort/arrow_merge_sort
+test: sort/topk
 test: explain/exec_explain
 test: combos/combo_1
 ##test: misc/clickhouse_simplifed

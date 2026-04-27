@@ -1637,6 +1637,7 @@ order by t1.b limit 10;
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: t1.b
+                     Vec Sort Method:  TopK  K: 10
                      ->  Vec Hash Join
                            Hash Cond: (t1.b = t2.b)
                            ->  Vec Append
@@ -2397,6 +2398,7 @@ explain (costs off) select * from mcrparted where a < 20 order by a, abs(b), c l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: mcrparted.a, (abs(mcrparted.b)), mcrparted.c
+                     Vec Sort Method:  TopK  K: 1
                      ->  Vec Append
                            ->  Vec Seq Scan on mcrparted0 mcrparted_1
                                  Filter: (a < 20)

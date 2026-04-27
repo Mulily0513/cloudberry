@@ -47,5 +47,7 @@ extern int sort_external_batch_size;
 extern int sort_external_num_threads;
 extern int sort_external_max_rows;
 extern char *sort_external_temp_file_base;
+/* topk bound threshold: max K value for TopKNode, larger K falls back to OrderByNode */
+extern int topk_bound_threshold;
 
 #endif   /* GUC_VEC_H */

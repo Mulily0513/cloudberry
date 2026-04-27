@@ -2132,6 +2132,7 @@ explain (costs off)
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: i
+                     Vec Sort Method:  TopK  K: 10
                      ->  Vec Seq Scan on boolindex
                            Filter: b
  Optimizer: Postgres query optimizer

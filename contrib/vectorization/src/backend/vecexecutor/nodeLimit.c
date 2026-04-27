@@ -33,6 +33,8 @@
 #include "vecexecutor/nodeLimit.h"
 #include "vecexecutor/executor.h"
 #include "vecexecutor/execnodes.h"
+#include "vecexecutor/vec_topk_bounds.h"
+#include "utils/guc_vec.h"
 #include "vecexecutor/execAmi.h"
 #include "vecexecutor/execslot.h"
 #include "utils/wrapper.h"
@@ -221,16 +223,34 @@ ExecInitVecLimit(Limit *node, EState *estate, int eflags)
 	limitstate->limitCount = ExecInitExpr((Expr *) node->limitCount,
 										  (PlanState *) limitstate);
 	/*
-	 * initialize outer plan
+	 * Compute limit/offset before initializing the outer plan, so we can
+	 * tell Sort to use TopK algorithm if applicable. recompute_limits only
+	 * depends on ExprContext and limit expressions, not on child nodes.
 	 */
-	outerPlan = outerPlan(node);
-	outerPlanState(limitstate) = VecExecInitNode(outerPlan, estate, eflags);
+	recompute_limits(limitstate);
 
 	/*
-	 * initialize child expressions
-	 * FIXME:  expression needs refactoring
+	 * If the direct child is Sort and we have a determinate row count,
+	 * register a TopK bound keyed by the Sort Plan pointer.  Sort's
+	 * PostBuildVecPlan will look it up in BuildProject and emit a
+	 * TopKNode instead of an OrderByNode.
+	 *
+	 * Skip when EXEC_FLAG_REWIND is set: this Limit is on the inner side
+	 * of a nested loop or similar and may be rescanned with a different
+	 * parametric LIMIT.  The Arrow plan is built once during init;
+	 * ExecReScanVecLimit recomputes count/offset but does not rebuild
+	 * the Arrow plan, so a baked-in TopK bound would be stuck.
 	 */
-	 
+	outerPlan = outerPlan(node);
+	if (IsA(outerPlan, Sort) && !(eflags & EXEC_FLAG_REWIND))
+	{
+		int64 tuples_needed = compute_tuples_needed(limitstate);
+		if (tuples_needed > 0 && tuples_needed <= topk_bound_threshold)
+			vec_topk_bounds_set(estate, outerPlan, tuples_needed);
+	}
+
+	outerPlanState(limitstate) = VecExecInitNode(outerPlan, estate, eflags);
+
 	/*
 	 * Initialize result type.
 	 */
@@ -268,11 +288,7 @@ ExecInitVecLimit(Limit *node, EState *estate, int eflags)
 														&limitstate->ps);
 	}
 
-	/*
-	 * It's necessary to call recompute_limits() before BuildVecPlan() to get
-	 * offset, count and noCount.
-	 */
-	recompute_limits(limitstate);
+	/* recompute_limits already called above, before VecExecInitNode */
 	PostBuildVecPlan((PlanState *)vlimitstate, &vlimitstate->estate);
 	ExecVecSetTupleBound(compute_tuples_needed(limitstate), outerPlanState((PlanState *)limitstate), (PlanState*)limitstate);
 	return limitstate;

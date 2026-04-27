@@ -52,6 +52,7 @@ LIMIT 100;
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: supplier.s_acctbal DESC, nation.n_name, supplier.s_name, part.p_partkey
+                     Vec Sort Method:  TopK  K: 100
                      ->  Vec Hash Join
                            Hash Cond: ((partsupp.ps_partkey = part.p_partkey) AND (partsupp.ps_supplycost = (min(partsupp_1.ps_supplycost))))
                            ->  Vec Hash Join

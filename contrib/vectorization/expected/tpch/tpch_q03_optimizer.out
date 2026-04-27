@@ -31,6 +31,7 @@ LIMIT 10;
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: (sum((lineitem.l_extendedprice * ('1'::numeric(15,2) - lineitem.l_discount)))) DESC, orders.o_orderdate
+                     Vec Sort Method:  TopK  K: 10
                      ->  Vec HashAggregate
                            Group Key: orders.o_orderdate, lineitem.l_orderkey, orders.o_shippriority
                            ->  Vec Hash Join

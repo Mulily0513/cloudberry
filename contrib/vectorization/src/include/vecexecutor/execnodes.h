@@ -143,6 +143,15 @@ typedef struct VecSortState
 	VecExecuteState estate;
 
 	bool		skip; /* true if upper node is groupagg, sort done in groupagg */
+
+	/*
+	 * Set by build_topk_node to the K value (count + offset) when this Sort's
+	 * Arrow plan was emitted as a TopKNode instead of an OrderByNode.
+	 * Zero means the Sort emits an OrderByNode (either the Limit+Sort TopK
+	 * optimization did not apply, or it's not a Limit's child).  Read by
+	 * show_sort_info at EXPLAIN time to display "Vec Sort Method: TopK K: N".
+	 */
+	int64		topk_bound;
 } VecSortState;
 
 typedef struct VecAppendState

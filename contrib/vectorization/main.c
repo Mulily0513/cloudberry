@@ -261,6 +261,16 @@ _PG_init(void)
                             GUC_UNIT_KB | GUC_GPDB_NEED_SYNC,
                             NULL, NULL, NULL);
 
+    DefineCustomIntVariable("vector.topk_bound_threshold",
+                            "Max K value for TopKNode; larger K falls back to OrderByNode+SelectK",
+                            NULL,
+                            &topk_bound_threshold,
+                            2000,
+                            0, 10000000,
+                            PGC_USERSET,
+                            GUC_GPDB_NEED_SYNC,
+                            NULL, NULL, NULL);
+
     exec_simple_query_hook_prev = exec_simple_query_hook;
     exec_simple_query_hook = exec_simple_query_vec;
 

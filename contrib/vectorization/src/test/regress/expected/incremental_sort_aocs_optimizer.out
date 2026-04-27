@@ -157,6 +157,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 31
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -206,6 +207,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 32
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -256,6 +258,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 33
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -307,6 +310,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 65
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -390,6 +394,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 66
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -478,6 +483,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 55
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -583,6 +589,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 70
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -675,6 +682,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 5
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -763,6 +771,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 31
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -812,6 +821,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 32
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -862,6 +872,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 33
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -913,6 +924,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 65
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -996,6 +1008,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 66
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1084,6 +1097,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 31
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1133,6 +1147,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 32
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1183,6 +1198,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 33
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1234,6 +1250,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 65
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1317,6 +1334,7 @@ explain (costs off) select * from (select * from t order by a) s order by a, b l
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b
+                     Vec Sort Method:  TopK  K: 66
                      ->  Vec Seq Scan on t
  Optimizer: GPORCA
 (8 rows)
@@ -1414,6 +1432,7 @@ explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b, (sum(c))
+                     Vec Sort Method:  TopK  K: 1
                      ->  Vec HashAggregate
                            Group Key: a, b
                            ->  Vec Seq Scan on t
@@ -1430,6 +1449,7 @@ explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1
          ->  Vec Limit
                ->  Vec Sort
                      Sort Key: a, b, (sum(c))
+                     Vec Sort Method:  TopK  K: 1
                      ->  Vec HashAggregate
                            Group Key: a, b
                            ->  Vec Seq Scan on t
