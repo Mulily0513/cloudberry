@@ -495,6 +495,46 @@ parseVolumeOption(dataLakeOptions *opt, IcebergVolumeOptions* vopt)
 	{
 		opt->gopher->secretKey = pstrdup(vopt->volume_user.aws_secret_access_key);
 	}
+
+	/*
+	 * HDFS volumes carry the namenode URL in the `endpoint` option.  The
+	 * gopher / hdfs writer reads it from gopher->hdfs_namenode_host and
+	 * gopher->hdfs_namenode_port; without these set, datalakeCreateGopherConfig
+	 * dereferences NULL and crashes on the first INSERT.  Default
+	 * hdfs_auth_method to "simple" so simple-auth HDFS clusters work without
+	 * extra OPTIONS.  Endpoint may be either "hdfs://host:port" (with scheme)
+	 * or just "host:port".
+	 */
+	if (vopt->volume_server.server_type != NULL &&
+		pg_strcasecmp(vopt->volume_server.server_type, "hdfs") == 0)
+	{
+		const char *endpoint = vopt->volume_server.endpoint;
+		if (endpoint != NULL && *endpoint != '\0')
+		{
+			const char *host_port = endpoint;
+			const char *scheme_sep = strstr(endpoint, "://");
+			if (scheme_sep != NULL)
+				host_port = scheme_sep + 3;
+
+			char *dup = pstrdup(host_port);
+			char *colon = strchr(dup, ':');
+			if (colon != NULL)
+			{
+				*colon = '\0';
+				opt->gopher->hdfs_namenode_host = pstrdup(dup);
+				opt->gopher->hdfs_namenode_port = atoi(colon + 1);
+			}
+			else
+			{
+				opt->gopher->hdfs_namenode_host = pstrdup(dup);
+				/* default HDFS RPC port */
+				opt->gopher->hdfs_namenode_port = 8020;
+			}
+			pfree(dup);
+		}
+
+		opt->gopher->hdfs_auth_method = pstrdup("simple");
+	}
 }
 
 /*

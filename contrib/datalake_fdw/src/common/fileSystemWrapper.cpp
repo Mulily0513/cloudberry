@@ -416,7 +416,7 @@ gopherConfig* datalakeCreateGopherConfig(void *opt)
 			conf->hadoop_rpc_protection = pstrdup(options->hadoop_rpc_protection);
 		}
 
-		if (strcmp(conf->auth_method, "kerberos") == 0)
+		if (conf->auth_method != NULL && strcmp(conf->auth_method, "kerberos") == 0)
 		{
 			if (options->krb_principal)
 			{
