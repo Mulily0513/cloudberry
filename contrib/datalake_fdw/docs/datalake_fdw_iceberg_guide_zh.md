@@ -234,16 +234,104 @@ OPTIONS (
 );
 ```
 
-Catalog 选项汇总：
+#### Hadoop Catalog（`type='hadoop'`）
+
+不依赖外部元数据服务，直接基于文件系统语义在 `warehouse_location_prefix` 指
+向的目录里维护 Iceberg metadata，配合 `iceberg_volume_fdw` 上的 S3 / HDFS
+即可工作。底层走 Iceberg `HadoopCatalog`。
+
+```sql
+-- Hadoop Catalog + S3 (MinIO) Volume
+CREATE SERVER hd_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw
+    OPTIONS (type 'hadoop');
+CREATE USER MAPPING FOR current_user SERVER hd_cat_srv;
+CREATE FOREIGN CATALOG hd_cat SERVER hd_cat_srv
+    OPTIONS (warehouse_location_prefix 's3a://warehouse/iceberg/');
+
+CREATE SERVER hd_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+    OPTIONS (type 's3', endpoint 'http://lakehouse:9100',
+             region 'us-east-1', bucket_name 'warehouse',
+             path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER hd_vol_srv
+    OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME hd_vol SERVER hd_vol_srv
+    OPTIONS (base_path '/iceberg/', allow_writes 'true');
+```
+
+```sql
+-- Hadoop Catalog + HDFS Volume
+CREATE SERVER hd_hdfs_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw
+    OPTIONS (type 'hadoop');
+CREATE USER MAPPING FOR current_user SERVER hd_hdfs_cat_srv;
+CREATE FOREIGN CATALOG hd_hdfs_cat SERVER hd_hdfs_cat_srv
+    OPTIONS (warehouse_location_prefix 'hdfs://lakehouse:8020/iceberg/');
+
+CREATE SERVER hd_hdfs_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+    OPTIONS (type 'hdfs', endpoint 'hdfs://lakehouse:8020');
+CREATE USER MAPPING FOR current_user SERVER hd_hdfs_vol_srv
+    OPTIONS (username 'gpadmin');
+CREATE FOREIGN VOLUME hd_hdfs_vol SERVER hd_hdfs_vol_srv
+    OPTIONS (base_path '/iceberg/', allow_writes 'true');
+```
+
+特点：
+- 无需 `url`、`catalog_name` —— `warehouse_location_prefix` 必填且要带协议（`s3a://` 或 `hdfs://`）
+- 表的 metadata.json 与数据文件位于 `<warehouse_location_prefix>/<namespace>/<table>/`
+- 同一份表可被 Spark / Trino / Flink 通过 Iceberg HadoopCatalog 直读
+- Iceberg 提交沿用 HDFS / S3 的原子 rename 语义；当存储不支持原子 rename（部分对象存储）需配合 lock 服务，本实现不内置 lock
+
+#### S3 Catalog（`type='s3'`）
+
+与 Hadoop Catalog 同走 Iceberg `HadoopCatalog` 实现，但内部包装为 `IcebergS3Catalog`：把 `warehouse_location_prefix` 拆成 `fs.defaultFS` + `fs.prefix` 后再传给 Iceberg，方便走 S3 vended-credentials 与 endpoint 内外双地址。配套 Volume 必须是 `type='s3'`。
+
+```sql
+CREATE SERVER s3_cat_srv FOREIGN DATA WRAPPER iceberg_catalog_fdw
+    OPTIONS (type 's3');
+CREATE USER MAPPING FOR current_user SERVER s3_cat_srv;
+CREATE FOREIGN CATALOG s3_cat SERVER s3_cat_srv
+    OPTIONS (warehouse_location_prefix 's3a://warehouse/iceberg_s3/');
+
+CREATE SERVER s3_vol_srv FOREIGN DATA WRAPPER iceberg_volume_fdw
+    OPTIONS (type 's3', endpoint 'http://lakehouse:9100',
+             region 'us-east-1', bucket_name 'warehouse',
+             path_style_access 'true');
+CREATE USER MAPPING FOR current_user SERVER s3_vol_srv
+    OPTIONS (access_key_id 'admin', secret_access_key 'password');
+CREATE FOREIGN VOLUME s3_vol SERVER s3_vol_srv
+    OPTIONS (base_path '/iceberg_s3/', allow_writes 'true');
+```
+
+`type='hadoop'` vs `type='s3'` 的细微区别：
+
+| 维度 | `hadoop` | `s3` |
+|------|----------|------|
+| 适用 Volume | s3 / hdfs | 仅 s3 |
+| `warehouse_location_prefix` 要求 | 含协议（`s3a://...` 或 `hdfs://...`） | 含协议（`s3a://...`） |
+| 内部 Java 实现 | `IcebergHadoopCatalog` | `IcebergS3Catalog`（拆 fs.defaultFS / fs.prefix） |
+| 适合场景 | 单存储（HDFS-only 或 S3-only），最简配置 | S3 多端点 / KMS / vended credentials |
+
+#### Catalog × Volume 兼容矩阵
+
+| Catalog `type` | 兼容 Volume `type` | 备注 |
+|----------------|------------------|------|
+| `builtin` | s3 / hdfs | 内嵌目录服务 |
+| `hive` | s3 / hdfs | 元数据走 Hive Metastore |
+| `polaris` | 由 Polaris 服务端下发 | 通常不显式建 Volume |
+| `hadoop` | s3 / hdfs | warehouse_location_prefix 必填 |
+| `s3` | s3 | 仅对象存储 |
+
+#### Catalog 选项汇总
 
 | 选项 | 适用 | 说明 |
 |------|------|------|
-| `catalog_name` | Hive/Polaris | 远端 catalog 名称 |
+| `type` | 全部（SERVER） | `builtin` / `hive` / `polaris` / `hadoop` / `s3` |
+| `url` | hive / polaris（SERVER） | hive: `thrift://host:9083`；polaris: REST 地址 |
+| `catalog_name` | Hive / Polaris | 远端 catalog 名称 |
 | `default_namespace` | 全部 | 默认命名空间 |
 | `enable_metadata_cache` | 全部 | 启用元数据缓存 |
 | `metadata_cache_ttl` | 全部 | 缓存 TTL（秒） |
 | `auto_refresh_metadata` | 全部 | 自动刷新 |
-| `warehouse_location_prefix` | Hive/Polaris | 仓库路径前缀 |
+| `warehouse_location_prefix` | Hive / Polaris / Hadoop / S3 | 仓库路径前缀；hadoop / s3 必填且带协议 |
 | `allow_exists` | Polaris | 远端已存在时不报错（默认 true） |
 
 ### 4.3 Volume 配置
