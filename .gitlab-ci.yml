@@ -444,6 +444,9 @@ test_datalake_smoke:
     cd ${CI_PROJECT_DIR}/database/contrib/datalake_fdw/automation/docker/singlecluster && \
       docker compose down -v || :
   rules:
+    # TODO: re-enable once the umbrella prepare-datalake-smoke / test-datalake-smoke
+    # entry points are wired through.  Drop the `when: never` line below to restore.
+    - when: never
     - !reference [ .common-rules ]
   artifacts:
     <<: *artifacts
@@ -464,6 +467,9 @@ test_datalake_feature:
     cd ${CI_PROJECT_DIR}/database/contrib/datalake_fdw/automation/docker/singlecluster && \
       docker compose down -v || :
   rules:
+    # TODO: re-enable once the umbrella prepare-datalake-feature / test-datalake-feature
+    # entry points are wired through.  Drop the `when: never` line below to restore.
+    - when: never
     - !reference [ .common-rules ]
   artifacts:
     <<: *artifacts
