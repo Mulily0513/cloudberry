@@ -115,6 +115,10 @@ public class IcebergBuildInCatalog implements IcebergCatalog {
             Map<String, String> properties) {
         if (catalogLocation != null && !catalogLocation.isEmpty()) {
             if (location == null || location.isEmpty()) {
+                if (identifier.namespace().length() == 0) {
+                    throw new IllegalArgumentException(
+                        "Table identifier must include a namespace: " + identifier);
+                }
                 String namespace = identifier.namespace().level(0);
                 String tableName = identifier.name();
                 location = buildTableLocation(catalogLocation, namespace, tableName);

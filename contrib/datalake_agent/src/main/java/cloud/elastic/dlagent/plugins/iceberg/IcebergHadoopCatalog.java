@@ -168,8 +168,12 @@ public class IcebergHadoopCatalog implements IcebergCatalog {
                 props.put(entry.getKey(), entry.getValue());
             }
         }
-        //TODO(liuxiaoyu): need set gopherFileIO
-        //props.put(CatalogProperties.FILE_IO_IMPL, "");
+        // Register GopherFileIO (matches IcebergUtilities.composeGopherCatalogProperties).
+        // containsKey guard avoids overriding an explicit iceberg.io-impl=... pin.
+        if (!props.containsKey(CatalogProperties.FILE_IO_IMPL)) {
+            props.put(CatalogProperties.FILE_IO_IMPL,
+                      "org.cbdb.iceberg.gopher.client.GopherFileIO");
+        }
 
         LOG.debug("iceberg hadoop catalog gopher properties: {}", gopherProperties);
         LOG.info("warehouse location of iceberg hadoop-table {}", warehouseLocation);

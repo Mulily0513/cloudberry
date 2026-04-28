@@ -72,6 +72,7 @@ import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.StaticTableOperations;
+import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 
 import java.io.IOException;
@@ -460,7 +461,16 @@ public class IcebergMetadataFetcher extends BasePlugin implements MetadataFetche
         for (String key : toRemove) {
             upd.remove(key);
         }
-        upd.commit();
+        try {
+            upd.commit();
+        } catch (CommitFailedException e) {
+            // In MPP mode every QE segment opens the same table and races to
+            // strip the same legacy keys; Iceberg's optimistic concurrency
+            // lets one win and rejects the rest.  Losing the race is fine —
+            // the keys are gone (re-checked via refresh below).
+            LOG.info("Iceberg self-heal: lost commit race on '{}'; another caller "
+                     + "removed the legacy keys", table.name());
+        }
         table.refresh();
     }
 

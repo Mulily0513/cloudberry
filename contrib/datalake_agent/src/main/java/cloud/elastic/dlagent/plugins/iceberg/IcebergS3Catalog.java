@@ -72,6 +72,11 @@ public class IcebergS3Catalog implements IcebergCatalog {
 
         LOG.info("warehouse location of iceberg hadoop-table {}", warehouseLocation);
 
+        if (gopherProperties != null) {
+            for (Map.Entry<String, String> entry : gopherProperties.entrySet()) {
+                props.put(entry.getKey(), entry.getValue());
+            }
+        }
 
         hadoopCatalog.setConf(this.configuration);
         hadoopCatalog.initialize("", props);
