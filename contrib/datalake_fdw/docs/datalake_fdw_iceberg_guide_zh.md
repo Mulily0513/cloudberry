@@ -510,14 +510,19 @@ UPDATE orders SET amount = amount * 1.1 WHERE region = 'US-West';
 -- DELETE
 DELETE FROM orders WHERE order_date < '2023-01-01';
 
--- TRUNCATE
-TRUNCATE orders;
-
 -- SELECT（支持谓词下推 + 列裁剪）
 SELECT region, SUM(amount) FROM orders
 WHERE order_date >= '2024-01-01'
 GROUP BY region;
 ```
+
+**UPDATE / DELETE 实现**：基于 Iceberg v2 position-delete（merge-on-read）。
+单条 UPDATE / DELETE 不重写数据文件，只产生 position-delete 记录；后续 SELECT
+通过 anti-join 消除被删行。累积位置删除过多后由 VACUUM 触发 compaction 合并。
+
+> ⚠️ **TRUNCATE 当前是 no-op**（`iceberg_relation_nontransactional_truncate`
+> 实现为空），调用不会报错但表内容不会被清空。需要清空请用
+> `DELETE FROM <table>` 或 `DROP TABLE` 后重建。
 
 ### 4.7 Schema 演化
 
@@ -534,14 +539,17 @@ SELECT * FROM orders;
 
 混合 Schema 文件读取依赖 Iceberg 的 **field-id 映射**。新增列后旧数据文件中该列自动填 NULL，无需重写。
 
-支持的 ALTER 操作：
-- `ADD COLUMN` — 新列默认 NULL（已在 CI 覆盖）
-- `DROP COLUMN` — 新快照不再包含该列
-- `RENAME COLUMN`
-- 类型提升（如 `int` → `bigint`）
+**当前实际支持的 ALTER 范围**：
 
-> 当前 CI 主要覆盖 `ADD COLUMN`；其余三项依赖 PG DDL 路径转发到 Iceberg 元数据
-> 写入，写表流程上可用，但建议在生产前以业务真实数据先做一次回归。
+| 子命令 | 状态 | 说明 |
+|--------|------|------|
+| `ADD COLUMN` | ✅ 支持 | 新列对老数据文件读出 NULL；新写入文件含新列；CI 覆盖 |
+| `DROP COLUMN` | ⚠️ 仅 PG 元数据生效 | `pg_attribute` 标记列 dropped，新写入不再带该列；但**不会**触发 Iceberg metadata 的 schema 演化（无 AT_* 钩子）。其它引擎（Spark/Trino）读到的 schema 仍含该列 |
+| `RENAME COLUMN` | ⚠️ 仅 PG 元数据生效 | 同上；Iceberg 端列名不变，跨引擎读会出现列名不一致 |
+| `ALTER COLUMN TYPE`（类型提升） | ⚠️ 仅 PG 元数据生效 | 同上 |
+| `ADD CONSTRAINT` / `SET NOT NULL` / DEFAULT 等 | ⚠️ 仅 PG 元数据生效 | 不传播到 Iceberg metadata |
+
+> 实现层面：`pg_iceberg_ddl.c` 仅注册了 `OAT_POST_CREATE` 和 `OAT_DROP` 两个对象访问钩子，没有 `AT_*` 子命令分发。除 `ADD COLUMN` 外的 schema 变更只改 PG 端 catalog，Iceberg metadata 不会同步更新。需要其它引擎也看到结构变更时，请在 Spark/Trino/Flink 端用 Iceberg DDL 完成。
 
 ### 4.8 VACUUM（压缩）
 
@@ -557,10 +565,24 @@ SET datalake.iceberg_vacuum_rewrite_target_file_size_mb = 256; -- 目标文件�
 VACUUM orders;
 ```
 
-VACUUM 效果：
-- 合并多个小文件为大文件
-- 清理 position delete 文件
-- 优化后续 scan 性能（减少文件 IO 次数）
+VACUUM 实际做的事：
+- **合并小文件为大文件**（compaction）—— 当数据文件数 ≥
+  `iceberg_vacuum_compact_min_input_files` 时触发，输出文件接近
+  `iceberg_vacuum_rewrite_target_file_size_mb`
+- **写新快照** —— compaction 完成后产生新的 metadata.json，旧快照仍保留
+
+VACUUM **不做**的事（容易误解）：
+
+| 项 | 现状 | 由谁负责 |
+|----|------|---------|
+| 删除已被 position-delete 标记的行的物理数据 | 通过 compaction 间接重写（被删行不写出），不是即时删除 | VACUUM compaction |
+| 显式 `expireSnapshots()` 清理过期快照 | 当前代码无此调用 | 由后台异步 deletion queue 按 `iceberg_max_snapshot_age` (默认 5 天) 处理 |
+| `removeOrphanFiles()` 扫描并删除孤儿文件 | 当前代码无此调用 | 不会自动清理；如有遗留请用 Spark/Trino 的 `remove_orphan_files` 程序 |
+| 清理过期的 metadata.json | 当前代码无此调用 | 同上，需外部工具 |
+
+换言之，**VACUUM 只做 compaction**；旧快照、过期数据文件、孤儿文件的回收依赖
+后台 deletion queue（受 `iceberg_max_snapshot_age` /
+`iceberg_max_file_removals_per_vacuum` 控制）以及外部维护任务。
 
 > **注意**：VACUUM 不能在事务块或 PL/pgSQL 函数内执行。
 
@@ -596,21 +618,50 @@ SELECT * FROM iceberg_toolkit.get_fragments('orders'::regclass);
 
 > 这些函数提供"绕开 DDL"的检查能力，主要用于排障；正常业务请走 `CREATE ICEBERG TABLE` / `INSERT` / `SELECT`。
 
-### 4.11 当前不支持的功能
+### 4.11 当前不支持的功能 / 已知限制
 
-以下 Iceberg 功能在当前版本**尚未实现**，规划中或长期不在路线图：
+#### 4.11.1 完全未实现
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| `PARTITION BY` 子句（identity / bucket / truncate / year/month/day/hour） | ❌ 未实现 | 表统一按文件分布；可通过 Spark 等引擎写入分区表后由 datalake_fdw 读取 |
-| Time travel（`FOR SYSTEM_TIME AS OF` / `FOR SYSTEM_VERSION AS OF`） | ❌ 未实现 | 当前总是读取最新快照 |
-| `format-version=1/2` / `write.format.default` 等 Iceberg 表级属性 | ❌ 未实现 | 由 catalog 默认值决定，无 SQL 覆盖入口 |
-| `write.parquet.compression-codec` / `write.distribution-mode` 等写入端 property | ❌ 未实现 | 同上 |
-| `ANALYZE` 采样统计 | ⚠️ no-op | 统计信息直接读 Iceberg manifest（详见 FAQ） |
-| 跨表分布式事务 | ❌ 未实现 | 单表 ACID 保证，多表写入不构成原子事务 |
-| Row-level security / 列级权限传递到 Iceberg 数据 | ❌ 未实现 | 仅在 PG 入口生效，物理文件无加密访问控制 |
+| 功能 | 备注 |
+|------|------|
+| `PARTITION BY`（identity / bucket / truncate / year/month/day/hour） | 表统一按文件分布。可由 Spark 等引擎写入分区表后再被 datalake_fdw 读取 |
+| Time travel（`FOR SYSTEM_TIME AS OF` / `FOR SYSTEM_VERSION AS OF`） | 当前总是读最新快照 |
+| `format-version=1/2`、`write.format.default`、`write.parquet.compression-codec`、`write.distribution-mode` 等 Iceberg 表级 property | 由 catalog 默认值决定，无 SQL 入口可覆盖 |
+| 跨表分布式事务 | 单表 ACID；多表写入不构成原子事务 |
+| Row-level security / 列级权限传递到物理 Iceberg 数据 | 仅在 PG 入口生效，物理文件无访问控制 |
+| 生成列（GENERATED COLUMN）、表达式 DEFAULT 写入 Iceberg | PG 端语法可写但不会反映到 Iceberg schema |
 
-需要这些能力的场景，建议结合 Spark/Trino/Flink 直写 Iceberg 表，再由 datalake_fdw 进行读侧消费。
+#### 4.11.2 静默 no-op（不会报错但实际无效）
+
+| 操作 | 实际行为 |
+|------|---------|
+| `TRUNCATE <iceberg_table>` | `iceberg_relation_nontransactional_truncate` 实现为空；表内容不会被清空。需要清空请用 `DELETE FROM` 或 `DROP TABLE` 重建 |
+| `CREATE INDEX ... ON <iceberg_table>` | `iceberg_index_build_range_scan` 直接返回 0；索引对象创建后无任何条目 |
+| `ANALYZE <iceberg_table>` | 抛 NOTICE：`ANALYZE is a no-op for Iceberg tables; planner stats come from Iceberg catalog metadata`。统计来自 manifest |
+| `DROP COLUMN` / `RENAME COLUMN` / `ALTER COLUMN TYPE` | 只更新 PG `pg_attribute`，Iceberg metadata 不变（详见 4.7） |
+| `PRIMARY KEY` / `UNIQUE` / `FOREIGN KEY` / `CHECK` 约束 | DDL 接受但无 Iceberg 端唯一索引承载，运行时不强制 |
+
+#### 4.11.3 显式拒绝
+
+| 操作 | 错误 |
+|------|------|
+| TID range scan（如 `WHERE ctid <@ '...'` 之类的范围 TID 谓词） | `ERRCODE_FEATURE_NOT_SUPPORTED`: `not supported`（pg_iceberg_am_handler.c:496） |
+| ANALYZE 内部的 `analyze_next_block` / `analyze_next_tuple` API | `ERRCODE_INTERNAL_ERROR`: `API not supported for iceberg relations`（pg_iceberg_am_handler.c:668） |
+
+#### 4.11.4 并发写入约束
+
+同一张 Iceberg 表的并发提交走 **CAS + 重试**，最多重试 10 次（`TRACKER_MAX_COMMIT_RETRIES`）；超过会以 `ERRCODE_T_R_SERIALIZATION_FAILURE` 报错：
+
+```
+ERROR:  failed to commit iceberg metadata for table <oid> after <N> retries
+        due to concurrent updates
+```
+
+实务建议：
+- 高并发写场景把单笔写入做大（一次 INSERT 多行），减少 commit 次数
+- 重试前会清理本地缓存并以最新 snapshot 重 base；外部 catalog（Hive/Polaris）不会重复触发 agent commit，避免重复落数据
+
+需要更强 Iceberg 能力（PARTITION BY、time travel、表 property、跨引擎一致 schema 演化）时，建议结合 Spark/Trino/Flink 直接对 Iceberg 表写元数据，由 datalake_fdw 做读侧消费。
 
 ---
 
@@ -805,4 +856,7 @@ DROP SERVER cat_server CASCADE;  -- 级联删除所有依赖对象
 | `must be superuser to create iceberg metadata table` | 非 superuser 触发首次元数据初始化 | 由 superuser 先执行一次任意 Iceberg DDL 完成初始化 |
 | `API not supported for iceberg relations` | 调用了 heap-specific API（如 part of CTID-only path） | 多见于第三方扩展直接调内部 API；汇报到 issue |
 | `invalid value for boolean option "%s": "%s"` | OPTION 取值不是布尔字面量 | 用 `true` / `false`，不要用 `0/1` 或 `yes/no` |
+| `failed to commit iceberg metadata for table %u after %d retries due to concurrent updates` | 并发写入冲突 CAS 重试 10 次仍失败（详见 4.11.4） | 把多笔写合并成一笔事务、降低并发写并发度，或排查是否有外部引擎同时在写同一张表 |
+| `not supported`（来自 pg_iceberg_am_handler.c:496） | 触发了 TID range scan 路径 | 改用基于普通列的谓词，避免 `ctid <@ ...` 之类查询 |
+| `API not supported for iceberg relations` | 调用了 heap-only API（多见于第三方扩展或 ANALYZE 内部 block API） | 见 4.11.3；或避免该扩展直接走 iceberg 表 |
 | `ANALYZE is a no-op for Iceberg tables; planner stats come from Iceberg catalog metadata` | 不是错误，只是 NOTICE | 统计信息来自 Iceberg manifest，不需要 ANALYZE 采样 |
