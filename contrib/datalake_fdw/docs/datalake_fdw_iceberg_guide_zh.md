@@ -112,8 +112,22 @@ CREATE FOREIGN TABLE hdfs_events (id int, event_type text, ts timestamp)
 |------|------|
 | `filePath` | 数据文件路径（支持目录） |
 | `format` | 文件格式 |
-| `delimiter` | 字段分隔符（text/csv） |
+| `compression` | 文件压缩（`gzip` / `snappy` / `zstd`，按 format 而定） |
+
+CSV / Text 额外 OPTIONS（语义对齐 PG `COPY`）：
+
+| 选项 | 说明 |
+|------|------|
+| `delimiter` | 字段分隔符 |
 | `quote` | 引号字符（csv） |
+| `escape` | 转义字符 |
+| `null` | NULL 字面量 |
+| `header` | 是否包含表头（`true`/`false`） |
+| `newline` | 行结束符（`lf`/`cr`/`crlf`） |
+| `force_not_null` | 这些列即使为空也不视为 NULL |
+| `force_null` | 这些列若空则视为 NULL |
+| `encoding` | 文件字符集 |
+| `fill_missing_fields` | 缺字段时填 NULL（默认报错） |
 
 ### 3.4 Hive 表同步
 
@@ -150,10 +164,17 @@ Iceberg 表采用三层架构，每一层独立配置、可组合：
 ```
 Catalog (元数据管理)     支持: Polaris / Hive / Builtin
     +
-Volume  (存储访问)       支持: S3 / HDFS
+Volume  (存储访问)       支持: S3 / HDFS / ABFSS（Azure）
     +
 Iceberg Table (数据表)   支持: CREATE / INSERT / UPDATE / DELETE / VACUUM
 ```
+
+> **关于实现机制**：`CREATE ICEBERG TABLE …` 使用的是原生 Table Access Method
+> （`CREATE ACCESS METHOD iceberg`），表对象本身是普通 PostgreSQL relation，
+> 不是 FOREIGN TABLE。`iceberg_catalog_fdw` 与 `iceberg_volume_fdw` 仅作为元数据
+> 与存储层的接入对象（FOREIGN CATALOG / FOREIGN VOLUME）使用。这意味着
+> 对 Iceberg 表的查询计划走 PG 原生 executor，不经过 dlproxy；FDW 路径只在
+> 通用外部表（第 3 节）和 catalog/volume 元数据交互时使用。
 
 ### 4.2 Catalog 配置
 
@@ -282,7 +303,37 @@ OPTIONS (
 );
 ```
 
-Volume 选项汇总：
+Volume 选项汇总（按对象级分层）：
+
+**SERVER OPTIONS**
+
+| 选项 | 适用 type | 说明 |
+|------|----------|------|
+| `type` | 全部 | `s3` / `hdfs` / `abfss` |
+| `endpoint` | s3 | 对象存储 endpoint（含协议） |
+| `region` | s3 | 区域 |
+| `bucket_name` | s3 | 桶名 |
+| `path_style_access` | s3 | path-style（MinIO 必须 `true`） |
+| `endpoint_internal` | s3（Polaris） | Polaris 服务端访问的内部 endpoint |
+| `sts_endpoint` / `sts_unavailable` | s3（Polaris） | STS endpoint 与禁用开关 |
+| `role_arn` / `external_id` / `user_arn` | s3（Polaris） | Vended-credentials 角色信息 |
+| `current_kms_key` / `allowed_kms_keys` | s3（Polaris） | SSE-KMS 密钥 |
+| `hdfs_namenodes` | hdfs | NameNode 主机或 nameservice |
+| `hdfs_auth_method` | hdfs | `simple` / `kerberos` |
+| `hadoop_rpc_protection` | hdfs | `authentication` / `integrity` / `privacy` |
+| `is_ha_supported` | hdfs | 是否启用 HA |
+| `dfs_nameservices` / `dfs_ha_namenodes` / `dfs_namenode_rpc_address` / `dfs_client_failover_proxy_provider` | hdfs (HA) | HA 路由配置 |
+| `tenant_id` / `multi_tenant_app_name` / `consent_url` / `hierarchical` | abfss | Azure Data Lake Gen2 多租户访问 |
+
+**USER MAPPING OPTIONS**
+
+| 选项 | 适用 | 说明 |
+|------|------|------|
+| `username` | 全部 | 操作系统用户 |
+| `access_key_id` / `secret_access_key` | s3 | 静态 AK/SK |
+| `krb_principal` / `krb_principal_keytab` | hdfs(kerberos) | Kerberos 凭据 |
+
+**CREATE FOREIGN VOLUME OPTIONS**
 
 | 选项 | 说明 |
 |------|------|
@@ -328,6 +379,16 @@ OPTIONS (
 ```
 protocol://bucket/base_path/base_location/namespace/tablename
 ```
+
+**CREATE ICEBERG TABLE OPTIONS 全集**：
+
+| OPTION | 类型 | 说明 |
+|--------|------|------|
+| `catalog` | string | 指定 Catalog（与子句 `CATALOG` 等价；二选一） |
+| `namespace` / `namespace_name` | string | 命名空间 |
+| `table_name` | string | 在 catalog 中暴露的表名（默认与 PG 表名一致） |
+| `base_location` | string | 表数据目录（相对 Volume 的 `base_path`） |
+| `autovacuum_enabled` | bool | 是否参与 `datalake.iceberg_autovacuum` 自动 VACUUM（默认 `true`） |
 
 ### 4.5 支持的数据类型
 
@@ -386,10 +447,13 @@ SELECT * FROM orders;
 混合 Schema 文件读取依赖 Iceberg 的 **field-id 映射**。新增列后旧数据文件中该列自动填 NULL，无需重写。
 
 支持的 ALTER 操作：
-- `ADD COLUMN` — 新列默认 NULL
+- `ADD COLUMN` — 新列默认 NULL（已在 CI 覆盖）
 - `DROP COLUMN` — 新快照不再包含该列
 - `RENAME COLUMN`
 - 类型提升（如 `int` → `bigint`）
+
+> 当前 CI 主要覆盖 `ADD COLUMN`；其余三项依赖 PG DDL 路径转发到 Iceberg 元数据
+> 写入，写表流程上可用，但建议在生产前以业务真实数据先做一次回归。
 
 ### 4.8 VACUUM（压缩）
 
@@ -420,6 +484,45 @@ ALTER SYSTEM SET datalake.iceberg_autovacuum = on;
 ALTER SYSTEM SET datalake.iceberg_autovacuum_naptime = 600;  -- 每 10 分钟检查
 SELECT pg_reload_conf();
 ```
+
+### 4.10 内置工具函数（`iceberg_toolkit`）
+
+`datalake_fdw` 注册了一组 SQL 函数用于直接调用 catalog/volume 操作或检查表元数据。所有函数定义在 `iceberg_toolkit` schema 下。
+
+| 函数 | 说明 | 典型用途 |
+|------|------|---------|
+| `iceberg_toolkit.catalog_fdw(server_name text, op text, args jsonb) → jsonb` | 在指定 catalog server 上执行底层操作（列出 namespace/表、创建 namespace 等） | 排查 catalog 连通性 |
+| `iceberg_toolkit.volume_fdw(server_name text, op text, args jsonb) → jsonb` | 在指定 volume server 上执行底层存储操作 | 列目录、读对象元数据 |
+| `iceberg_toolkit.create_table(catalog text, namespace text, table_name text, schema_def text, …)` | 不通过 SQL DDL，直接调用 catalog 注册一张 Iceberg 表 | 快速接入已有数据目录 |
+| `iceberg_toolkit.get_fragments(table_oid oid) → setof record` | 列出某张表的 scan fragment（数据文件、起止 offset） | 分析数据布局、定位倾斜 |
+| `iceberg_toolkit.polaris_list_catalogs(server_name text) → setof text` | 列出 Polaris 服务端可见 catalog | 配置阶段排查 |
+| `iceberg_toolkit.polaris_list_namespaces(server_name text, catalog text) → setof text` | 列出 Polaris catalog 下的 namespace | 同上 |
+
+```sql
+-- 例：列出 Polaris catalog
+SELECT * FROM iceberg_toolkit.polaris_list_catalogs('polaris_cat_srv');
+
+-- 例：查看一张表的 fragment 分布
+SELECT * FROM iceberg_toolkit.get_fragments('orders'::regclass);
+```
+
+> 这些函数提供"绕开 DDL"的检查能力，主要用于排障；正常业务请走 `CREATE ICEBERG TABLE` / `INSERT` / `SELECT`。
+
+### 4.11 当前不支持的功能
+
+以下 Iceberg 功能在当前版本**尚未实现**，规划中或长期不在路线图：
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `PARTITION BY` 子句（identity / bucket / truncate / year/month/day/hour） | ❌ 未实现 | 表统一按文件分布；可通过 Spark 等引擎写入分区表后由 datalake_fdw 读取 |
+| Time travel（`FOR SYSTEM_TIME AS OF` / `FOR SYSTEM_VERSION AS OF`） | ❌ 未实现 | 当前总是读取最新快照 |
+| `format-version=1/2` / `write.format.default` 等 Iceberg 表级属性 | ❌ 未实现 | 由 catalog 默认值决定，无 SQL 覆盖入口 |
+| `write.parquet.compression-codec` / `write.distribution-mode` 等写入端 property | ❌ 未实现 | 同上 |
+| `ANALYZE` 采样统计 | ⚠️ no-op | 统计信息直接读 Iceberg manifest（详见 FAQ） |
+| 跨表分布式事务 | ❌ 未实现 | 单表 ACID 保证，多表写入不构成原子事务 |
+| Row-level security / 列级权限传递到 Iceberg 数据 | ❌ 未实现 | 仅在 PG 入口生效，物理文件无加密访问控制 |
+
+需要这些能力的场景，建议结合 Spark/Trino/Flink 直写 Iceberg 表，再由 datalake_fdw 进行读侧消费。
 
 ---
 
@@ -453,7 +556,7 @@ RESET datalake.disable_filter_pushdown;
 
 ## 6. GUC 参考
 
-### 会话级（SET 可改）
+### 会话级（USERSET，`SET` 可改）
 
 | GUC | 默认值 | 说明 |
 |-----|--------|------|
@@ -462,28 +565,36 @@ RESET datalake.disable_filter_pushdown;
 | `datalake.disable_filter_pushdown` | `off` | 关闭谓词下推 |
 | `datalake.disable_cache_file` | `off` | 关闭文件缓存 |
 | `datalake.enable_iceberg_fragment_cache` | `on` | Iceberg fragment 缓存 |
-| `datalake.iceberg_vacuum_compact_min_input_files` | `10` | VACUUM 最少输入文件数 |
+| `datalake.iceberg_vacuum_compact_min_input_files` | `5` | VACUUM 最少输入文件数 |
 | `datalake.iceberg_vacuum_rewrite_target_file_size_mb` | `512` | VACUUM 目标文件大小（MB） |
-| `datalake.iceberg_postion_deletes_threshold` | `100000` | Position delete 阈值 |
+| `datalake.iceberg_postion_deletes_threshold` | `100000` | Position delete 阈值（100K – 10M） |
+| `datalake.hudi_log_merger_threshold` | `512` | Hudi log merge 阈值（MB，128 – 10240） |
+| `datalake.hudi_log_scale_factor` | `1.3` | Hudi 临时文件膨胀系数（1 – 10） |
 | `datalake.external_table_limit_segment_num` | `0` | 限制参与扫描的 segment 数（0=不限） |
 | `datalake.external_table_debug` | `off` | 调试模式 |
+| `datalake.external_table_new_text` | `off` | 启用新版 text 解析 |
+| `datalake.external_table_ignore_hidden_file` | `off` | 忽略隐藏文件/目录（`.` 开头） |
+| `datalake.enable_set_hdfs_user` | `on` | 从 user mapping 设置 HDFS 用户 |
+| `datalake.enable_list_in_master` | `on` | HDFS list 仅在 master 执行 |
+| `datalake.enable_get_block_location` | `off` | 读取 HDFS block location |
+| `datalake.agent_server_url` | `http://localhost:3888` | datalake_agent 地址 |
 | `datalake.skip_create_polaris_catalog` | `off` | 跳过 Polaris catalog 自动创建 |
 
-### Superuser 级
+### Superuser 级（SUSET）
 
 | GUC | 默认值 | 说明 |
 |-----|--------|------|
-| `datalake.iceberg_max_snapshot_age` | 5 天 | 快照最大保留时间 |
+| `datalake.iceberg_max_snapshot_age` | `432000`（5 天） | 快照最大保留时间（秒） |
 | `datalake.iceberg_max_file_removals_per_vacuum` | `100000` | 单次 VACUUM 最大删除文件数 |
 | `datalake.iceberg_max_compactions_per_vacuum` | `100` | 单次 VACUUM 最大压缩操作数 |
 
-### 服务重启级
+### 配置文件级（SIGHUP，`pg_reload_conf()` 生效）
 
 | GUC | 默认值 | 说明 |
 |-----|--------|------|
 | `datalake.iceberg_autovacuum` | `off` | 启用自动 VACUUM |
 | `datalake.iceberg_autovacuum_naptime` | `600` | 自动 VACUUM 间隔（秒） |
-| `datalake.iceberg_log_autovacuum_min_duration` | `-1` | 记录超过此时长的自动 VACUUM（ms，-1=不记录） |
+| `datalake.iceberg_log_autovacuum_min_duration` | `600000` | 记录超过此时长（ms）的自动 VACUUM；`-1` 全不记录、`0` 全部记录 |
 
 ---
 
@@ -580,11 +691,30 @@ DROP SERVER cat_server CASCADE;  -- 级联删除所有依赖对象
 
 ## 9. 常见问题
 
-| 问题 | 原因 | 解决 |
-|------|------|------|
+### 9.1 配置类
+
+| 问题 / 错误信息 | 原因 | 解决 |
+|----------------|------|------|
 | `numeric` 列建表报错 | Parquet 编码要求精度 | 改为 `numeric(p,s)` |
 | VACUUM 在函数内报错 | PG 限制 | 在函数外执行 VACUUM |
 | Hive Catalog 读回为空 | Hive Metastore 配置 | 检查 `url` 格式：`thrift://host:port` |
 | 下推不生效 | GUC 被关闭 | `RESET datalake.disable_filter_pushdown` |
 | Polaris 401 错误 | OAuth 认证失败 | 检查 `client_id` / `client_secret` / `scope` |
 | 外部表文件找不到 | `filePath` 路径错误 | 确认包含 bucket 前缀或绝对路径 |
+
+### 9.2 Iceberg 表运行时错误对照
+
+| 错误信息（出处） | 含义 | 排查方向 |
+|-----------------|------|---------|
+| `iceberg table "%s.%s" does not exist in external catalog "%s"` | catalog 中未注册该表 | 确认远端 catalog 名 / namespace / table 拼写；Polaris 检查 `default_namespace` |
+| `failed to resolve iceberg table location for relation "%s"` | catalog 拿不到表位置 | catalog 服务连通性、`base_location` 是否被改动、metadata 是否损坏 |
+| `failed to load iceberg table metadata for relation %u` | metadata.json 读不下来 | 检查 Volume 凭据、`base_path`；若使用对象存储确认 endpoint |
+| `external catalog "%s" returned empty table location for "%s.%s"` | catalog 返回空 location | catalog 实现 bug 或 namespace 入库异常；可用 `iceberg_toolkit.catalog_fdw` 直查 |
+| `empty iceberg table location suffix` | builtin catalog 解析出空路径 | 表名 / namespace 含特殊字符；规整后重建 |
+| `iceberg metadata catalog is not available on this segment` | 在 QE 上调用了 QD-only 的元数据接口 | 检查是否在 PL/pgSQL 中误用了元数据函数；改为在 QD 上执行 |
+| `foreign catalog with OID %u does not exist` | catalog 对象引用失效 | 排查是否 DROP 后未重建；`pg_foreign_catalog` 中确认存在 |
+| `foreign volume with OID %u does not exist` | volume 对象引用失效 | 同上 |
+| `must be superuser to create iceberg metadata table` | 非 superuser 触发首次元数据初始化 | 由 superuser 先执行一次任意 Iceberg DDL 完成初始化 |
+| `API not supported for iceberg relations` | 调用了 heap-specific API（如 part of CTID-only path） | 多见于第三方扩展直接调内部 API；汇报到 issue |
+| `invalid value for boolean option "%s": "%s"` | OPTION 取值不是布尔字面量 | 用 `true` / `false`，不要用 `0/1` 或 `yes/no` |
+| `ANALYZE is a no-op for Iceberg tables; planner stats come from Iceberg catalog metadata` | 不是错误，只是 NOTICE | 统计信息来自 Iceberg manifest，不需要 ANALYZE 采样 |
