@@ -741,6 +741,8 @@ is_plan_vectorable(Plan* plan, List *rtable)
 				if (wagg->startOffset || wagg->endOffset ||
 				    (frameOptions != FRAMEOPTION_DEFAULTS &&
 				     frameOptions != (FRAMEOPTION_DEFAULTS | FRAMEOPTION_NONDEFAULT) &&
+				     frameOptions != (FRAMEOPTION_DEFAULTS | FRAMEOPTION_NONDEFAULT |
+				                      FRAMEOPTION_BETWEEN) &&
 				     frameOptions != (FRAMEOPTION_NONDEFAULT | FRAMEOPTION_ROWS |
 				                      FRAMEOPTION_START_UNBOUNDED_PRECEDING |
 				                      FRAMEOPTION_END_CURRENT_ROW) &&
@@ -825,6 +827,8 @@ is_plan_vectorable(Plan* plan, List *rtable)
 				if (wagg->startOffset || wagg->endOffset ||
 				    (frameOptions != FRAMEOPTION_DEFAULTS &&
 				     frameOptions != (FRAMEOPTION_DEFAULTS | FRAMEOPTION_NONDEFAULT) &&
+				     frameOptions != (FRAMEOPTION_DEFAULTS | FRAMEOPTION_NONDEFAULT |
+				                      FRAMEOPTION_BETWEEN) &&
 				     frameOptions != (FRAMEOPTION_NONDEFAULT | FRAMEOPTION_ROWS |
 				                      FRAMEOPTION_START_UNBOUNDED_PRECEDING |
 				                      FRAMEOPTION_END_CURRENT_ROW) &&
